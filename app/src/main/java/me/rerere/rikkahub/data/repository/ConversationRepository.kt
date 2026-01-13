@@ -156,12 +156,31 @@ class ConversationRepository(
         } else {
             conversation
         }
+        val conversationIdStr = conversation.id.toString()
+
         database.withTransaction {
-            // message_node 会通过 CASCADE 自动删除
+            // 手动清理关联表（不依赖外键 CASCADE）
+            // 1. 删除逐字素材（verbatim_artifact）
+            verbatimVaultService.deleteArtifactsByConversation(conversationIdStr)
+
+            // 2. 删除 P 层文本（message_node_text）
+            verbatimVaultService.deleteMessageNodeTextByConversation(conversationIdStr)
+
+            // 3. 删除向量索引（通过 archive_id）
+            val archiveSummaries = archiveSummaryDao.getListByConversationId(conversationIdStr)
+            archiveSummaries.forEach { archive ->
+                vectorIndexDao.deleteByArchiveId(archive.id)
+            }
+
+            // 4. 删除归档摘要（archive_summary）
+            archiveSummaryDao.deleteByConversationId(conversationIdStr)
+
+            // 5. 删除会话（message_node 会通过 CASCADE 自动删除）
             conversationDAO.delete(
                 conversationToConversationEntity(conversation)
             )
         }
+
         context.deleteChatFiles(fullConversation.files)
     }
 
@@ -274,13 +293,18 @@ class ConversationRepository(
         messageNodeDAO.insertAll(entities)
 
         // 同步构建 P 层（Verbatim Vault）
+        // 只构建 ASSISTANT 消息，避免用户输入时过度构建
         nodes.forEachIndexed { index, node ->
-            verbatimVaultService.buildMessageNodeText(
-                nodeId = node.id.toString(),
-                conversationId = conversationId,
-                nodeIndex = index,
-                messages = node.messages
-            )
+            val firstMessage = node.messages.firstOrNull()
+            // 只在 ASSISTANT 消息时构建 P 层
+            if (firstMessage?.role == me.rerere.ai.core.MessageRole.ASSISTANT) {
+                verbatimVaultService.buildMessageNodeText(
+                    nodeId = node.id.toString(),
+                    conversationId = conversationId,
+                    nodeIndex = index,
+                    messages = node.messages
+                )
+            }
         }
     }
 }

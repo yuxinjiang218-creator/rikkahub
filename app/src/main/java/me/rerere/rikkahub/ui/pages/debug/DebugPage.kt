@@ -37,6 +37,8 @@ import com.dokar.sonner.ToastType
 import kotlinx.coroutines.launch
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.data.model.Avatar
+import me.rerere.rikkahub.debug.DebugLogger
+import me.rerere.rikkahub.ui.components.debug.LogViewerDialog
 import me.rerere.rikkahub.ui.components.ui.UIAvatar
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
@@ -115,7 +117,12 @@ fun DebugPage(vm: DebugVM = koinViewModel()) {
 
 @Composable
 private fun MainPage(vm: DebugVM) {
+    val context = LocalContext.current
     val settings = LocalSettings.current
+    val toaster = LocalToaster.current
+    val debugLogger = remember { DebugLogger.getInstance(context) }
+    var showLogViewer by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .padding(8.dp)
@@ -158,7 +165,6 @@ private fun MainPage(vm: DebugVM) {
         var counter by remember {
             mutableIntStateOf(0)
         }
-        val toaster = LocalToaster.current
         Button(
             onClick = {
                 toaster.show("测试 ${counter++}")
@@ -197,6 +203,34 @@ private fun MainPage(vm: DebugVM) {
             Text("创建超大对话 (30MB)")
         }
 
+        // ========== 调试系统按钮 ==========
+        Button(
+            onClick = {
+                showLogViewer = true
+            }
+        ) {
+            Text("查看日志")
+        }
+
+        Button(
+            onClick = {
+                debugLogger.markProblem("手动标记问题")
+                toaster.show("已标记问题", type = ToastType.Success)
+            }
+        ) {
+            Text("标记问题")
+        }
+
+        Button(
+            onClick = {
+                debugLogger.clear()
+                toaster.show("日志已清空", type = ToastType.Info)
+            }
+        ) {
+            Text("清空日志")
+        }
+        // ========== 调试系统按钮结束 ==========
+
         var markdown by remember { mutableStateOf("") }
         MarkdownBlock(markdown, modifier = Modifier.fillMaxWidth())
         MathBlock(markdown)
@@ -204,6 +238,13 @@ private fun MainPage(vm: DebugVM) {
             value = markdown,
             onValueChange = { markdown = it },
             modifier = Modifier.fillMaxWidth()
+        )
+    }
+
+    // 日志查看器对话框
+    if (showLogViewer) {
+        LogViewerDialog(
+            onDismiss = { showLogViewer = false }
         )
     }
 }

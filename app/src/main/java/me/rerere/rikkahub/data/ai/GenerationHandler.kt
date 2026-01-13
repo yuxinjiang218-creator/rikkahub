@@ -88,6 +88,8 @@ class GenerationHandler(
         maxSteps: Int = 256,
         conversationSummary: String = "",  // 对话摘要
         conversationId: Uuid? = null,     // 会话 ID，用于归档回填
+        lastArchiveRecallIds: List<String> = emptyList(),  // 上次语义召回的 ID
+        onSemanticRecall: ((List<String>) -> Unit)? = null,  // 语义召回成功回调
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
@@ -149,6 +151,8 @@ class GenerationHandler(
                 truncateIndex = truncateIndex,
                 stream = assistant.streamOutput,
                 conversationSummary = conversationSummary,
+                lastArchiveRecallIds = lastArchiveRecallIds,
+                onSemanticRecall = onSemanticRecall,
             )
             messages = messages.visualTransforms(
                 transformers = outputTransformers,
@@ -231,6 +235,25 @@ class GenerationHandler(
 
     }.flowOn(Dispatchers.IO)
 
+    /**
+     * 从语义召回内容中提取 archive_id 列表
+     */
+    private fun extractArchiveRecallIds(recallContent: String): List<String> {
+        val ids = mutableListOf<String>()
+        val lines = recallContent.lines()
+
+        for (line in lines) {
+            if (line.startsWith("|archive_id=")) {
+                val id = line.substringAfter("|archive_id=").trim()
+                if (id.isNotEmpty()) {
+                    ids.add(id)
+                }
+            }
+        }
+
+        return ids
+    }
+
     private suspend fun generateInternal(
         assistant: Assistant,
         settings: Settings,
@@ -246,6 +269,8 @@ class GenerationHandler(
         truncateIndex: Int,
         stream: Boolean,
         conversationSummary: String,
+        lastArchiveRecallIds: List<String>,
+        onSemanticRecall: ((List<String>) -> Unit)?,
     ) {
         val internalMessages = buildList {
             val system = buildString {
@@ -263,52 +288,47 @@ class GenerationHandler(
                     append(conversationSummary)
                 }
 
-                // [ARCHIVE_RECALL] 自动归档回填
-                if (assistant.enableArchiveRecall && conversationId != null && settings.embeddingModelId != null) {
-                    val lastUserMessage = messages.lastOrNull { it.role == me.rerere.ai.core.MessageRole.USER }
-                    if (lastUserMessage != null) {
-                        val query = buildString {
-                            appendLine(lastUserMessage.toText())
-                            if (conversationSummary.isNotBlank()) {
-                                val summaryLines = conversationSummary.lines()
-                                val keyLines = summaryLines.take(3).filter { it.isNotBlank() }
-                                    .joinToString("\n")
-                                if (keyLines.isNotBlank()) {
-                                    appendLine()
-                                    appendLine(keyLines)
-                                }
+                // [RECALL] 召回注入（VERBATIM vs SEMANTIC 互斥）
+                val lastUserMessage = messages.lastOrNull { it.role == me.rerere.ai.core.MessageRole.USER }
+                if (lastUserMessage != null && conversationId != null) {
+                    val lastUserText = lastUserMessage.toText()
+                    val route = me.rerere.rikkahub.service.IntentRouter.routeIntent(lastUserText)
+
+                    when (route) {
+                        me.rerere.rikkahub.service.Route.VERBATIM -> {
+                            // VERBATIM 路径：逐字召回（不依赖 embeddingModelId）
+                            val verbatimRecall = verbatimRecallService.recallVerbatim(
+                                conversationId = conversationId.toString(),
+                                lastUserText = lastUserText
+                            )
+                            if (verbatimRecall != null) {
+                                appendLine()
+                                appendLine()
+                                append(verbatimRecall)
                             }
+                            // ❗️ VERBATIM 路径严禁更新 lastArchiveRecallIds
                         }
 
-                        // Intent Router 判定：VERBATIM vs SEMANTIC 互斥路径
-                        val lastUserText = lastUserMessage.toText()
-                        val route = me.rerere.rikkahub.service.IntentRouter.routeIntent(lastUserText)
-
-                        when (route) {
-                            me.rerere.rikkahub.service.Route.VERBATIM -> {
-                                // VERBATIM 路径：调用 VerbatimRecallService
-                                val verbatimRecall = verbatimRecallService.recallVerbatim(
-                                    conversationId = conversationId.toString(),
-                                    lastUserText = lastUserText
-                                )
-                                if (verbatimRecall != null) {
-                                    appendLine()
-                                    append(verbatimRecall)
-                                }
-                                // 本轮不得出现 [ARCHIVE_RECALL]
-                            }
-                            me.rerere.rikkahub.service.Route.SEMANTIC -> {
-                                // SEMANTIC 路径：调用 SemanticRecallService（增强版）
+                        me.rerere.rikkahub.service.Route.SEMANTIC -> {
+                            // SEMANTIC 路径：语义召回（依赖 embeddingModelId）
+                            if (assistant.enableArchiveRecall && settings.embeddingModelId != null) {
                                 val semanticRecall = semanticRecallService.recallSemantic(
                                     settings = settings,
                                     conversationId = conversationId.toString(),
                                     lastUserText = lastUserText,
                                     runningSummary = conversationSummary.ifBlank { null },
-                                    lastRecallIds = emptyList()  // TODO: 从 conversation 获取 lastArchiveRecallIds
+                                    lastRecallIds = lastArchiveRecallIds
                                 )
                                 if (semanticRecall != null) {
                                     appendLine()
+                                    appendLine()
                                     append(semanticRecall)
+
+                                    // 提取并回调新的 recall IDs
+                                    val newRecallIds = extractArchiveRecallIds(semanticRecall)
+                                    if (newRecallIds.isNotEmpty()) {
+                                        onSemanticRecall?.invoke(newRecallIds)
+                                    }
                                 }
                             }
                         }

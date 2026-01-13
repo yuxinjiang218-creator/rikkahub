@@ -30,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavBackStackEntry
@@ -52,6 +53,7 @@ import kotlinx.serialization.Serializable
 import me.rerere.highlight.Highlighter
 import me.rerere.highlight.LocalHighlighter
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.ui.components.debug.CrashDialog
 import me.rerere.rikkahub.ui.components.ui.TTSController
 import me.rerere.rikkahub.ui.context.LocalAnimatedVisibilityScope
 import me.rerere.rikkahub.ui.context.LocalNavController
@@ -127,6 +129,7 @@ class RouteActivity : ComponentActivity() {
                         .build()
                 }
                 AppRoutes(navStack)
+                CrashDetector()
             }
         }
     }
@@ -161,6 +164,41 @@ class RouteActivity : ComponentActivity() {
                     navBackStack.navigate(Screen.ShareHandler(text, null))
                 }
             }
+        }
+    }
+
+    @Composable
+    private fun CrashDetector() {
+        val context = LocalContext.current
+        var crashFile by remember { mutableStateOf<java.io.File?>(null) }
+
+        LaunchedEffect(Unit) {
+            val prefs = context.getSharedPreferences("debug_prefs", android.content.Context.MODE_PRIVATE)
+            val hasPendingCrash = prefs.getBoolean("has_pending_crash", false)
+
+            if (hasPendingCrash) {
+                // 查找最新的崩溃日志
+                val crashDir = context.filesDir.resolve("crash")
+                if (crashDir.exists()) {
+                    val crashFiles = crashDir.listFiles()?.filter {
+                        it.name.startsWith("crash_") && it.name.endsWith(".txt")
+                    }?.sortedByDescending { it.lastModified() }
+
+                    if (crashFiles?.isNotEmpty() == true) {
+                        crashFile = crashFiles.first()
+                    }
+
+                    // 清除标志
+                    prefs.edit().remove("has_pending_crash").apply()
+                }
+            }
+        }
+
+        crashFile?.let {
+            CrashDialog(
+                crashFile = it,
+                onDismiss = { crashFile = null }
+            )
         }
     }
 

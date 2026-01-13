@@ -34,6 +34,10 @@ const val CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID = "chat_completed"
 class RikkaHubApp : Application() {
     override fun onCreate() {
         super.onCreate()
+
+        // 初始化调试系统（必须在 Koin 之前）
+        initializeDebugSystem()
+
         startKoin {
             androidLogger()
             androidContext(this@RikkaHubApp)
@@ -60,6 +64,35 @@ class RikkaHubApp : Application() {
 
         // https://issuetracker.google.com/issues/469669851
         ComposeFoundationFlags.isPausableCompositionInPrefetchEnabled = false
+    }
+
+    /**
+     * 初始化调试系统
+     */
+    private fun initializeDebugSystem() {
+        // 1. 安装全局异常处理器
+        me.rerere.rikkahub.debug.CrashHandler.install(this)
+
+        // 2. 初始化 IntentRouter（需要 context）
+        me.rerere.rikkahub.service.IntentRouter.init(this)
+
+        // 3. 检查是否有待处理的崩溃
+        checkPendingCrashes()
+    }
+
+    /**
+     * 检查待处理的崩溃
+     */
+    private fun checkPendingCrashes() {
+        val crashHandler = me.rerere.rikkahub.debug.CrashHandler(
+            this,
+            Thread.getDefaultUncaughtExceptionHandler()
+        )
+        val pendingCrashes = crashHandler.checkPendingCrashes()
+        if (pendingCrashes.isNotEmpty()) {
+            val prefs = getSharedPreferences("debug_prefs", MODE_PRIVATE)
+            prefs.edit().putBoolean("has_pending_crash", true).apply()
+        }
     }
 
     private fun deleteTempFiles() {

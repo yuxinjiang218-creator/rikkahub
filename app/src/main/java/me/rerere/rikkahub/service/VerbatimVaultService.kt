@@ -1,11 +1,14 @@
 package me.rerere.rikkahub.service
 
+import android.content.Context
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.db.dao.MessageNodeTextDao
 import me.rerere.rikkahub.data.db.dao.VerbatimArtifactDao
 import me.rerere.rikkahub.data.db.entity.MessageNodeTextEntity
 import me.rerere.rikkahub.data.db.entity.VerbatimArtifactEntity
+import me.rerere.rikkahub.debug.DebugLogger
+import me.rerere.rikkahub.debug.model.LogLevel
 import me.rerere.rikkahub.util.normalizeForSearch
 import java.security.MessageDigest
 import java.util.UUID
@@ -19,6 +22,7 @@ import java.util.UUID
  * 3. 判定 artifact 类型（写死规则）
  */
 class VerbatimVaultService(
+    private val context: Context,
     private val messageNodeTextDao: MessageNodeTextDao,
     private val verbatimArtifactDao: VerbatimArtifactDao
 ) {
@@ -36,6 +40,8 @@ class VerbatimVaultService(
         nodeIndex: Int,
         messages: List<UIMessage>
     ) {
+        val debugLogger = DebugLogger.getInstance(context)
+
         if (messages.isEmpty()) return
 
         val firstMessage = messages.first()
@@ -65,6 +71,17 @@ class VerbatimVaultService(
             )
             messageNodeTextDao.insertOrReplace(entity)
 
+            debugLogger.log(
+                LogLevel.DEBUG,
+                "VerbatimVault",
+                "P-layer node text built",
+                mapOf(
+                    "nodeIndex" to nodeIndex,
+                    "charCount" to rawText.length,
+                    "role" to firstMessage.role.name
+                )
+            )
+
             // 如果是用户消息，尝试生成 verbatim_artifact
             if (firstMessage.role.name == "USER") {
                 buildVerbatimArtifact(
@@ -91,6 +108,8 @@ class VerbatimVaultService(
         nodeIndex: Int,
         rawText: String
     ) {
+        val debugLogger = DebugLogger.getInstance(context)
+
         // 判定 artifact 类型（写死规则）
         val artifactType = detectArtifactType(rawText) ?: return
 
@@ -116,6 +135,19 @@ class VerbatimVaultService(
             updatedAt = now
         )
         verbatimArtifactDao.insertOrReplace(entity)
+
+        debugLogger.log(
+            LogLevel.DEBUG,
+            "VerbatimVault",
+            "P-layer artifact created",
+            mapOf(
+                "artifactId" to artifactId,
+                "nodeIndex" to nodeIndex,
+                "type" to artifactType,
+                "title" to (title ?: "null"),
+                "charCount" to rawText.length
+            )
+        )
     }
 
     /**
@@ -152,6 +184,24 @@ class VerbatimVaultService(
         val pattern = Regex("《([^》]{1,40})》")
         val match = pattern.find(text)
         return match?.groupValues?.get(1)
+    }
+
+    /**
+     * 删除会话的所有逐字素材
+     *
+     * @param conversationId 会话 ID
+     */
+    suspend fun deleteArtifactsByConversation(conversationId: String) {
+        verbatimArtifactDao.deleteByConversationId(conversationId)
+    }
+
+    /**
+     * 删除会话的所有 P 层文本
+     *
+     * @param conversationId 会话 ID
+     */
+    suspend fun deleteMessageNodeTextByConversation(conversationId: String) {
+        messageNodeTextDao.deleteByConversationId(conversationId)
     }
 
     /**

@@ -1,10 +1,13 @@
 package me.rerere.rikkahub.service
 
+import android.content.Context
 import me.rerere.ai.provider.EmbeddingGenerationParams
 import me.rerere.rikkahub.data.db.dao.ArchiveSummaryDao
 import me.rerere.rikkahub.data.db.dao.VectorIndexDao
 import me.rerere.rikkahub.data.db.entity.ArchiveSummaryWithScore
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.debug.DebugLogger
+import me.rerere.rikkahub.debug.model.LogLevel
 import me.rerere.rikkahub.util.normalizeForSearch
 import kotlin.math.sqrt
 import kotlin.uuid.Uuid
@@ -20,6 +23,7 @@ import kotlin.uuid.Uuid
  * 5. 反复回填抑制（overlap > 0.6 时跳过注入）
  */
 class SemanticRecallService(
+    private val context: Context,
     private val archiveSummaryDao: ArchiveSummaryDao,
     private val vectorIndexDao: VectorIndexDao,
     private val providerManager: me.rerere.ai.provider.ProviderManager
@@ -47,8 +51,17 @@ class SemanticRecallService(
         runningSummary: String?,
         lastRecallIds: List<String>
     ): String? {
+        val debugLogger = DebugLogger.getInstance(context)
+
         // 1. 生成 MultiQuery（Q0, Q1, Q2）
         val queries = generateMultiQueries(lastUserText, runningSummary)
+
+        debugLogger.log(
+            LogLevel.DEBUG,
+            "SemanticRecall",
+            "MultiQuery generated",
+            mapOf("count" to queries.size)
+        )
 
         // 2. 对每个查询进行语义检索
         val allResults = mutableSetOf<ArchiveSummaryWithScore>()
@@ -62,10 +75,24 @@ class SemanticRecallService(
             allResults.addAll(results)
         }
 
+        debugLogger.log(
+            LogLevel.DEBUG,
+            "SemanticRecall",
+            "Retrieval completed",
+            mapOf("count" to allResults.size)
+        )
+
         if (allResults.isEmpty()) return null
 
         // 3. 融合重排
         val fusedResults = fuseAndRerank(allResults.toList())
+
+        debugLogger.log(
+            LogLevel.DEBUG,
+            "SemanticRecall",
+            "Rerank completed",
+            mapOf("count" to fusedResults.size)
+        )
 
         // 4. 反复回填抑制
         val suppressedResults = overlapSuppression(fusedResults, lastRecallIds)
@@ -78,7 +105,19 @@ class SemanticRecallService(
         if (selectedResults.isEmpty()) return null
 
         // 6. 构建 [ARCHIVE_RECALL] 注入块
-        return buildArchiveInjection(selectedResults)
+        val result = buildArchiveInjection(selectedResults)
+
+        debugLogger.log(
+            LogLevel.INFO,
+            "SemanticRecall",
+            "Recall completed",
+            mapOf(
+                "finalCount" to selectedResults.size,
+                "totalChars" to selectedResults.sumOf { it.content.length }
+            )
+        )
+
+        return result
     }
 
     /**

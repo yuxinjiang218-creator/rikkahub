@@ -1,10 +1,13 @@
 package me.rerere.rikkahub.service
 
+import android.content.Context
 import androidx.sqlite.db.SimpleSQLiteQuery
 import me.rerere.ai.core.MessageRole
 import me.rerere.rikkahub.data.db.dao.MessageNodeTextDao
 import me.rerere.rikkahub.data.db.dao.VerbatimArtifactDao
 import me.rerere.rikkahub.data.db.entity.VerbatimArtifactEntity
+import me.rerere.rikkahub.debug.DebugLogger
+import me.rerere.rikkahub.debug.model.LogLevel
 import me.rerere.rikkahub.util.normalizeForSearch
 import kotlin.math.max
 import kotlin.math.min
@@ -18,6 +21,7 @@ import kotlin.math.min
  * 3. 生成 [VERBATIM_RECALL] 注入块
  */
 class VerbatimRecallService(
+    private val context: Context,
     private val messageNodeTextDao: MessageNodeTextDao,
     private val verbatimArtifactDao: VerbatimArtifactDao
 ) {
@@ -36,16 +40,34 @@ class VerbatimRecallService(
         conversationId: String,
         lastUserText: String
     ): String? {
+        val debugLogger = DebugLogger.getInstance(context)
+
         // 阶段一：title 匹配 + 回拼原文
         val titles = IntentRouter.extractTitles(lastUserText)
+
         if (titles.isNotEmpty()) {
+            debugLogger.log(
+                LogLevel.DEBUG,
+                "VerbatimRecall",
+                "Title matching",
+                mapOf("titles" to titles)
+            )
+
             val verbatimText = searchByTitleAndReconstruct(conversationId, titles)
             if (verbatimText != null) {
+                debugLogger.log(
+                    LogLevel.INFO,
+                    "VerbatimRecall",
+                    "Title matched",
+                    mapOf("charCount" to verbatimText.length)
+                )
                 return verbatimText  // 返回已组装的 [VERBATIM_RECALL] 注入块
             }
         }
 
         // 阶段二：FTS5 兜底检索
+        debugLogger.log(LogLevel.DEBUG, "VerbatimRecall", "FTS5 fallback")
+
         val qNorm = normalizeForSearch(lastUserText)
         val tokens = qNorm.split(" ").filter { it.isNotEmpty() }.distinct().take(16)
         if (tokens.isEmpty()) return null
@@ -86,11 +108,25 @@ class VerbatimRecallService(
         val verbatimText = messageNodes.joinToString("\n\n") { it.rawText }
 
         // 应用字符数截断并构建注入块
-        return buildVerbatimInjection(
+        val result = buildVerbatimInjection(
             conversationId = conversationId,
             nodeIndices = expandedIndices,
             verbatimText = verbatimText
         )
+
+        val isTruncated = verbatimText.length > MAX_VERBATIM_CHARS
+        debugLogger.log(
+            LogLevel.INFO,
+            "VerbatimRecall",
+            "Recall completed",
+            mapOf(
+                "charCount" to verbatimText.length,
+                "isTruncated" to isTruncated,
+                "nodeCount" to expandedIndices.size
+            )
+        )
+
+        return result
     }
 
     /**

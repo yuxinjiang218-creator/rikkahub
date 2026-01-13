@@ -1,5 +1,9 @@
 package me.rerere.rikkahub.service
 
+import android.content.Context
+import me.rerere.rikkahub.debug.DebugLogger
+import me.rerere.rikkahub.debug.model.LogLevel
+
 /**
  * 路由枚举
  */
@@ -15,6 +19,8 @@ enum class Route {
  * 两条路径互斥，根据关键词和书名号模式匹配
  */
 object IntentRouter {
+    private lateinit var context: Context
+
     // 逐字回收关键词列表（写死）
     private val verbatimKeywords = listOf(
         "复述", "原文", "全文", "逐字", "一字不差",
@@ -23,6 +29,13 @@ object IntentRouter {
 
     // 书名号模式（写死）
     private val titlePattern = Regex("《([^》]{1,40})》")
+
+    /**
+     * 初始化路由器
+     */
+    fun init(context: Context) {
+        this.context = context.applicationContext
+    }
 
     /**
      * 路由判定（写死）
@@ -35,12 +48,35 @@ object IntentRouter {
      * @return VERBATIM 或 SEMANTIC
      */
     fun routeIntent(lastUserText: String): Route {
+        val debugLogger = DebugLogger.getInstance(context)
+
         if (verbatimKeywords.any { lastUserText.contains(it) }) {
+            val trigger = verbatimKeywords.first { lastUserText.contains(it) }
+            debugLogger.log(
+                level = LogLevel.INFO,
+                tag = "IntentRouter",
+                message = "VERBATIM route (keyword match)",
+                data = mapOf("trigger" to trigger)
+            )
             return Route.VERBATIM
         }
+
         if (titlePattern.containsMatchIn(lastUserText)) {
+            val titles = extractTitles(lastUserText)
+            debugLogger.log(
+                level = LogLevel.INFO,
+                tag = "IntentRouter",
+                message = "VERBATIM route (title match)",
+                data = mapOf("titles" to titles)
+            )
             return Route.VERBATIM
         }
+
+        debugLogger.log(
+            level = LogLevel.INFO,
+            tag = "IntentRouter",
+            message = "SEMANTIC route (default)"
+        )
         return Route.SEMANTIC
     }
 

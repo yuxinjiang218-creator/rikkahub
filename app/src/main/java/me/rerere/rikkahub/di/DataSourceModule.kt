@@ -48,6 +48,7 @@ val dataSourceModule = module {
     single {
         Room.databaseBuilder(get(), AppDatabase::class.java, "rikka_hub")
             .addMigrations(Migration_6_7, Migration_11_12, Migration_12_13, Migration_13_14, Migration_14_15)
+            .setForeignKeyConstraintsEnabled(true)  // 启用外键约束（确保 CASCADE 生效）
             .build()
     }
 
@@ -99,6 +100,7 @@ val dataSourceModule = module {
 
     single {
         VerbatimVaultService(
+            context = get(),
             messageNodeTextDao = get(),
             verbatimArtifactDao = get()
         )
@@ -106,6 +108,7 @@ val dataSourceModule = module {
 
     single {
         VerbatimRecallService(
+            context = get(),
             messageNodeTextDao = get(),
             verbatimArtifactDao = get()
         )
@@ -113,6 +116,7 @@ val dataSourceModule = module {
 
     single {
         SemanticRecallService(
+            context = get(),
             archiveSummaryDao = get(),
             vectorIndexDao = get(),
             providerManager = get()

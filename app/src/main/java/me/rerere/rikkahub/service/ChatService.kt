@@ -48,6 +48,8 @@ import me.rerere.ai.ui.finishReasoning
 import me.rerere.ai.ui.truncate
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.AppScope
+import me.rerere.rikkahub.debug.DebugLogger
+import me.rerere.rikkahub.debug.model.LogLevel
 import me.rerere.rikkahub.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.RouteActivity
@@ -125,6 +127,8 @@ class ChatService(
     val mcpManager: McpManager,
     private val archiveSummaryDao: ArchiveSummaryDao,
     private val vectorIndexDao: VectorIndexDao,
+    private val verbatimRecallService: VerbatimRecallService,
+    private val semanticRecallService: SemanticRecallService,
 ) {
     // 存储每个对话的状态
     private val conversations = ConcurrentHashMap<Uuid, MutableStateFlow<Conversation>>()
@@ -400,17 +404,20 @@ class ChatService(
             // check invalid messages
             checkInvalidMessages(conversationId)
 
+            // 构建消息列表
+            val messages = conversation.currentMessages.let {
+                if (messageRange != null) {
+                    it.subList(messageRange.start, messageRange.endInclusive + 1)
+                } else {
+                    it
+                }
+            }
+
             // start generating
             generationHandler.generateText(
                 settings = settings,
                 model = model,
-                messages = conversation.currentMessages.let {
-                    if (messageRange != null) {
-                        it.subList(messageRange.start, messageRange.endInclusive + 1)
-                    } else {
-                        it
-                    }
-                },
+                messages = messages,
                 assistant = settings.getCurrentAssistant(),
                 memories = memoryRepository.getMemoriesOfAssistant(settings.assistantId.toString()),
                 inputTransformers = buildList {
@@ -438,6 +445,18 @@ class ChatService(
                 },
                 truncateIndex = conversation.truncateIndex,
                 conversationSummary = conversation.conversationSummary,
+                conversationId = conversationId,
+                lastArchiveRecallIds = conversation.lastArchiveRecallIds,
+                onSemanticRecall = { newRecallIds ->
+                    // SEMANTIC 召回成功后更新 lastArchiveRecallIds
+                    val currentConversation = getConversationFlow(conversationId).value
+                    if (currentConversation.lastArchiveRecallIds != newRecallIds) {
+                        updateConversation(
+                            conversationId,
+                            currentConversation.copy(lastArchiveRecallIds = newRecallIds)
+                        )
+                    }
+                },
             ).onCompletion {
                 // 可能被取消了，或者意外结束，兜底更新
                 val updatedConversation = getConversationFlow(conversationId).value.copy(
@@ -620,10 +639,14 @@ class ChatService(
         conversation: Conversation,
         settings: Settings
     ): Conversation {
+        val debugLogger = DebugLogger.getInstance(context)
         val assistant = settings.getCurrentAssistant()
 
         // 检查是否启用压缩
-        if (!assistant.enableCompression) return conversation
+        if (!assistant.enableCompression) {
+            debugLogger.log(LogLevel.DEBUG, "ChatService", "Compression disabled")
+            return conversation
+        }
 
         val contextSize = assistant.contextMessageSize
         val messageCount = conversation.messageNodes.size
@@ -636,7 +659,10 @@ class ChatService(
         val targetIndex = messageCount - contextSize
 
         // 幂等性检查：如果目标压缩位置小于等于已压缩位置，无需再次压缩
-        if (targetIndex <= lastCompressedIndex) return conversation
+        if (targetIndex <= lastCompressedIndex) {
+            debugLogger.log(LogLevel.INFO, "ChatService", "Compression skipped (idempotent)")
+            return conversation
+        }
 
         // 1. 提取压缩窗口 Wₖ
         val startIndex = if (lastCompressedIndex < 0) 0 else lastCompressedIndex + 1
@@ -646,6 +672,19 @@ class ChatService(
 
         val windowMessages = conversation.messageNodes.slice(startIndex until endIndex)
         if (windowMessages.isEmpty()) return conversation
+
+        debugLogger.log(
+            LogLevel.INFO,
+            "ChatService",
+            "Compression triggered",
+            mapOf(
+                "messageCount" to messageCount,
+                "contextSize" to contextSize,
+                "windowSize" to (endIndex - startIndex),
+                "startIndex" to startIndex,
+                "endIndex" to endIndex
+            )
+        )
 
         // 确定压缩模型
         val compressionModelId = assistant.compressionModelId ?: settings.compressionModelId
@@ -706,6 +745,19 @@ class ChatService(
             // 保存到数据库
             saveConversation(conversation.id, updatedConversation)
 
+            debugLogger.log(
+                LogLevel.INFO,
+                "ChatService",
+                "Compression completed",
+                mapOf(
+                    "archiveId" to archiveId.toString(),
+                    "startIndex" to startIndex,
+                    "endIndex" to endIndex,
+                    "archiveLength" to archiveContent.length,
+                    "summaryLength" to newRunningSummary.length
+                )
+            )
+
             Log.i(TAG, "Context compression completed: compressed messages $startIndex to $endIndex")
             Log.i(TAG, "Archive summary created: A#$archiveId")
 
@@ -725,6 +777,7 @@ class ChatService(
         compressionModel: me.rerere.ai.provider.Model,
         providerSetting: me.rerere.ai.provider.ProviderSetting
     ): String {
+        val debugLogger = DebugLogger.getInstance(context)
         val prompt = buildString {
             appendLine("你是一个对话归档专家。请从以下对话片段中提取并归档关键信息。")
             appendLine()
@@ -773,7 +826,19 @@ class ChatService(
                 ),
             )
 
-            result.choices.firstOrNull()?.message?.toText()?.trim() ?: ""
+            val archiveText = result.choices.firstOrNull()?.message?.toText()?.trim() ?: ""
+
+            debugLogger.log(
+                LogLevel.DEBUG,
+                "ArchiveSummary",
+                "Archive generated",
+                mapOf(
+                    "windowSize" to windowMessages.size,
+                    "length" to archiveText.length
+                )
+            )
+
+            archiveText
         } catch (e: Exception) {
             Log.e(TAG, "Failed to generate archive summary", e)
             ""
@@ -789,6 +854,7 @@ class ChatService(
         compressionModel: me.rerere.ai.provider.Model,
         providerSetting: me.rerere.ai.provider.ProviderSetting
     ): String {
+        val debugLogger = DebugLogger.getInstance(context)
         val prompt = buildString {
             if (previousSummary.isNotBlank()) {
                 appendLine("当前会话摘要：")
@@ -826,7 +892,19 @@ class ChatService(
                 ),
             )
 
-            result.choices.firstOrNull()?.message?.toText()?.trim() ?: previousSummary
+            val newSummary = result.choices.firstOrNull()?.message?.toText()?.trim() ?: previousSummary
+
+            debugLogger.log(
+                LogLevel.DEBUG,
+                "RunningSummary",
+                "Summary updated",
+                mapOf(
+                    "previousLength" to previousSummary.length,
+                    "newLength" to newSummary.length
+                )
+            )
+
+            newSummary
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update running summary", e)
             previousSummary // 失败时保留旧摘要
@@ -839,6 +917,7 @@ class ChatService(
         archiveContent: String,
         settings: Settings
     ) {
+        val debugLogger = DebugLogger.getInstance(context)
         try {
             val embeddingModelId = settings.embeddingModelId ?: return
             val embeddingModel = settings.findModelById(embeddingModelId)
@@ -867,6 +946,17 @@ class ChatService(
             )
 
             vectorIndexDao.insert(vectorIndexEntity)
+
+            debugLogger.log(
+                LogLevel.DEBUG,
+                "VectorIndex",
+                "Vector created",
+                mapOf(
+                    "archiveId" to archiveId.toString(),
+                    "dimension" to embeddingVector.size,
+                    "modelId" to embeddingModelId.toString()
+                )
+            )
 
             // 更新 archive_summary 的 embedding_model_id
             val archiveEntity = archiveSummaryDao.getById(archiveId.toString())
