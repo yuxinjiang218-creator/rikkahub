@@ -51,8 +51,10 @@ import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.util.Locale
 import kotlin.time.Clock
+import kotlin.uuid.Uuid
 
 private const val TAG = "GenerationHandler"
+private const val MAX_ARCHIVE_RECALL_LENGTH = 2000  // [ARCHIVE_RECALL] 硬性字符上限
 
 @Serializable
 sealed interface GenerationChunk {
@@ -68,6 +70,8 @@ class GenerationHandler(
     private val memoryRepo: MemoryRepository,
     private val conversationRepo: ConversationRepository,
     private val aiLoggingManager: AILoggingManager,
+    private val archiveSummaryDao: me.rerere.rikkahub.data.db.dao.ArchiveSummaryDao,
+    private val vectorIndexDao: me.rerere.rikkahub.data.db.dao.VectorIndexDao,
 ) {
     fun generateText(
         settings: Settings,
@@ -81,6 +85,7 @@ class GenerationHandler(
         truncateIndex: Int = -1,
         maxSteps: Int = 256,
         conversationSummary: String = "",  // 对话摘要
+        conversationId: Uuid? = null,     // 会话 ID，用于归档回填
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
@@ -112,6 +117,7 @@ class GenerationHandler(
                 assistant = assistant,
                 settings = settings,
                 messages = messages,
+                conversationId = conversationId,
                 onUpdateMessages = {
                     messages = it.transforms(
                         transformers = outputTransformers,
@@ -227,6 +233,7 @@ class GenerationHandler(
         assistant: Assistant,
         settings: Settings,
         messages: List<UIMessage>,
+        conversationId: Uuid?,
         onUpdateMessages: suspend (List<UIMessage>) -> Unit,
         transformers: List<MessageTransformer>,
         model: Model,
@@ -245,13 +252,64 @@ class GenerationHandler(
                     append(assistant.systemPrompt)
                 }
 
-                // 对话摘要（上下文压缩）
+                // [S: Running Summary] 对话摘要（上下文压缩）
                 if (conversationSummary.isNotBlank()) {
                     appendLine()
                     appendLine()
                     append("## 对话历史摘要")
                     appendLine()
                     append(conversationSummary)
+                }
+
+                // [ARCHIVE_RECALL] 自动归档回填
+                if (assistant.enableArchiveRecall && conversationId != null && settings.embeddingModelId != null) {
+                    val lastUserMessage = messages.lastOrNull { it.role == me.rerere.ai.core.MessageRole.USER }
+                    if (lastUserMessage != null) {
+                        val query = buildString {
+                            appendLine(lastUserMessage.toText())
+                            if (conversationSummary.isNotBlank()) {
+                                val summaryLines = conversationSummary.lines()
+                                val keyLines = summaryLines.take(3).filter { it.isNotBlank() }
+                                    .joinToString("\n")
+                                if (keyLines.isNotBlank()) {
+                                    appendLine()
+                                    appendLine(keyLines)
+                                }
+                            }
+                        }
+
+                        val relevantArchives = retrieveRelevantArchives(
+                            settings = settings,
+                            conversationId = conversationId,
+                            query = query,
+                            embeddingModelId = settings.embeddingModelId,
+                            topK = 5
+                        )
+
+                        if (relevantArchives.isNotEmpty()) {
+                            appendLine()
+                            appendLine()
+                            append("[ARCHIVE_RECALL]")
+                            var currentLength = 0
+                            relevantArchives.forEach { archive ->
+                                // 对单条 content 先截断，避免单条过长
+                                val content = archive.content.take(500)
+                                val entry = "- A#${archive.id} $content"
+                                val entryLength = entry.length + 1  // +1 for newline
+
+                                // 累加计数，达到上限后提前停止
+                                if (currentLength + entryLength > MAX_ARCHIVE_RECALL_LENGTH) {
+                                    return@forEach
+                                }
+
+                                appendLine()
+                                append(entry)
+                                currentLength += entryLength
+                            }
+                            appendLine()
+                            append("[/ARCHIVE_RECALL]")
+                        }
+                    }
                 }
 
                 // 记忆
@@ -565,4 +623,66 @@ class GenerationHandler(
             }
         }
     }.flowOn(Dispatchers.IO)
+
+    // 计算余弦相似度
+    private fun cosineSimilarity(vec1: FloatArray, vec2: FloatArray): Float {
+    require(vec1.size == vec2.size) { "Vectors must be same length" }
+
+    var dotProduct = 0f
+    var norm1 = 0f
+    var norm2 = 0f
+
+    for (i in vec1.indices) {
+        dotProduct += vec1[i] * vec2[i]
+        norm1 += vec1[i] * vec1[i]
+        norm2 += vec2[i] * vec2[i]
+    }
+
+    return if (norm1 == 0f || norm2 == 0f) 0f else dotProduct / (kotlin.math.sqrt(norm1) * kotlin.math.sqrt(norm2))
+}
+
+    // 检索相关归档摘要（基于向量相似度）
+    private suspend fun retrieveRelevantArchives(
+        settings: Settings,
+        conversationId: Uuid,
+        query: String,
+        embeddingModelId: Uuid,
+        topK: Int = 5
+    ): List<me.rerere.rikkahub.data.db.entity.ArchiveSummaryEntity> {
+        // 1. 获取该会话的所有归档摘要
+        val allArchives = archiveSummaryDao.getListByConversationId(conversationId.toString())
+        if (allArchives.isEmpty()) return emptyList()
+
+        // 2. 获取 embedding 模型和 provider
+        val embeddingModel = settings.findModelById(embeddingModelId)
+            ?: return emptyList()
+        val provider = embeddingModel.findProvider(settings.providers)
+            ?: return emptyList()
+        val providerImpl = providerManager.getProviderByType(provider)
+
+        // 3. 生成查询向量
+        @Suppress("UNCHECKED_CAST")
+        val queryEmbedding = (providerImpl as me.rerere.ai.provider.Provider<me.rerere.ai.provider.ProviderSetting>).generateEmbedding(
+            providerSetting = provider,
+            text = query,
+            params = me.rerere.ai.provider.EmbeddingGenerationParams(model = embeddingModel)
+        )
+
+        // 4. 计算相似度并排序
+        val archiveWithSimilarity = allArchives.mapNotNull { archive ->
+            val vectorIndex = vectorIndexDao.getByArchiveId(archive.id)
+            if (vectorIndex != null && vectorIndex.embeddingModelId == embeddingModelId.toString()) {
+                val similarity = cosineSimilarity(queryEmbedding, vectorIndex.embeddingVector)
+                archive to similarity
+            } else {
+                null
+            }
+        }
+
+        // 5. 返回 top-k
+        return archiveWithSimilarity
+            .sortedByDescending { it.second }
+            .take(topK)
+            .map { it.first }
+    }
 }

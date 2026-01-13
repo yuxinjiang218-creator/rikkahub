@@ -77,6 +77,7 @@ class SettingsStore(
         val IMAGE_GENERATION_MODEL = stringPreferencesKey("image_generation_model")
         val COMPRESSION_MODEL = stringPreferencesKey("compression_model")
         val COMPRESSION_PROMPT = stringPreferencesKey("compression_prompt")
+        val EMBEDDING_MODEL = stringPreferencesKey("embedding_model")
         val TITLE_PROMPT = stringPreferencesKey("title_prompt")
         val TRANSLATION_PROMPT = stringPreferencesKey("translation_prompt")
         val SUGGESTION_PROMPT = stringPreferencesKey("suggestion_prompt")
@@ -140,6 +141,7 @@ class SettingsStore(
                 imageGenerationModelId = preferences[IMAGE_GENERATION_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
                 compressionModelId = preferences[COMPRESSION_MODEL]?.let { Uuid.parse(it) }
                     ?: SILICONFLOW_QWEN3_8B_ID,
+                embeddingModelId = preferences[EMBEDDING_MODEL]?.let { Uuid.parse(it) },
                 compressionPrompt = preferences[COMPRESSION_PROMPT] ?: DEFAULT_COMPRESSION_PROMPT,
                 titlePrompt = preferences[TITLE_PROMPT] ?: DEFAULT_TITLE_PROMPT,
                 translatePrompt = preferences[TRANSLATION_PROMPT] ?: DEFAULT_TRANSLATION_PROMPT,
@@ -294,6 +296,9 @@ class SettingsStore(
             preferences[SUGGESTION_MODEL] = settings.suggestionModelId.toString()
             preferences[IMAGE_GENERATION_MODEL] = settings.imageGenerationModelId.toString()
             preferences[COMPRESSION_MODEL] = settings.compressionModelId.toString()
+            settings.embeddingModelId?.let {
+                preferences[EMBEDDING_MODEL] = it.toString()
+            }
             preferences[COMPRESSION_PROMPT] = settings.compressionPrompt
             preferences[TITLE_PROMPT] = settings.titlePrompt
             preferences[TRANSLATION_PROMPT] = settings.translatePrompt
@@ -352,6 +357,7 @@ data class Settings(
     val translatePrompt: String = DEFAULT_TRANSLATION_PROMPT,
     val suggestionModelId: Uuid = Uuid.random(),
     val compressionModelId: Uuid = Uuid.random(),
+    val embeddingModelId: Uuid? = null,
     val compressionPrompt: String = DEFAULT_COMPRESSION_PROMPT,
     val suggestionPrompt: String = DEFAULT_SUGGESTION_PROMPT,
     val ocrModelId: Uuid = Uuid.random(),

@@ -70,7 +70,9 @@ val appModule = module {
             templateTransformer = get(),
             providerManager = get(),
             localTools = get(),
-            mcpManager = get()
+            mcpManager = get(),
+            archiveSummaryDao = get(),
+            vectorIndexDao = get()
         )
     }
 }

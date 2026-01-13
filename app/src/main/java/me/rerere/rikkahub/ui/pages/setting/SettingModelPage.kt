@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.composables.icons.lucide.Database
 import com.composables.icons.lucide.Earth
 import com.composables.icons.lucide.Eye
 import com.composables.icons.lucide.GraduationCap
@@ -46,6 +47,7 @@ import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.MessageCircle
 import com.composables.icons.lucide.MessageSquareMore
 import com.composables.icons.lucide.NotebookTabs
+import com.composables.icons.lucide.RefreshCw
 import com.composables.icons.lucide.Settings2
 import me.rerere.ai.provider.ModelType
 import me.rerere.rikkahub.R
@@ -99,6 +101,10 @@ fun SettingModelPage(vm: SettingVM = koinViewModel()) {
 
             item {
                 DefaultCompressionModelSetting(settings = settings, vm = vm)
+            }
+
+            item {
+                DefaultEmbeddingModelSetting(settings = settings, vm = vm)
             }
 
             item {
@@ -611,6 +617,129 @@ private fun DefaultOcrModelSetting(
                         }
                     ) {
                         Text(stringResource(R.string.setting_model_page_reset_to_default))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DefaultEmbeddingModelSetting(
+    settings: Settings,
+    vm: SettingVM
+) {
+    var showRebuildDialog by remember { mutableStateOf(false) }
+    var isRebuilding by remember { mutableStateOf(false) }
+    var rebuildProgress by remember { mutableStateOf(0 to 0) }
+
+    ModelFeatureCard(
+        title = {
+            Text("Embedding 模型", maxLines = 1)
+        },
+        description = {
+            Text("用于对话归档的向量嵌入和语义检索")
+        },
+        icon = {
+            Icon(Lucide.Database, null)
+        },
+        actions = {
+            Box(modifier = Modifier.weight(1f)) {
+                ModelSelector(
+                    modelId = settings.embeddingModelId,
+                    type = ModelType.EMBEDDING,
+                    onSelect = {
+                        vm.updateSettings(
+                            settings.copy(
+                                embeddingModelId = it.id
+                            )
+                        )
+                    },
+                    providers = settings.providers,
+                    allowClear = true,
+                    modifier = Modifier.wrapContentWidth()
+                )
+            }
+            IconButton(
+                onClick = {
+                    if (settings.embeddingModelId != null) {
+                        showRebuildDialog = true
+                    }
+                },
+                enabled = settings.embeddingModelId != null && !isRebuilding,
+                colors = IconButtonDefaults.filledTonalIconButtonColors()
+            ) {
+                Icon(Lucide.RefreshCw, null)
+            }
+        }
+    )
+
+    if (showRebuildDialog) {
+        ModalBottomSheet(
+            onDismissRequest = {
+                if (!isRebuilding) showRebuildDialog = false
+            },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("重建向量索引", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "将使用当前 Embedding 模型为所有归档摘要重新生成向量索引。" +
+                    "这适用于首次配置或切换 Embedding 模型的情况。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LocalContentColor.current.copy(alpha = 0.7f)
+                )
+
+                if (isRebuilding) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            "正在重建... (${rebuildProgress.first}/${rebuildProgress.second})",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(
+                        onClick = {
+                            showRebuildDialog = false
+                        },
+                        enabled = !isRebuilding
+                    ) {
+                        Text("取消")
+                    }
+                    if (isRebuilding) {
+                        TextButton(
+                            onClick = {
+                                // TODO: Add cancellation support
+                            }
+                        ) {
+                            Text("后台运行")
+                        }
+                    } else {
+                        TextButton(
+                            onClick = {
+                                val embeddingModelId = settings.embeddingModelId ?: return@TextButton
+                                isRebuilding = true
+                                rebuildProgress = 0 to 1
+                                // TODO: Call rebuildVectorIndices from ChatService
+                                // This would require passing ChatService to the composable
+                                // For now, we'll just show a placeholder
+                                showRebuildDialog = false
+                            }
+                        ) {
+                            Text("开始重建")
+                        }
                     }
                 }
             }

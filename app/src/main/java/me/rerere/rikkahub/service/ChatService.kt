@@ -16,6 +16,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -68,6 +69,10 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
+import me.rerere.rikkahub.data.db.dao.ArchiveSummaryDao
+import me.rerere.rikkahub.data.db.dao.VectorIndexDao
+import me.rerere.rikkahub.data.db.entity.ArchiveSummaryEntity
+import me.rerere.rikkahub.data.db.entity.VectorIndexEntity
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.repository.ConversationRepository
@@ -118,6 +123,8 @@ class ChatService(
     private val providerManager: ProviderManager,
     private val localTools: LocalTools,
     val mcpManager: McpManager,
+    private val archiveSummaryDao: ArchiveSummaryDao,
+    private val vectorIndexDao: VectorIndexDao,
 ) {
     // 存储每个对话的状态
     private val conversations = ConcurrentHashMap<Uuid, MutableStateFlow<Conversation>>()
@@ -608,7 +615,7 @@ class ChatService(
         }
     }
 
-    // 执行上下文压缩
+    // 执行上下文压缩（重构版：S 覆盖 + A 生成 + V 生成）
     private suspend fun performContextCompression(
         conversation: Conversation,
         settings: Settings
@@ -625,26 +632,20 @@ class ChatService(
         if (messageCount <= contextSize) return conversation
 
         // 计算需要压缩的消息范围
-        // conversationSummaryUntil 表示已压缩到哪个位置
-        // 如果是 -1，表示从未压缩过
         val lastCompressedIndex = conversation.conversationSummaryUntil
         val targetIndex = messageCount - contextSize
 
-        // 如果目标压缩位置小于等于已压缩位置，无需再次压缩
+        // 幂等性检查：如果目标压缩位置小于等于已压缩位置，无需再次压缩
         if (targetIndex <= lastCompressedIndex) return conversation
 
-        // 确定需要压缩的消息范围 (lastCompressedIndex + 1) 到 targetIndex
+        // 1. 提取压缩窗口 Wₖ
         val startIndex = if (lastCompressedIndex < 0) 0 else lastCompressedIndex + 1
         val endIndex = targetIndex
 
         if (startIndex >= endIndex) return conversation
 
-        // 提取需要压缩的消息
-        val messagesToCompress = conversation.messageNodes
-            .slice(startIndex until endIndex)
-            .map { it.currentMessage }
-
-        if (messagesToCompress.isEmpty()) return conversation
+        val windowMessages = conversation.messageNodes.slice(startIndex until endIndex)
+        if (windowMessages.isEmpty()) return conversation
 
         // 确定压缩模型
         val compressionModelId = assistant.compressionModelId ?: settings.compressionModelId
@@ -662,27 +663,160 @@ class ChatService(
 
         val providerHandler = providerManager.getProviderByType(provider)
 
-        // 构建压缩提示词
-        val messagesText = buildString {
-            messagesToCompress.forEach { message ->
-                val role = when(message.role) {
+        return try {
+            // 2. 生成归档摘要 Aₖ = archive(Wₖ)
+            val archiveContent = generateArchiveSummary(windowMessages, providerHandler, compressionModel, provider)
+
+            // 3. 更新运行摘要 Sₖ = update(Sₖ₋₁, Wₖ)
+            val newRunningSummary = updateRunningSummary(
+                previousSummary = conversation.conversationSummary,
+                windowMessages = windowMessages,
+                provider = providerHandler,
+                compressionModel = compressionModel,
+                providerSetting = provider
+            )
+
+            // 4. 原子化保存
+            val archiveId = Uuid.random()
+            val now = System.currentTimeMillis()
+
+            // 保存归档摘要
+            val archiveEntity = ArchiveSummaryEntity(
+                id = archiveId.toString(),
+                conversationId = conversation.id.toString(),
+                windowStartIndex = startIndex,
+                windowEndIndex = endIndex,
+                content = archiveContent,
+                createdAt = now,
+                embeddingModelId = null // 稍后生成
+            )
+            archiveSummaryDao.insert(archiveEntity)
+
+            // 生成并保存向量索引（如果配置了 embedding 模型）
+            if (settings.embeddingModelId != null) {
+                generateAndSaveVectorIndex(archiveId, archiveContent, settings)
+            }
+
+            // 更新会话的运行摘要和游标
+            val updatedConversation = conversation.copy(
+                conversationSummary = newRunningSummary,  // 覆盖而非追加
+                conversationSummaryUntil = endIndex
+            )
+
+            // 保存到数据库
+            saveConversation(conversation.id, updatedConversation)
+
+            Log.i(TAG, "Context compression completed: compressed messages $startIndex to $endIndex")
+            Log.i(TAG, "Archive summary created: A#$archiveId")
+
+            updatedConversation
+        } catch (e: Exception) {
+            Log.e(TAG, "Context compression failed", e)
+            addError(e)
+            conversation
+        }
+    }
+
+    // 生成归档摘要 Aₖ = archive(Wₖ)
+    @Suppress("UNCHECKED_CAST")
+    private suspend fun generateArchiveSummary(
+        windowMessages: List<me.rerere.rikkahub.data.model.MessageNode>,
+        provider: me.rerere.ai.provider.Provider<*>,
+        compressionModel: me.rerere.ai.provider.Model,
+        providerSetting: me.rerere.ai.provider.ProviderSetting
+    ): String {
+        val prompt = buildString {
+            appendLine("你是一个对话归档专家。请从以下对话片段中提取并归档关键信息。")
+            appendLine()
+            appendLine("归档内容必须严格限制为以下5类：")
+            appendLine("1. 发生的事件事实")
+            appendLine("2. 已达成的结论/决策")
+            appendLine("3. 新增或变更的约束/偏好")
+            appendLine("4. 未解决的问题")
+            appendLine("5. 检索关键词")
+            appendLine()
+            appendLine("禁止项：")
+            appendLine("- 推导过程")
+            appendLine("- 教学步骤")
+            appendLine("- 长原文复述")
+            appendLine("- 情绪/气氛/修辞")
+            appendLine()
+            appendLine("长度要求：100-300字，上限500字")
+            appendLine()
+            appendLine("对话内容：")
+            windowMessages.forEach { node ->
+                val msg = node.currentMessage
+                val role = when(msg.role) {
                     MessageRole.USER -> "User"
                     MessageRole.ASSISTANT -> "Assistant"
                     else -> "System"
                 }
-                appendLine("$role: ${message.toText().take(500)}")  // 限制每条消息长度
+                appendLine("[$role] ${msg.toText().take(500)}")
                 appendLine()
             }
+            appendLine()
+            appendLine("请输出归档内容：")
         }
 
-        val compressionPrompt = settings.compressionPrompt.replace("{messages}", messagesText)
+        return try {
+            @Suppress("UNCHECKED_CAST")
+            val result = (provider as me.rerere.ai.provider.Provider<me.rerere.ai.provider.ProviderSetting>).generateText(
+                providerSetting = providerSetting,
+                messages = listOf(
+                    UIMessage.user(prompt = prompt)
+                ),
+                params = TextGenerationParams(
+                    model = compressionModel,
+                    temperature = 0.3f,
+                    maxTokens = 800,
+                    thinkingBudget = 0,
+                ),
+            )
+
+            result.choices.firstOrNull()?.message?.toText()?.trim() ?: ""
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to generate archive summary", e)
+            ""
+        }
+    }
+
+    // 更新运行摘要 Sₖ = update(Sₖ₋₁, Wₖ)
+    @Suppress("UNCHECKED_CAST")
+    private suspend fun updateRunningSummary(
+        previousSummary: String,
+        windowMessages: List<me.rerere.rikkahub.data.model.MessageNode>,
+        provider: me.rerere.ai.provider.Provider<*>,
+        compressionModel: me.rerere.ai.provider.Model,
+        providerSetting: me.rerere.ai.provider.ProviderSetting
+    ): String {
+        val prompt = buildString {
+            if (previousSummary.isNotBlank()) {
+                appendLine("当前会话摘要：")
+                appendLine(previousSummary)
+                appendLine()
+            }
+            appendLine("新增对话内容：")
+            windowMessages.forEach { node ->
+                val msg = node.currentMessage
+                val role = when(msg.role) {
+                    MessageRole.USER -> "User"
+                    MessageRole.ASSISTANT -> "Assistant"
+                    else -> "System"
+                }
+                appendLine("[$role] ${msg.toText().take(500)}")
+                appendLine()
+            }
+            appendLine()
+            appendLine("请基于当前摘要和新增对话，输出一份完整的、涵盖所有信息的更新后摘要。")
+            appendLine("注意：输出应该是完整的摘要，而不是追加内容。")
+        }
 
         return try {
-            // 调用压缩模型
-            val result = providerHandler.generateText(
-                providerSetting = provider,
+            @Suppress("UNCHECKED_CAST")
+            val result = (provider as me.rerere.ai.provider.Provider<me.rerere.ai.provider.ProviderSetting>).generateText(
+                providerSetting = providerSetting,
                 messages = listOf(
-                    UIMessage.user(prompt = compressionPrompt)
+                    UIMessage.user(prompt = prompt)
                 ),
                 params = TextGenerationParams(
                     model = compressionModel,
@@ -692,38 +826,240 @@ class ChatService(
                 ),
             )
 
-            val newSummary = result.choices.firstOrNull()?.message?.toText()?.trim() ?: ""
-
-            if (newSummary.isNotBlank()) {
-                // 合并摘要（保留旧摘要 + 新摘要）
-                val finalSummary = if (conversation.conversationSummary.isNotBlank()) {
-                    buildString {
-                        append(conversation.conversationSummary)
-                        appendLine()
-                        appendLine()
-                        append("Subsequent conversation summary:")
-                        appendLine()
-                        append(newSummary)
-                    }
-                } else {
-                    newSummary
-                }
-
-                conversation.copy(
-                    conversationSummary = finalSummary,
-                    conversationSummaryUntil = endIndex
-                ).also { updated ->
-                    // 保存到数据库
-                    saveConversation(conversation.id, updated)
-                    Log.i(TAG, "Context compression completed: compressed messages $startIndex to $endIndex")
-                }
-            } else {
-                conversation
-            }
+            result.choices.firstOrNull()?.message?.toText()?.trim() ?: previousSummary
         } catch (e: Exception) {
-            Log.e(TAG, "Context compression failed", e)
-            addError(e)
-            conversation
+            Log.e(TAG, "Failed to update running summary", e)
+            previousSummary // 失败时保留旧摘要
+        }
+    }
+
+    // 生成并保存向量索引
+    private suspend fun generateAndSaveVectorIndex(
+        archiveId: Uuid,
+        archiveContent: String,
+        settings: Settings
+    ) {
+        try {
+            val embeddingModelId = settings.embeddingModelId ?: return
+            val embeddingModel = settings.findModelById(embeddingModelId)
+                ?: return
+
+            val provider = embeddingModel.findProvider(settings.providers)
+                ?: return
+
+            val providerHandler = providerManager.getProviderByType(provider)
+
+            @Suppress("UNCHECKED_CAST")
+            val embeddingVector = (providerHandler as me.rerere.ai.provider.Provider<me.rerere.ai.provider.ProviderSetting>).generateEmbedding(
+                providerSetting = provider,
+                text = archiveContent,
+                params = me.rerere.ai.provider.EmbeddingGenerationParams(
+                    model = embeddingModel
+                )
+            )
+
+            val vectorIndexEntity = VectorIndexEntity(
+                id = Uuid.random().toString(),
+                archiveId = archiveId.toString(),
+                embeddingVector = embeddingVector,
+                embeddingModelId = embeddingModelId.toString(),
+                createdAt = System.currentTimeMillis()
+            )
+
+            vectorIndexDao.insert(vectorIndexEntity)
+
+            // 更新 archive_summary 的 embedding_model_id
+            val archiveEntity = archiveSummaryDao.getById(archiveId.toString())
+            if (archiveEntity != null) {
+                val updatedArchive = archiveEntity.copy(
+                    embeddingModelId = embeddingModelId.toString()
+                )
+                archiveSummaryDao.update(updatedArchive)
+            }
+
+            Log.i(TAG, "Vector index created for archive A#$archiveId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to generate vector index", e)
+            // 向量生成失败不应影响归档功能
+        }
+    }
+
+    // 构建检索查询（不使用 LLM）
+    private fun buildRetrievalQuery(
+        conversation: Conversation,
+        lastUserMessage: me.rerere.rikkahub.data.model.MessageNode
+    ): String {
+        val queryBuilder = StringBuilder()
+
+        // 1. 最后一条用户消息
+        queryBuilder.appendLine(lastUserMessage.currentMessage.toText())
+
+        // 2. 从 S 中抽取 1-3 行（简单规则：前3行）
+        if (conversation.conversationSummary.isNotBlank()) {
+            val summaryLines = conversation.conversationSummary.lines()
+            val keyLines = summaryLines
+                .take(3)
+                .filter { it.isNotBlank() }
+                .joinToString("\n")
+
+            if (keyLines.isNotBlank()) {
+                queryBuilder.appendLine()
+                queryBuilder.appendLine(keyLines)
+            }
+        }
+
+        return queryBuilder.toString()
+    }
+
+    // 计算余弦相似度
+    private fun cosineSimilarity(vec1: FloatArray, vec2: FloatArray): Float {
+        require(vec1.size == vec2.size) { "Vectors must be same length" }
+
+        var dotProduct = 0f
+        var norm1 = 0f
+        var norm2 = 0f
+
+        for (i in vec1.indices) {
+            dotProduct += vec1[i] * vec2[i]
+            norm1 += vec1[i] * vec1[i]
+            norm2 += vec2[i] * vec2[i]
+        }
+
+        return if (norm1 == 0f || norm2 == 0f) 0f else dotProduct / (kotlin.math.sqrt(norm1) * kotlin.math.sqrt(norm2))
+    }
+
+    // 检索相关归档摘要
+    suspend fun retrieveRelevantArchives(
+        conversationId: Uuid,
+        query: String,
+        embeddingModelId: Uuid,
+        topK: Int = 5
+    ): List<ArchiveSummaryEntity> {
+        try {
+            // 获取所有归档摘要
+            val allArchives = archiveSummaryDao.getListByConversationId(conversationId.toString())
+
+            if (allArchives.isEmpty()) return emptyList()
+
+            // 生成查询向量
+            val settings = settingsStore.settingsFlow.value
+            val embeddingModel = settings.findModelById(embeddingModelId)
+                ?: return emptyList()
+
+            val provider = embeddingModel.findProvider(settings.providers)
+                ?: return emptyList()
+
+            val providerHandler = providerManager.getProviderByType(provider)
+
+            @Suppress("UNCHECKED_CAST")
+            val queryEmbedding = (providerHandler as me.rerere.ai.provider.Provider<me.rerere.ai.provider.ProviderSetting>).generateEmbedding(
+                providerSetting = provider,
+                text = query,
+                params = me.rerere.ai.provider.EmbeddingGenerationParams(
+                    model = embeddingModel
+                )
+            )
+
+            // 计算相似度并排序
+            val archiveWithSimilarity = allArchives.mapNotNull { archive ->
+                val vectorIndex = vectorIndexDao.getByArchiveId(archive.id)
+                if (vectorIndex != null && vectorIndex.embeddingModelId == embeddingModelId.toString()) {
+                    val similarity = cosineSimilarity(queryEmbedding, vectorIndex.embeddingVector)
+                    archive to similarity
+                } else null
+            }
+
+            return archiveWithSimilarity
+                .sortedByDescending { it.second }
+                .take(topK)
+                .map { it.first }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to retrieve relevant archives", e)
+            return emptyList<ArchiveSummaryEntity>()
+        }
+    }
+
+    // 重建向量索引
+    // 用于切换 embedding 模型或修复缺失的向量索引
+    suspend fun rebuildVectorIndices(
+        conversationId: Uuid? = null,  // null 表示重建所有会话
+        embeddingModelId: Uuid,
+        onProgress: (current: Int, total: Int, currentArchive: ArchiveSummaryEntity) -> Unit = { _, _, _ -> }
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val settings = settingsStore.settingsFlow.value
+            val embeddingModel = settings.findModelById(embeddingModelId)
+                ?: return@withContext Result.failure(IllegalArgumentException("Embedding model not found"))
+            val provider = embeddingModel.findProvider(settings.providers)
+                ?: return@withContext Result.failure(IllegalArgumentException("Provider not found"))
+            val providerHandler = providerManager.getProviderByType(provider)
+
+            // 获取需要重建的归档摘要
+            val archivesToRebuild = if (conversationId != null) {
+                // 指定会话：重建所有归档（无论是否有向量）
+                archiveSummaryDao.getListByConversationId(conversationId.toString())
+            } else {
+                // 全局重建：只重建缺失向量或模型不匹配的归档
+                val allArchives = archiveSummaryDao.getAll()
+                allArchives.filter { archive ->
+                    val vector = vectorIndexDao.getByArchiveId(archive.id)
+                    vector == null || vector.embeddingModelId != embeddingModelId.toString()
+                }
+            }
+
+            if (archivesToRebuild.isEmpty()) {
+                return@withContext Result.success(0)
+            }
+
+            onProgress(0, archivesToRebuild.size, archivesToRebuild.first())
+
+            // 逐个重建
+            var successCount = 0
+            archivesToRebuild.forEachIndexed { index, archive ->
+                try {
+                    // 生成新的 embedding
+                    @Suppress("UNCHECKED_CAST")
+                    val embeddingVector = (providerHandler as me.rerere.ai.provider.Provider<me.rerere.ai.provider.ProviderSetting>).generateEmbedding(
+                        providerSetting = provider,
+                        text = archive.content,
+                        params = me.rerere.ai.provider.EmbeddingGenerationParams(
+                            model = embeddingModel
+                        )
+                    )
+
+                    // 删除旧的向量索引（如果存在）
+                    val oldVector = vectorIndexDao.getByArchiveId(archive.id)
+                    if (oldVector != null) {
+                        vectorIndexDao.delete(oldVector)
+                    }
+
+                    // 创建新的向量索引
+                    val newVectorIndex = VectorIndexEntity(
+                        id = Uuid.random().toString(),
+                        archiveId = archive.id,
+                        embeddingVector = embeddingVector,
+                        embeddingModelId = embeddingModelId.toString(),
+                        createdAt = System.currentTimeMillis()
+                    )
+                    vectorIndexDao.insert(newVectorIndex)
+
+                    // 更新归档摘要的 embedding_model_id
+                    val updatedArchive = archive.copy(
+                        embeddingModelId = embeddingModelId.toString()
+                    )
+                    archiveSummaryDao.update(updatedArchive)
+
+                    successCount++
+                    onProgress(index + 1, archivesToRebuild.size, archive)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to rebuild vector index for archive ${archive.id}", e)
+                }
+            }
+
+            Result.success(successCount)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to rebuild vector indices", e)
+            Result.failure(e)
         }
     }
 

@@ -35,6 +35,12 @@ interface Provider<T : ProviderSetting> {
         providerSetting: ProviderSetting,
         params: ImageGenerationParams,
     ): ImageGenerationResult
+
+    suspend fun generateEmbedding(
+        providerSetting: T,
+        text: String,
+        params: EmbeddingGenerationParams,
+    ): FloatArray
 }
 
 @Serializable
@@ -55,6 +61,13 @@ data class ImageGenerationParams(
     val prompt: String,
     val numOfImages: Int = 1,
     val aspectRatio: ImageAspectRatio = ImageAspectRatio.SQUARE,
+    val customHeaders: List<CustomHeader> = emptyList(),
+    val customBody: List<CustomBody> = emptyList(),
+)
+
+@Serializable
+data class EmbeddingGenerationParams(
+    val model: Model,
     val customHeaders: List<CustomHeader> = emptyList(),
     val customBody: List<CustomBody> = emptyList(),
 )

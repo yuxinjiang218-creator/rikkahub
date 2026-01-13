@@ -25,6 +25,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.BuiltInTools
+import me.rerere.ai.provider.EmbeddingGenerationParams
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
@@ -755,5 +756,13 @@ class GoogleProvider(private val client: OkHttpClient) : Provider<ProviderSettin
         }
 
         ImageGenerationResult(items = items)
+    }
+
+    override suspend fun generateEmbedding(
+        providerSetting: ProviderSetting.Google,
+        text: String,
+        params: EmbeddingGenerationParams
+    ): FloatArray {
+        throw NotImplementedError("Google embedding is not yet implemented")
     }
 }

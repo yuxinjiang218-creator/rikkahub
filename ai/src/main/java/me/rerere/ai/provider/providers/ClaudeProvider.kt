@@ -23,6 +23,7 @@ import kotlinx.serialization.json.putJsonArray
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.TokenUsage
+import me.rerere.ai.provider.EmbeddingGenerationParams
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
@@ -94,6 +95,14 @@ class ClaudeProvider(private val client: OkHttpClient) : Provider<ProviderSettin
         params: ImageGenerationParams
     ): ImageGenerationResult {
         error("Claude provider does not support image generation")
+    }
+
+    override suspend fun generateEmbedding(
+        providerSetting: ProviderSetting.Claude,
+        text: String,
+        params: EmbeddingGenerationParams
+    ): FloatArray {
+        error("Claude provider does not support embedding generation")
     }
 
     override suspend fun generateText(

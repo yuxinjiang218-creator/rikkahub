@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import me.rerere.ai.provider.EmbeddingGenerationParams
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.Provider
@@ -192,5 +193,44 @@ class OpenAIProvider(
         }
 
         ImageGenerationResult(items = items)
+    }
+
+    override suspend fun generateEmbedding(
+        providerSetting: ProviderSetting.OpenAI,
+        text: String,
+        params: EmbeddingGenerationParams
+    ): FloatArray = withContext(Dispatchers.IO) {
+        val key = keyRoulette.next(providerSetting.apiKey)
+
+        val requestBody = json.encodeToString(
+            buildJsonObject {
+                put("model", params.model.modelId)
+                put("input", text)
+                put("encoding_format", "float")
+            }.mergeCustomBody(params.customBody)
+        )
+
+        val request = Request.Builder()
+            .url("${providerSetting.baseUrl}/embeddings")
+            .headers(params.customHeaders.toHeaders())
+            .addHeader("Authorization", "Bearer $key")
+            .addHeader("Content-Type", "application/json")
+            .post(requestBody.toRequestBody("application/json".toMediaType()))
+            .build()
+
+        val response = client.configureClientWithProxy(providerSetting.proxy).newCall(request).await()
+        if (!response.isSuccessful) {
+            error("Failed to generate embedding: ${response.code} ${response.body?.string()}")
+        }
+
+        val bodyStr = response.body?.string() ?: ""
+        val bodyJson = json.parseToJsonElement(bodyStr).jsonObject
+        val data = bodyJson["data"]?.jsonArray?.firstOrNull()?.jsonObject
+            ?: error("No data in response")
+
+        val embedding = data["embedding"]?.jsonArray
+            ?: error("No embedding in response")
+
+        embedding.map { it.jsonPrimitive.contentOrNull?.toFloatOrNull() ?: 0f }.toFloatArray()
     }
 }

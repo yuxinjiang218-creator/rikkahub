@@ -20,6 +20,7 @@ import me.rerere.rikkahub.data.api.SponsorAPI
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.migrations.Migration_12_13
+import me.rerere.rikkahub.data.db.migrations.Migration_13_14
 import me.rerere.rikkahub.data.db.migrations.Migration_6_7
 import me.rerere.rikkahub.data.db.migrations.Migration_11_12
 import me.rerere.rikkahub.data.ai.mcp.McpManager
@@ -41,7 +42,7 @@ val dataSourceModule = module {
 
     single {
         Room.databaseBuilder(get(), AppDatabase::class.java, "rikka_hub")
-            .addMigrations(Migration_6_7, Migration_11_12, Migration_12_13)
+            .addMigrations(Migration_6_7, Migration_11_12, Migration_12_13, Migration_13_14)
             .build()
     }
 
@@ -75,6 +76,14 @@ val dataSourceModule = module {
         get<AppDatabase>().messageNodeDao()
     }
 
+    single {
+        get<AppDatabase>().archiveSummaryDao()
+    }
+
+    single {
+        get<AppDatabase>().vectorIndexDao()
+    }
+
     single { McpManager(settingsStore = get(), appScope = get()) }
 
     single {
@@ -84,7 +93,9 @@ val dataSourceModule = module {
             json = get(),
             memoryRepo = get(),
             conversationRepo = get(),
-            aiLoggingManager = get()
+            aiLoggingManager = get(),
+            archiveSummaryDao = get(),
+            vectorIndexDao = get()
         )
     }
 
