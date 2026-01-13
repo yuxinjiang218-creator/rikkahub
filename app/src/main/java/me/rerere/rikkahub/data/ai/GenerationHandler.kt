@@ -72,6 +72,8 @@ class GenerationHandler(
     private val aiLoggingManager: AILoggingManager,
     private val archiveSummaryDao: me.rerere.rikkahub.data.db.dao.ArchiveSummaryDao,
     private val vectorIndexDao: me.rerere.rikkahub.data.db.dao.VectorIndexDao,
+    private val verbatimRecallService: me.rerere.rikkahub.service.VerbatimRecallService,
+    private val semanticRecallService: me.rerere.rikkahub.service.SemanticRecallService,
 ) {
     fun generateText(
         settings: Settings,
@@ -278,36 +280,37 @@ class GenerationHandler(
                             }
                         }
 
-                        val relevantArchives = retrieveRelevantArchives(
-                            settings = settings,
-                            conversationId = conversationId,
-                            query = query,
-                            embeddingModelId = settings.embeddingModelId,
-                            topK = 5
-                        )
+                        // Intent Router 判定：VERBATIM vs SEMANTIC 互斥路径
+                        val lastUserText = lastUserMessage.toText()
+                        val route = me.rerere.rikkahub.service.IntentRouter.routeIntent(lastUserText)
 
-                        if (relevantArchives.isNotEmpty()) {
-                            appendLine()
-                            appendLine()
-                            append("[ARCHIVE_RECALL]")
-                            var currentLength = 0
-                            relevantArchives.forEach { archive ->
-                                // 对单条 content 先截断，避免单条过长
-                                val content = archive.content.take(500)
-                                val entry = "- A#${archive.id} $content"
-                                val entryLength = entry.length + 1  // +1 for newline
-
-                                // 累加计数，达到上限后提前停止
-                                if (currentLength + entryLength > MAX_ARCHIVE_RECALL_LENGTH) {
-                                    return@forEach
+                        when (route) {
+                            me.rerere.rikkahub.service.Route.VERBATIM -> {
+                                // VERBATIM 路径：调用 VerbatimRecallService
+                                val verbatimRecall = verbatimRecallService.recallVerbatim(
+                                    conversationId = conversationId.toString(),
+                                    lastUserText = lastUserText
+                                )
+                                if (verbatimRecall != null) {
+                                    appendLine()
+                                    append(verbatimRecall)
                                 }
-
-                                appendLine()
-                                append(entry)
-                                currentLength += entryLength
+                                // 本轮不得出现 [ARCHIVE_RECALL]
                             }
-                            appendLine()
-                            append("[/ARCHIVE_RECALL]")
+                            me.rerere.rikkahub.service.Route.SEMANTIC -> {
+                                // SEMANTIC 路径：调用 SemanticRecallService（增强版）
+                                val semanticRecall = semanticRecallService.recallSemantic(
+                                    settings = settings,
+                                    conversationId = conversationId.toString(),
+                                    lastUserText = lastUserText,
+                                    runningSummary = conversationSummary.ifBlank { null },
+                                    lastRecallIds = emptyList()  // TODO: 从 conversation 获取 lastArchiveRecallIds
+                                )
+                                if (semanticRecall != null) {
+                                    appendLine()
+                                    append(semanticRecall)
+                                }
+                            }
                         }
                     }
                 }

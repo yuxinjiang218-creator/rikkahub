@@ -28,6 +28,7 @@ class ConversationRepository(
     private val conversationDAO: ConversationDAO,
     private val messageNodeDAO: MessageNodeDAO,
     private val database: AppDatabase,
+    private val verbatimVaultService: me.rerere.rikkahub.service.VerbatimVaultService,
 ) {
     companion object {
         private const val PAGE_SIZE = 20
@@ -183,7 +184,8 @@ class ConversationRepository(
             chatSuggestions = JsonInstant.encodeToString(conversation.chatSuggestions),
             isPinned = conversation.isPinned,
             conversationSummary = conversation.conversationSummary,
-            conversationSummaryUntil = conversation.conversationSummaryUntil
+            conversationSummaryUntil = conversation.conversationSummaryUntil,
+            lastArchiveRecallIds = JsonInstant.encodeToString(conversation.lastArchiveRecallIds)
         )
     }
 
@@ -202,7 +204,8 @@ class ConversationRepository(
             chatSuggestions = JsonInstant.decodeFromString(conversationEntity.chatSuggestions),
             isPinned = conversationEntity.isPinned,
             conversationSummary = conversationEntity.conversationSummary,
-            conversationSummaryUntil = conversationEntity.conversationSummaryUntil
+            conversationSummaryUntil = conversationEntity.conversationSummaryUntil,
+            lastArchiveRecallIds = JsonInstant.decodeFromString(conversationEntity.lastArchiveRecallIds)
         )
     }
 
@@ -269,6 +272,16 @@ class ConversationRepository(
             )
         }
         messageNodeDAO.insertAll(entities)
+
+        // 同步构建 P 层（Verbatim Vault）
+        nodes.forEachIndexed { index, node ->
+            verbatimVaultService.buildMessageNodeText(
+                nodeId = node.id.toString(),
+                conversationId = conversationId,
+                nodeIndex = index,
+                messages = node.messages
+            )
+        }
     }
 }
 

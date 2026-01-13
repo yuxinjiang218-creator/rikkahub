@@ -513,6 +513,7 @@
   <string name="setting_provider_page_disabled">禁用</string>
   <string name="setting_provider_page_edit_model">编辑模型</string>
   <string name="setting_provider_page_embedding_model">嵌入</string>
+  <string name="setting_provider_page_compression_model">压缩</string>
   <string name="setting_provider_page_enable">是否启用</string>
   <string name="setting_provider_page_enabled">启用</string>
   <string name="setting_provider_page_filter_example">例如：GPT-3.5</string>

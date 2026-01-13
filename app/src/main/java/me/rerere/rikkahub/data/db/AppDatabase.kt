@@ -11,15 +11,20 @@ import me.rerere.rikkahub.data.db.dao.ConversationDAO
 import me.rerere.rikkahub.data.db.dao.GenMediaDAO
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
+import me.rerere.rikkahub.data.db.dao.MessageNodeTextDao
+import me.rerere.rikkahub.data.db.dao.VerbatimArtifactDao
 import me.rerere.rikkahub.data.db.dao.VectorIndexDao
 import me.rerere.rikkahub.data.db.entity.ArchiveSummaryEntity
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
+import me.rerere.rikkahub.data.db.entity.MessageNodeTextEntity
+import me.rerere.rikkahub.data.db.entity.VerbatimArtifactEntity
 import me.rerere.rikkahub.data.db.entity.VectorIndexEntity
 import me.rerere.rikkahub.data.db.migrations.Migration_12_13
 import me.rerere.rikkahub.data.db.migrations.Migration_13_14
+import me.rerere.rikkahub.data.db.migrations.Migration_14_15
 import me.rerere.rikkahub.data.db.migrations.Migration_8_9
 import me.rerere.rikkahub.utils.JsonInstant
 
@@ -30,9 +35,11 @@ import me.rerere.rikkahub.utils.JsonInstant
         GenMediaEntity::class,
         MessageNodeEntity::class,
         ArchiveSummaryEntity::class,
-        VectorIndexEntity::class
+        VectorIndexEntity::class,
+        MessageNodeTextEntity::class,
+        VerbatimArtifactEntity::class
     ],
-    version = 14,
+    version = 15,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -59,6 +66,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun archiveSummaryDao(): ArchiveSummaryDao
 
     abstract fun vectorIndexDao(): VectorIndexDao
+
+    abstract fun messageNodeTextDao(): MessageNodeTextDao
+
+    abstract fun verbatimArtifactDao(): VerbatimArtifactDao
 }
 
 object TokenUsageConverter {

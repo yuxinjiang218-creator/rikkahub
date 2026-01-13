@@ -28,4 +28,6 @@ data class ConversationEntity(
     val conversationSummary: String,
     @ColumnInfo("conversation_summary_until", defaultValue = "-1")
     val conversationSummaryUntil: Int,
+    @ColumnInfo("last_archive_recall_ids", defaultValue = "[]")
+    val lastArchiveRecallIds: String,
 )

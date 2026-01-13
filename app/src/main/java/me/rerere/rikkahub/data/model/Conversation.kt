@@ -23,6 +23,7 @@ data class Conversation(
     val isPinned: Boolean = false,
     val conversationSummary: String = "",              // 上下文压缩摘要
     val conversationSummaryUntil: Int = -1,            // 摘要游标（已压缩到此位置）
+    val lastArchiveRecallIds: List<String> = emptyList(),  // 上一次 SEMANTIC 路径归档回填的 ID
     @Serializable(with = InstantSerializer::class)
     val createAt: Instant = Instant.now(),
     @Serializable(with = InstantSerializer::class)

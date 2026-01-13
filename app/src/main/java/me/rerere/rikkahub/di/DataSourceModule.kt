@@ -21,8 +21,13 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.migrations.Migration_12_13
 import me.rerere.rikkahub.data.db.migrations.Migration_13_14
+import me.rerere.rikkahub.data.db.migrations.Migration_14_15
 import me.rerere.rikkahub.data.db.migrations.Migration_6_7
 import me.rerere.rikkahub.data.db.migrations.Migration_11_12
+import me.rerere.rikkahub.service.IntentRouter
+import me.rerere.rikkahub.service.SemanticRecallService
+import me.rerere.rikkahub.service.VerbatimRecallService
+import me.rerere.rikkahub.service.VerbatimVaultService
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.sync.WebdavSync
 import me.rerere.rikkahub.data.sync.S3Sync
@@ -42,7 +47,7 @@ val dataSourceModule = module {
 
     single {
         Room.databaseBuilder(get(), AppDatabase::class.java, "rikka_hub")
-            .addMigrations(Migration_6_7, Migration_11_12, Migration_12_13, Migration_13_14)
+            .addMigrations(Migration_6_7, Migration_11_12, Migration_12_13, Migration_13_14, Migration_14_15)
             .build()
     }
 
@@ -84,6 +89,36 @@ val dataSourceModule = module {
         get<AppDatabase>().vectorIndexDao()
     }
 
+    single {
+        get<AppDatabase>().messageNodeTextDao()
+    }
+
+    single {
+        get<AppDatabase>().verbatimArtifactDao()
+    }
+
+    single {
+        VerbatimVaultService(
+            messageNodeTextDao = get(),
+            verbatimArtifactDao = get()
+        )
+    }
+
+    single {
+        VerbatimRecallService(
+            messageNodeTextDao = get(),
+            verbatimArtifactDao = get()
+        )
+    }
+
+    single {
+        SemanticRecallService(
+            archiveSummaryDao = get(),
+            vectorIndexDao = get(),
+            providerManager = get()
+        )
+    }
+
     single { McpManager(settingsStore = get(), appScope = get()) }
 
     single {
@@ -95,7 +130,9 @@ val dataSourceModule = module {
             conversationRepo = get(),
             aiLoggingManager = get(),
             archiveSummaryDao = get(),
-            vectorIndexDao = get()
+            vectorIndexDao = get(),
+            verbatimRecallService = get(),
+            semanticRecallService = get()
         )
     }
 
