@@ -22,6 +22,7 @@ import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESSION_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_ARCHIVE_SUMMARY_PROMPT
+import me.rerere.rikkahub.data.ai.prompts.DEFAULT_CONTEXT_COMPRESSION_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_OCR_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_SUGGESTION_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_TITLE_PROMPT
@@ -167,7 +168,7 @@ class SettingsStore(
                     ?: preferences[COMPRESSION_MODEL]?.let { Uuid.parse(it) },
                 contextCompressionPrompt = preferences[CONTEXT_COMPRESSION_PROMPT]
                     ?: preferences[COMPRESSION_PROMPT]
-                    ?: DEFAULT_COMPRESSION_PROMPT, // TODO: Task 2 会替换为 DEFAULT_CONTEXT_COMPRESSION_PROMPT
+                    ?: DEFAULT_CONTEXT_COMPRESSION_PROMPT,
 
                 embeddingModelId = preferences[EMBEDDING_MODEL]?.let { Uuid.parse(it) },
                 titlePrompt = preferences[TITLE_PROMPT] ?: DEFAULT_TITLE_PROMPT,
@@ -410,7 +411,7 @@ data class Settings(
 
     // 上下文压缩模型配置
     val contextCompressionModelId: Uuid? = null,
-    val contextCompressionPrompt: String = DEFAULT_COMPRESSION_PROMPT, // TODO: Task 2 会替换为 DEFAULT_CONTEXT_COMPRESSION_PROMPT
+    val contextCompressionPrompt: String = DEFAULT_CONTEXT_COMPRESSION_PROMPT,
 
     val embeddingModelId: Uuid? = null,
     val suggestionPrompt: String = DEFAULT_SUGGESTION_PROMPT,
