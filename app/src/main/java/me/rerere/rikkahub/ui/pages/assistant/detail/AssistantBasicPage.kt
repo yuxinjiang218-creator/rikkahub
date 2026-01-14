@@ -186,6 +186,7 @@ internal fun AssistantBasicContent(
             )
         }
 
+        // 模型设置
         Card(
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -338,6 +339,133 @@ internal fun AssistantBasicContent(
             FormItem(
                 modifier = Modifier.padding(8.dp),
                 label = {
+                    Text(stringResource(R.string.assistant_page_thinking_budget))
+                },
+            ) {
+                ReasoningButton(
+                    reasoningTokens = assistant.thinkingBudget ?: 0,
+                    onUpdateReasoningTokens = { tokens ->
+                        onUpdate(
+                            assistant.copy(
+                                thinkingBudget = tokens
+                            )
+                        )
+                    }
+                )
+            }
+            HorizontalDivider()
+            FormItem(
+                modifier = Modifier.padding(8.dp),
+                label = {
+                    Text(stringResource(R.string.assistant_page_max_tokens))
+                },
+                description = {
+                    Text(stringResource(R.string.assistant_page_max_tokens_desc))
+                }
+            ) {
+                OutlinedTextField(
+                    value = assistant.maxTokens?.toString() ?: "",
+                    onValueChange = { text ->
+                        val tokens = if (text.isBlank()) {
+                            null
+                        } else {
+                            text.toIntOrNull()?.takeIf { it > 0 }
+                        }
+                        onUpdate(
+                            assistant.copy(
+                                maxTokens = tokens
+                            )
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = {
+                        Text(stringResource(R.string.assistant_page_max_tokens_no_limit))
+                    },
+                    supportingText = {
+                        if (assistant.maxTokens != null) {
+                            Text(stringResource(R.string.assistant_page_max_tokens_limit, assistant.maxTokens))
+                        } else {
+                            Text(stringResource(R.string.assistant_page_max_tokens_no_token_limit))
+                        }
+                    }
+                )
+            }
+        }
+
+        // 召回设置
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            )
+        ) {
+            Text(
+                text = stringResource(R.string.assistant_page_recall_settings),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(16.dp)
+            )
+            HorizontalDivider()
+            FormItem(
+                modifier = Modifier.padding(8.dp),
+                label = {
+                    Text(stringResource(R.string.assistant_page_enable_archive_recall))
+                },
+                description = {
+                    Text(stringResource(R.string.assistant_page_enable_archive_recall_desc))
+                },
+                tail = {
+                    Switch(
+                        checked = assistant.enableArchiveRecall,
+                        onCheckedChange = {
+                            onUpdate(
+                                assistant.copy(
+                                    enableArchiveRecall = it
+                                )
+                            )
+                        }
+                    )
+                }
+            )
+            HorizontalDivider()
+            FormItem(
+                modifier = Modifier.padding(8.dp),
+                label = {
+                    Text(stringResource(R.string.assistant_page_enable_verbatim_recall))
+                },
+                description = {
+                    Text(stringResource(R.string.assistant_page_enable_verbatim_recall_desc))
+                },
+                tail = {
+                    Switch(
+                        checked = assistant.enableVerbatimRecall,
+                        onCheckedChange = {
+                            onUpdate(
+                                assistant.copy(
+                                    enableVerbatimRecall = it
+                                )
+                            )
+                        }
+                    )
+                }
+            )
+        }
+
+        // 上下文管理
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            )
+        ) {
+            Text(
+                text = stringResource(R.string.assistant_page_context_management),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(16.dp)
+            )
+            HorizontalDivider()
+            FormItem(
+                modifier = Modifier.padding(8.dp),
+                label = {
                     Text(stringResource(R.string.assistant_page_context_message_size))
                 },
                 description = {
@@ -438,61 +566,6 @@ internal fun AssistantBasicContent(
                     )
                 }
             )
-            HorizontalDivider()
-            FormItem(
-                modifier = Modifier.padding(8.dp),
-                label = {
-                    Text(stringResource(R.string.assistant_page_thinking_budget))
-                },
-            ) {
-                ReasoningButton(
-                    reasoningTokens = assistant.thinkingBudget ?: 0,
-                    onUpdateReasoningTokens = { tokens ->
-                        onUpdate(
-                            assistant.copy(
-                                thinkingBudget = tokens
-                            )
-                        )
-                    }
-                )
-            }
-            HorizontalDivider()
-            FormItem(
-                modifier = Modifier.padding(8.dp),
-                label = {
-                    Text(stringResource(R.string.assistant_page_max_tokens))
-                },
-                description = {
-                    Text(stringResource(R.string.assistant_page_max_tokens_desc))
-                }
-            ) {
-                OutlinedTextField(
-                    value = assistant.maxTokens?.toString() ?: "",
-                    onValueChange = { text ->
-                        val tokens = if (text.isBlank()) {
-                            null
-                        } else {
-                            text.toIntOrNull()?.takeIf { it > 0 }
-                        }
-                        onUpdate(
-                            assistant.copy(
-                                maxTokens = tokens
-                            )
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = {
-                        Text(stringResource(R.string.assistant_page_max_tokens_no_limit))
-                    },
-                    supportingText = {
-                        if (assistant.maxTokens != null) {
-                            Text(stringResource(R.string.assistant_page_max_tokens_limit, assistant.maxTokens))
-                        } else {
-                            Text(stringResource(R.string.assistant_page_max_tokens_no_token_limit))
-                        }
-                    }
-                )
-            }
         }
 
         Card(

@@ -50,6 +50,12 @@
   <string name="assistant_page_enable_compression">启用上下文压缩</string>
   <string name="assistant_page_enable_compression_desc">当消息数量超过上下文窗口大小时，自动压缩旧消息</string>
   <string name="assistant_page_compression_model">压缩模型</string>
+  <string name="assistant_page_context_management">上下文管理</string>
+  <string name="assistant_page_recall_settings">召回设置</string>
+  <string name="assistant_page_enable_archive_recall">启用归档召回</string>
+  <string name="assistant_page_enable_archive_recall_desc">启用后，助手将从归档知识库中检索相关内容并自动回填到上下文中（A源召回）</string>
+  <string name="assistant_page_enable_verbatim_recall">启用逐字召回</string>
+  <string name="assistant_page_enable_verbatim_recall_desc">启用后，助手将从当前对话历史中检索相关内容并以逐字方式回填（P源召回）</string>
   <string name="assistant_page_compression_model_desc">用于上下文压缩的模型，如未设置则使用全局默认</string>
   <string name="assistant_page_creative">Creative</string>
   <string name="assistant_page_current_assistant">Current Assistant</string>

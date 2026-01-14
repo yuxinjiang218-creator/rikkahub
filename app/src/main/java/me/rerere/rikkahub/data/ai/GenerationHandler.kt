@@ -312,7 +312,7 @@ class GenerationHandler(
                         runningSummary = conversationSummary.ifBlank { null },
                         windowTexts = messages.takeLast(8).map { it.toText() },
                         settingsSnapshot = me.rerere.rikkahub.service.recall.model.SettingsSnapshot(
-                            enableVerbatimRecall = true,
+                            enableVerbatimRecall = assistant.enableVerbatimRecall,
                             enableArchiveRecall = assistant.enableArchiveRecall,
                             embeddingModelId = settings.embeddingModelId?.toString()
                         ),

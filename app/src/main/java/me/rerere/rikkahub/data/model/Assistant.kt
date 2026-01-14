@@ -38,7 +38,8 @@ data class Assistant(
     val lorebookIds: Set<Uuid> = emptySet(),            // 关联的 Lorebook ID
     val enableCompression: Boolean = false,             // 启用上下文压缩
     val compressionModelId: Uuid? = null,               // 压缩模型（null则使用全局默认）
-    val enableArchiveRecall: Boolean = true,            // 启用归档自动回填
+    val enableArchiveRecall: Boolean = true,            // 启用归档自动回填（A源召回）
+    val enableVerbatimRecall: Boolean = true,           // 启用逐字召回（P源召回）
 )
 
 @Serializable
