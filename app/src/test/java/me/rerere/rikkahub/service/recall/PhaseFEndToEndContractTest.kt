@@ -227,29 +227,31 @@ class PhaseFEndToEndContractTest {
      * 测试3：SILENT WINDOW（Phase E + F1）
      *
      * 场景：
-     * - 连续两次 IGNORE
-     * - strikes >= 2 触发 silentUntilTurn = now + 10
+     * - 连续三次 IGNORE（Phase I: MAX_STRIKES 调整为 3）
+     * - strikes >= 3 触发 silentUntilTurn = now + 6（Phase I: SILENT_WINDOW_TURNS 调整为 6）
      * - silent 内 non-explicit 一律 NONE
      *
      * 验收：
-     * - globalProbeStrikes >= 2
+     * - globalProbeStrikes >= 3
      * - silentUntilTurn 生效
      * - isInSilentWindow() 在 silent 期内返回 true
+     *
+     * Phase I 注：本测试已更新以适应 Balanced v1 阈值
      */
     @Test
     fun testSilentWindow_TwoIgnoreesActivates() {
         val nowTurnIndex = 20
 
-        // 1. 构造已累计 2 个 strike 的账本
+        // 1. 构造已累计 3 个 strike 的账本（Phase I: 调整为 3）
         val ledger = ProbeLedgerState(
-            globalProbeStrikes = 2,  // 已累计 2 个 strike
-            silentUntilTurn = nowTurnIndex + 10  // 静默窗口到 30
+            globalProbeStrikes = 3,  // 已累计 3 个 strike（Phase I）
+            silentUntilTurn = nowTurnIndex + 6  // 静默窗口到 26（Phase I: 调整为 6）
         )
 
-        // 验证：strikes >= 2
+        // 验证：strikes >= MAX_STRIKES（Phase I: 3）
         assertTrue(
             ledger.globalProbeStrikes >= me.rerere.rikkahub.service.recall.model.ProbeLedgerState.MAX_STRIKES,
-            "连续两次 IGNORE 后 strikes >= 2"
+            "连续三次 IGNORE 后 strikes >= 3（Phase I）"
         )
 
         // 验证：silentUntilTurn 生效
@@ -265,8 +267,8 @@ class PhaseFEndToEndContractTest {
         )
         assertTrue(shouldBlock, "静默窗口内应阻止 non-explicit 召回")
 
-        // 验证：静默窗口结束后不再阻止
-        val afterSilentWindow = nowTurnIndex + 11
+        // 验证：静默窗口结束后不再阻止（Phase I: 6 轮后）
+        val afterSilentWindow = nowTurnIndex + 7
         val shouldBlockAfter = me.rerere.rikkahub.service.recall.probe.ProbeControl.isInSilentWindow(
             ledger = ledger,
             nowTurnIndex = afterSilentWindow

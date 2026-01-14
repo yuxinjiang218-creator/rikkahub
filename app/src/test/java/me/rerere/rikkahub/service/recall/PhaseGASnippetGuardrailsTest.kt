@@ -165,29 +165,31 @@ class PhaseGASnippetGuardrailsTest {
     }
 
     /**
-     * 测试4：G3.2 边缘相似度区间 [0.30, 0.35) 只生成 HINT
+     * 测试4：G3.2 边缘相似度区间 [0.30, 0.34) 只生成 HINT
      *
      * 场景：
-     * - cosineSimilarity = 0.32（在 [0.30, 0.35) 区间）
+     * - cosineSimilarity = 0.32（在 [0.30, 0.34) 区间）
      * - 即使 window 数据充足，也只生成 HINT，不生成 SNIPPET
      *
      * 验收：
      * - candidate.kind = HINT
      * - 不调用 tryAssembleSnippet（或调用后回退 HINT）
+     *
+     * Phase I 注：本测试已更新以适应 Balanced v1 阈值（EDGE_SIMILARITY_MAX: 0.35 → 0.34）
      */
     @Test
     fun testASnippetEdgeSimilarityFallsBackToHint() {
-        // 模拟 cosineSimilarity = 0.32
+        // 模拟 cosineSimilarity = 0.32（仍在边缘区间内）
         val similarity = 0.32f
 
-        // Phase G3.2: 边缘相似度区间
+        // Phase G3.2: 边缘相似度区间（Phase I: 调整为 [0.30, 0.34)）
         val EDGE_SIMILARITY_MIN = 0.30f
-        val EDGE_SIMILARITY_MAX = 0.35f
+        val EDGE_SIMILARITY_MAX = 0.34f  // Phase I: 调整为 0.34
 
         val isInEdgeZone = similarity >= EDGE_SIMILARITY_MIN && similarity < EDGE_SIMILARITY_MAX
 
         // 验证：在边缘区间
-        assertTrue(isInEdgeZone, "similarity=0.32 应在边缘区间 [0.30, 0.35)")
+        assertTrue(isInEdgeZone, "similarity=0.32 应在边缘区间 [0.30, 0.34)")
 
         // 模拟：直接生成 HINT，不尝试 SNIPPET
         val kind = CandidateKind.HINT
@@ -285,24 +287,26 @@ class PhaseGASnippetGuardrailsTest {
     }
 
     /**
-     * 测试7：G3.2 相似度 >= 0.35 时正常生成 SNIPPET
+     * 测试7：G3.2 相似度 >= 0.34 时正常生成 SNIPPET
      *
      * 场景：
-     * - cosineSimilarity = 0.40（>= 0.35）
+     * - cosineSimilarity = 0.40（>= 0.34）
      * - 允许尝试生成 SNIPPET
      *
      * 验收：
      * - 不在边缘区间
      * - 允许生成 SNIPPET（如果数据充足）
+     *
+     * Phase I 注：本测试已更新以适应 Balanced v1 阈值（EDGE_SIMILARITY_MAX: 0.35 → 0.34）
      */
     @Test
     fun testASnippetHighSimilarityAllowsSnippet() {
         // 模拟 cosineSimilarity = 0.40
         val similarity = 0.40f
 
-        // Phase G3.2: 边缘相似度区间
+        // Phase G3.2: 边缘相似度区间（Phase I: 调整为 [0.30, 0.34)）
         val EDGE_SIMILARITY_MIN = 0.30f
-        val EDGE_SIMILARITY_MAX = 0.35f
+        val EDGE_SIMILARITY_MAX = 0.34f  // Phase I: 调整为 0.34
 
         val isInEdgeZone = similarity >= EDGE_SIMILARITY_MIN && similarity < EDGE_SIMILARITY_MAX
 
@@ -310,7 +314,7 @@ class PhaseGASnippetGuardrailsTest {
         assertFalse(isInEdgeZone, "similarity=0.40 不应在边缘区间")
 
         // 验证：允许尝试 SNIPPET（不在边缘区间）
-        assertTrue(similarity >= EDGE_SIMILARITY_MAX, "similarity >= 0.35 应允许 SNIPPET")
+        assertTrue(similarity >= EDGE_SIMILARITY_MAX, "similarity >= 0.34 应允许 SNIPPET（Phase I）")
     }
 
     /**

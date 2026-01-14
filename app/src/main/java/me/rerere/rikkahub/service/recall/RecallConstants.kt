@@ -78,8 +78,10 @@ object RecallConstants {
      * 为何存在：避免模糊候选误召回（灰区保守策略）
      * - 调大：减少 veto，允许更接近的候选
      * - 调小：增加 veto，要求候选之间差距更大
+     *
+     * Phase I (Balanced v1): 0.05 → 0.04（略微放松，允许更接近的候选）
      */
-    const val MARGIN_VETO_THRESHOLD = 0.05f
+    const val MARGIN_VETO_THRESHOLD = 0.04f
 
     /**
      * Margin veto precision 阈值（precision < 此值时才触发 veto）
@@ -89,6 +91,17 @@ object RecallConstants {
      * - 调小：增加 veto，要求更高 precision
      */
     const val MARGIN_VETO_PRECISION_THRESHOLD = 0.60f
+
+    /**
+     * Margin veto 最大分值限制（best.final >= 此值时不触发 margin veto）
+     *
+     * 为何存在：高置信度召回不应被"分差小"一刀切否决
+     * - 调大：允许更高置信度的召回不受 margin veto 影响
+     * - 调小：降低高置信度门槛，更多情况受 margin veto 约束
+     *
+     * Phase I (Balanced v1): 新增常量（保护高置信度召回，>=0.88 不会被 margin veto 误伤）
+     */
+    const val MARGIN_VETO_MAX_SCORE = 0.88f
 
     // ========================================
     // ProbeLedgerState（探针账本）
@@ -100,8 +113,10 @@ object RecallConstants {
      * 为何存在：连续多次 IGNORE/REJECT 时需要静默避免打扰用户
      * - 调大：允许更多次失败才静默
      * - 调小：更快进入静默
+     *
+     * Phase I (Balanced v1): 2 → 3（更耐心，连续两次 IGNORE 不触发静默）
      */
-    const val MAX_STRIKES = 2
+    const val MAX_STRIKES = 3
 
     /**
      * 静默窗口持续轮数（strikes >= MAX_STRIKES 时静默此轮数）
@@ -109,8 +124,10 @@ object RecallConstants {
      * 为何存在：静默期间禁止 non-explicit 召回
      * - 调大：静默时间更长
      * - 调小：静默时间更短
+     *
+     * Phase I (Balanced v1): 10 → 6（静默时间更短，防止"过度安静"）
      */
-    const val SILENT_WINDOW_TURNS = 10
+    const val SILENT_WINDOW_TURNS = 6
 
     /**
      * REJECT 延长冷却轮数（REJECT 后 cooldownUntilTurn = now + 此值）
@@ -118,8 +135,10 @@ object RecallConstants {
      * 为何存在：用户明确拒绝后需要更长的冷却期
      * - 调大：REJECT 后冷却时间更长
      * - 调小：REJECT 后冷却时间更短
+     *
+     * Phase I (Balanced v1): 30 → 24（缩短冷却，更愿意再次尝试）
      */
-    const val REJECT_COOLDOWN_TURNS = 30
+    const val REJECT_COOLDOWN_TURNS = 24
 
     /**
      * IGNORE 延长冷却轮数（IGNORE 后 cooldownUntilTurn = now + 此值）
@@ -127,8 +146,10 @@ object RecallConstants {
      * 为何存在：用户忽略后需要适度的冷却期（比 REJECT 短）
      * - 调大：IGNORE 后冷却时间更长
      * - 调小：IGNORE 后冷却时间更短
+     *
+     * Phase I (Balanced v1): 15 → 12（缩短冷却，更愿意再次尝试）
      */
-    const val IGNORE_COOLDOWN_TURNS = 15
+    const val IGNORE_COOLDOWN_TURNS = 12
 
     // ========================================
     // EvidenceScorer（证据评分）
@@ -310,8 +331,10 @@ object RecallConstants {
      * 为何存在：相似度在 [EDGE_SIMILARITY_MIN, EDGE_SIMILARITY_MAX) 时只生成 HINT，降低误召回
      * - 调大：扩大边缘区间，更多情况下只生成 HINT
      * - 调小：缩小边缘区间，允许更多 SNIPPET
+     *
+     * Phase I (Balanced v1): 0.35 → 0.34（略微收窄边缘区间，更愿意给 SNIPPET）
      */
-    const val EDGE_SIMILARITY_MAX = 0.35f
+    const val EDGE_SIMILARITY_MAX = 0.34f
 
     /**
      * SNIPPET 最小长度（Phase G3.2 质量护栏）

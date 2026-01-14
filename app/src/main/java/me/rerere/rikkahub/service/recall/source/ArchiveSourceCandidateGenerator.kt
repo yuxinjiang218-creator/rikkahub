@@ -56,10 +56,11 @@ class ArchiveSourceCandidateGenerator(
         private const val MAX_NODE_TEXT_ROWS = 50  // DAO 拉取条数硬上限
         private const val MAX_WINDOW_SIZE_FOR_FULL = 200  // window > 200 时只取前 50 条
 
-        // Phase G3.2: 质量护栏（写死，保守）
-        private const val EDGE_SIMILARITY_MIN = 0.30f  // 边缘相似度下限
-        private const val EDGE_SIMILARITY_MAX = 0.35f  // 边缘相似度上限
-        private const val MIN_SNIPPET_LENGTH = 80  // SNIPPET 最小长度（<80 退 HINT）
+        // Phase G3.2: 质量护栏（从 RecallConstants 读取，Phase I 可调）
+        // 注意：不再在此处硬编码，改用 RecallConstants 中的值
+        private val EDGE_SIMILARITY_MIN get() = me.rerere.rikkahub.service.recall.RecallConstants.EDGE_SIMILARITY_MIN
+        private val EDGE_SIMILARITY_MAX get() = me.rerere.rikkahub.service.recall.RecallConstants.EDGE_SIMILARITY_MAX
+        private val MIN_SNIPPET_LENGTH get() = me.rerere.rikkahub.service.recall.RecallConstants.MIN_SNIPPET_LENGTH
     }
 
     /**

@@ -134,8 +134,9 @@ object RecallDecisionEngine {
      *
      * 触发条件：
      * - best.final >= T_PROBE（即：本来会召回）
-     * - margin < 0.05（best 与 secondBest 分数接近）
-     * - best.precision < 0.60（precision 不高）
+     * - margin < MARGIN_VETO_THRESHOLD（best 与 secondBest 分数接近）
+     * - best.precision < MARGIN_VETO_PRECISION_THRESHOLD（precision 不高）
+     * - best.final < MARGIN_VETO_MAX_SCORE（Phase I: 高置信度不受 margin veto 影响）
      *
      * @return vetoReason 若触发 veto，否则 null
      */
@@ -149,6 +150,12 @@ object RecallDecisionEngine {
             return null  // 本来就不会召回，无需 veto
         }
 
+        // Phase I (Balanced v1): 高置信度上限保护
+        // best.final >= MARGIN_VETO_MAX_SCORE 时，不触发 margin veto
+        if (bestScores.finalScore >= me.rerere.rikkahub.service.recall.RecallConstants.MARGIN_VETO_MAX_SCORE) {
+            return null  // 高置信度召回，不受 margin veto 影响
+        }
+
         // 计算 margin = best.final - secondBest.final
         val secondBest = validCandidates
             .filter { it.first.id != bestCandidate.id }  // 排除 best 自己
@@ -160,18 +167,18 @@ object RecallDecisionEngine {
             1.0f  // 没有第二候选，margin 视为最大
         }
 
-        // 条件2：margin < 0.05（分数接近）
-        if (margin >= MARGIN_VETO_THRESHOLD) {
+        // 条件2：margin < MARGIN_VETO_THRESHOLD（分数接近）
+        if (margin >= me.rerere.rikkahub.service.recall.RecallConstants.MARGIN_VETO_THRESHOLD) {
             return null  // margin 足够大，无需 veto
         }
 
-        // 条件3：best.precision < 0.60（precision 不高）
-        if (bestScores.precision >= MARGIN_VETO_PRECISION_THRESHOLD) {
+        // 条件3：best.precision < MARGIN_VETO_PRECISION_THRESHOLD（precision 不高）
+        if (bestScores.precision >= me.rerere.rikkahub.service.recall.RecallConstants.MARGIN_VETO_PRECISION_THRESHOLD) {
             return null  // precision 足够高，无需 veto
         }
 
         // 触发 veto
-        return "Low margin ambiguous candidates (margin=$margin < ${MARGIN_VETO_THRESHOLD}, precision=${bestScores.precision} < ${MARGIN_VETO_PRECISION_THRESHOLD})"
+        return "Low margin ambiguous candidates (margin=$margin < ${me.rerere.rikkahub.service.recall.RecallConstants.MARGIN_VETO_THRESHOLD}, precision=${bestScores.precision} < ${me.rerere.rikkahub.service.recall.RecallConstants.MARGIN_VETO_PRECISION_THRESHOLD})"
     }
 
     /**

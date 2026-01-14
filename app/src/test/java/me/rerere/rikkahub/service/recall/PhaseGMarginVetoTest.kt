@@ -103,11 +103,13 @@ class PhaseGMarginVetoTest {
      * 场景：
      * - best.final = 0.76 >= T_PROBE (0.75)
      * - secondBest.final = 0.73
-     * - margin = 0.03 < 0.05
+     * - margin = 0.03 < 0.04（Phase I: 调整为 0.04）
      * - best.precision = 0.50 < 0.60
      * - explicit = false
      *
      * 期望：action = NONE（vetoReason 包含 "Low margin ambiguous"）
+     *
+     * Phase I 注：本测试已更新以适应 Balanced v1 阈值
      */
     @Test
     fun testMarginVetoBlocksAmbiguousRecall() {
@@ -198,11 +200,13 @@ class PhaseGMarginVetoTest {
      * 场景：
      * - best.final = 0.80
      * - secondBest.final = 0.70
-     * - margin = 0.10 >= 0.05
+     * - margin = 0.10 >= 0.04（Phase I: 调整为 0.04）
      * - best.precision = 0.50 < 0.60
      * - explicit = false
      *
      * 期望：action = PROBE_VERBATIM_SNIPPET（不触发 veto）
+     *
+     * Phase I 注：本测试已更新以适应 Balanced v1 阈值
      */
     @Test
     fun testMarginVetoNotTriggeredWhenMarginLarge() {
@@ -211,7 +215,7 @@ class PhaseGMarginVetoTest {
         val candidate1 = createCandidate("candidate_1")
         val candidate2 = createCandidate("candidate_2")
 
-        // margin = 0.10 >= 0.05，不应触发 veto
+        // margin = 0.10 >= 0.04（Phase I），不应触发 veto
         val scores1 = createScores(finalScore = 0.80f, precision = 0.50f)
         val scores2 = createScores(finalScore = 0.70f, precision = 0.45f)
 
@@ -239,7 +243,7 @@ class PhaseGMarginVetoTest {
      * 场景：
      * - best.final = 0.76
      * - secondBest.final = 0.73
-     * - margin = 0.03 < 0.05
+     * - margin = 0.03 < 0.04（Phase I: 调整为 0.04）
      * - best.precision = 0.70 >= 0.60
      * - explicit = false
      *
