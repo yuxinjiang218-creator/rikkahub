@@ -217,6 +217,10 @@ object ProbeControl {
     /**
      * 记录本轮试探（用于下一轮判定）
      *
+     * 预算护栏：
+     * - content 截断到 ≤200 chars（避免 JSON 过大）
+     * - anchors 限制 ≤10 条（避免列表过长）
+     *
      * @param ledger 当前账本
      * @param action 执行的动作
      * @param candidate 选中的候选
@@ -238,8 +242,8 @@ object ProbeControl {
             turnIndex = nowTurnIndex,
             action = action,
             candidateId = candidate.id,
-            content = candidate.content,
-            anchors = candidate.anchors,
+            content = candidate.content.take(200),  // 预算护栏：≤200 chars
+            anchors = candidate.anchors.take(10),   // 预算护栏：≤10 条
             outcome = ProbeOutcome.IGNORE  // 默认，下一轮会重新评估
         )
 

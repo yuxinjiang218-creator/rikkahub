@@ -14,6 +14,7 @@ import me.rerere.rikkahub.service.recall.probe.ProbeControl
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -261,5 +262,66 @@ class ProbeControlTest {
         val canUpgradeFull = ledgerWithFull.canUpgradeOnce(sameCandidateId)
 
         assertFalse(canUpgradeFull, "FULL_VERBATIM 不应允许升级")
+    }
+
+    /**
+     * 测试7：lastProbeObservation 预算护栏（content ≤200, anchors ≤10）
+     *
+     * 验收：
+     * - content 超长时截断到 200 chars
+     * - anchors 超过 10 条时截断到前 10 条
+     */
+    @Test
+    fun testLastProbeObservation_BudgetGuardrails() {
+        // 1. 构造超长候选（content > 200, anchors > 10）
+        val longContent = "A".repeat(500)  // 500 chars
+        val manyAnchors = (1..15).map { i -> "anchor$i:value$i" }  // 15 条
+
+        val candidate = Candidate(
+            id = "test_candidate",
+            source = me.rerere.rikkahub.service.recall.model.CandidateSource.P_TEXT,
+            kind = CandidateKind.SNIPPET,
+            content = longContent,
+            anchors = manyAnchors,
+            cost = longContent.length,
+            evidenceRaw = emptyMap()
+        )
+
+        // 2. 记录试探
+        val ledger = ProbeLedgerState()
+        val updatedLedger = me.rerere.rikkahub.service.recall.probe.ProbeControl.recordProbe(
+            ledger = ledger,
+            action = RecallAction.PROBE_VERBATIM_SNIPPET,
+            candidate = candidate,
+            nowTurnIndex = 0
+        )
+
+        // 3. 验证：content 截断到 200
+        val recordedObservation = updatedLedger.lastProbeObservation
+        assertNotNull(recordedObservation, "应记录 lastProbeObservation")
+        assertEquals(
+            200,
+            recordedObservation!!.content.length,
+            "content 应截断到 200 chars，实际：${recordedObservation.content.length}"
+        )
+
+        // 4. 验证：anchors 截断到 10
+        assertEquals(
+            10,
+            recordedObservation.anchors.size,
+            "anchors 应截断到 10 条，实际：${recordedObservation.anchors.size}"
+        )
+
+        // 5. 验证：截断后的内容正确
+        assertTrue(
+            recordedObservation.content.all { it == 'A' },
+            "截断后的 content 应全部为 'A'"
+        )
+
+        // 6. 验证：截断后的 anchors 正确
+        assertTrue(
+            recordedObservation.anchors.all { it.startsWith("anchor") },
+            "截断后的 anchors 应全部以 'anchor' 开头"
+        )
     }
 }
