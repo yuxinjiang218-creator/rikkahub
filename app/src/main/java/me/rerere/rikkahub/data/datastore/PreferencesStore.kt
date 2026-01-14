@@ -21,6 +21,7 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESSION_PROMPT
+import me.rerere.rikkahub.data.ai.prompts.DEFAULT_ARCHIVE_SUMMARY_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_OCR_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_SUGGESTION_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_TITLE_PROMPT
@@ -75,8 +76,18 @@ class SettingsStore(
         val TRANSLATE_MODEL = stringPreferencesKey("translate_model")
         val SUGGESTION_MODEL = stringPreferencesKey("suggestion_model")
         val IMAGE_GENERATION_MODEL = stringPreferencesKey("image_generation_model")
+        // 旧的压缩模型配置（保留用于兼容）
         val COMPRESSION_MODEL = stringPreferencesKey("compression_model")
         val COMPRESSION_PROMPT = stringPreferencesKey("compression_prompt")
+
+        // 归档摘要模型配置
+        val ARCHIVE_SUMMARY_MODEL = stringPreferencesKey("archive_summary_model")
+        val ARCHIVE_SUMMARY_PROMPT = stringPreferencesKey("archive_summary_prompt")
+
+        // 上下文压缩模型配置
+        val CONTEXT_COMPRESSION_MODEL = stringPreferencesKey("context_compression_model")
+        val CONTEXT_COMPRESSION_PROMPT = stringPreferencesKey("context_compression_prompt")
+
         val EMBEDDING_MODEL = stringPreferencesKey("embedding_model")
         val TITLE_PROMPT = stringPreferencesKey("title_prompt")
         val TRANSLATION_PROMPT = stringPreferencesKey("translation_prompt")
@@ -139,10 +150,26 @@ class SettingsStore(
                 suggestionModelId = preferences[SUGGESTION_MODEL]?.let { Uuid.parse(it) }
                     ?: SILICONFLOW_QWEN3_8B_ID,
                 imageGenerationModelId = preferences[IMAGE_GENERATION_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
+
+                // 旧的压缩模型配置（保留用于兼容）
                 compressionModelId = preferences[COMPRESSION_MODEL]?.let { Uuid.parse(it) }
                     ?: SILICONFLOW_QWEN3_8B_ID,
-                embeddingModelId = preferences[EMBEDDING_MODEL]?.let { Uuid.parse(it) },
                 compressionPrompt = preferences[COMPRESSION_PROMPT] ?: DEFAULT_COMPRESSION_PROMPT,
+
+                // 归档摘要模型配置（优先使用新key，否则用旧key兜底）
+                archiveSummaryModelId = preferences[ARCHIVE_SUMMARY_MODEL]?.let { Uuid.parse(it) }
+                    ?: preferences[COMPRESSION_MODEL]?.let { Uuid.parse(it) },
+                archiveSummaryPrompt = preferences[ARCHIVE_SUMMARY_PROMPT]
+                    ?: DEFAULT_ARCHIVE_SUMMARY_PROMPT,
+
+                // 上下文压缩模型配置（优先使用新key，否则用旧key兜底）
+                contextCompressionModelId = preferences[CONTEXT_COMPRESSION_MODEL]?.let { Uuid.parse(it) }
+                    ?: preferences[COMPRESSION_MODEL]?.let { Uuid.parse(it) },
+                contextCompressionPrompt = preferences[CONTEXT_COMPRESSION_PROMPT]
+                    ?: preferences[COMPRESSION_PROMPT]
+                    ?: DEFAULT_COMPRESSION_PROMPT, // TODO: Task 2 会替换为 DEFAULT_CONTEXT_COMPRESSION_PROMPT
+
+                embeddingModelId = preferences[EMBEDDING_MODEL]?.let { Uuid.parse(it) },
                 titlePrompt = preferences[TITLE_PROMPT] ?: DEFAULT_TITLE_PROMPT,
                 translatePrompt = preferences[TRANSLATION_PROMPT] ?: DEFAULT_TRANSLATION_PROMPT,
                 suggestionPrompt = preferences[SUGGESTION_PROMPT] ?: DEFAULT_SUGGESTION_PROMPT,
@@ -295,11 +322,26 @@ class SettingsStore(
             preferences[TRANSLATE_MODEL] = settings.translateModeId.toString()
             preferences[SUGGESTION_MODEL] = settings.suggestionModelId.toString()
             preferences[IMAGE_GENERATION_MODEL] = settings.imageGenerationModelId.toString()
-            preferences[COMPRESSION_MODEL] = settings.compressionModelId.toString()
+
+            // 旧的压缩模型配置（保留不再更新，仅用于兼容性读取）
+            // preferences[COMPRESSION_MODEL] = settings.compressionModelId.toString()
+            // preferences[COMPRESSION_PROMPT] = settings.compressionPrompt
+
+            // 归档摘要模型配置
+            settings.archiveSummaryModelId?.let {
+                preferences[ARCHIVE_SUMMARY_MODEL] = it.toString()
+            } ?: preferences.remove(ARCHIVE_SUMMARY_MODEL)
+            preferences[ARCHIVE_SUMMARY_PROMPT] = settings.archiveSummaryPrompt
+
+            // 上下文压缩模型配置
+            settings.contextCompressionModelId?.let {
+                preferences[CONTEXT_COMPRESSION_MODEL] = it.toString()
+            } ?: preferences.remove(CONTEXT_COMPRESSION_MODEL)
+            preferences[CONTEXT_COMPRESSION_PROMPT] = settings.contextCompressionPrompt
+
             settings.embeddingModelId?.let {
                 preferences[EMBEDDING_MODEL] = it.toString()
             }
-            preferences[COMPRESSION_PROMPT] = settings.compressionPrompt
             preferences[TITLE_PROMPT] = settings.titlePrompt
             preferences[TRANSLATION_PROMPT] = settings.translatePrompt
             preferences[SUGGESTION_PROMPT] = settings.suggestionPrompt
@@ -356,9 +398,21 @@ data class Settings(
     val translateModeId: Uuid = Uuid.random(),
     val translatePrompt: String = DEFAULT_TRANSLATION_PROMPT,
     val suggestionModelId: Uuid = Uuid.random(),
+    // 旧的压缩模型配置（已废弃，保留用于兼容性）
+    @Deprecated("Use archiveSummaryModelId and contextCompressionModelId instead")
     val compressionModelId: Uuid = Uuid.random(),
-    val embeddingModelId: Uuid? = null,
+    @Deprecated("Use archiveSummaryPrompt and contextCompressionPrompt instead")
     val compressionPrompt: String = DEFAULT_COMPRESSION_PROMPT,
+
+    // 归档摘要模型配置
+    val archiveSummaryModelId: Uuid? = null,
+    val archiveSummaryPrompt: String = DEFAULT_ARCHIVE_SUMMARY_PROMPT,
+
+    // 上下文压缩模型配置
+    val contextCompressionModelId: Uuid? = null,
+    val contextCompressionPrompt: String = DEFAULT_COMPRESSION_PROMPT, // TODO: Task 2 会替换为 DEFAULT_CONTEXT_COMPRESSION_PROMPT
+
+    val embeddingModelId: Uuid? = null,
     val suggestionPrompt: String = DEFAULT_SUGGESTION_PROMPT,
     val ocrModelId: Uuid = Uuid.random(),
     val ocrPrompt: String = DEFAULT_OCR_PROMPT,
