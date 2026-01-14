@@ -1230,9 +1230,10 @@ private fun ModelTypeSelector(
     SingleChoiceSegmentedButtonRow(
         modifier = Modifier.fillMaxWidth()
     ) {
-        ModelType.entries.forEachIndexed { index, type ->
+        val types = ModelType.entries.filter { it != ModelType.COMPRESSION }
+        types.forEachIndexed { index, type ->
             SegmentedButton(
-                shape = SegmentedButtonDefaults.itemShape(index, ModelType.entries.size),
+                shape = SegmentedButtonDefaults.itemShape(index, types.size),
                 label = {
                     Text(
                         text = stringResource(
