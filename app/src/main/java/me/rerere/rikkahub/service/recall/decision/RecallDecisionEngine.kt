@@ -54,6 +54,12 @@ object RecallDecisionEngine {
     /** 显式召回的最小相关性阈值（SNIPPET） */
     private const val EXPLICIT_SNIPPET_MIN_RELEVANCE = 0.55f
 
+    /** Phase G2: margin veto 阈值（灰区保守策略） */
+    private const val MARGIN_VETO_THRESHOLD = 0.05f
+
+    /** Phase G2: margin veto precision 阈值 */
+    private const val MARGIN_VETO_PRECISION_THRESHOLD = 0.60f
+
     /**
      * 决策入口
      *
@@ -94,6 +100,18 @@ object RecallDecisionEngine {
         // 选择最高分候选
         val (bestCandidate, bestScores) = validCandidates.maxByOrNull { it.second.finalScore }!!
 
+        // Phase G2: margin veto（灰区保守策略，仅 non-explicit）
+        if (!isExplicit) {
+            val marginVetoReason = checkMarginVeto(bestCandidate, bestScores, validCandidates)
+            if (marginVetoReason != null) {
+                return DecisionResult(
+                    action = RecallAction.NONE,
+                    selectedCandidate = null,
+                    vetoReason = marginVetoReason
+                )
+            }
+        }
+
         // 根据显式/非显式决定动作
         val action = if (isExplicit) {
             decideExplicit(bestCandidate, bestScores, validCandidates)
@@ -106,6 +124,54 @@ object RecallDecisionEngine {
             selectedCandidate = bestCandidate,
             vetoReason = null
         )
+    }
+
+    /**
+     * Phase G2: margin veto（灰区保守策略）
+     *
+     * 当多个候选分数接近且 precision 不高时，最容易误召回。
+     * 本规则仅在 non-explicit 时生效，确保"宁可不召回，也避免乱召回"。
+     *
+     * 触发条件：
+     * - best.final >= T_PROBE（即：本来会召回）
+     * - margin < 0.05（best 与 secondBest 分数接近）
+     * - best.precision < 0.60（precision 不高）
+     *
+     * @return vetoReason 若触发 veto，否则 null
+     */
+    private fun checkMarginVeto(
+        bestCandidate: Candidate,
+        bestScores: EvidenceScores,
+        validCandidates: List<Pair<Candidate, EvidenceScores>>
+    ): String? {
+        // 条件1：best.final >= T_PROBE（本来会召回）
+        if (bestScores.finalScore < T_PROBE) {
+            return null  // 本来就不会召回，无需 veto
+        }
+
+        // 计算 margin = best.final - secondBest.final
+        val secondBest = validCandidates
+            .filter { it.first.id != bestCandidate.id }  // 排除 best 自己
+            .maxByOrNull { it.second.finalScore }
+
+        val margin = if (secondBest != null) {
+            bestScores.finalScore - secondBest.second.finalScore
+        } else {
+            1.0f  // 没有第二候选，margin 视为最大
+        }
+
+        // 条件2：margin < 0.05（分数接近）
+        if (margin >= MARGIN_VETO_THRESHOLD) {
+            return null  // margin 足够大，无需 veto
+        }
+
+        // 条件3：best.precision < 0.60（precision 不高）
+        if (bestScores.precision >= MARGIN_VETO_PRECISION_THRESHOLD) {
+            return null  // precision 足够高，无需 veto
+        }
+
+        // 触发 veto
+        return "Low margin ambiguous candidates (margin=$margin < ${MARGIN_VETO_THRESHOLD}, precision=${bestScores.precision} < ${MARGIN_VETO_PRECISION_THRESHOLD})"
     }
 
     /**
