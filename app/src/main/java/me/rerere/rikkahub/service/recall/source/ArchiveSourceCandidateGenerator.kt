@@ -51,6 +51,15 @@ class ArchiveSourceCandidateGenerator(
         private const val MIN_COS_SIM = 0.3f  // 余弦相似度阈值
         private const val EMBEDDING_MAX_CALLS = 3  // 最多3次 embedding 调用
         private const val MULTI_QUERY_NEED_SCORE_THRESHOLD = 0.75f  // MultiQuery 触发阈值
+
+        // Phase G3.1: 成本护栏（写死）
+        private const val MAX_NODE_TEXT_ROWS = 50  // DAO 拉取条数硬上限
+        private const val MAX_WINDOW_SIZE_FOR_FULL = 200  // window > 200 时只取前 50 条
+
+        // Phase G3.2: 质量护栏（写死，保守）
+        private const val EDGE_SIMILARITY_MIN = 0.30f  // 边缘相似度下限
+        private const val EDGE_SIMILARITY_MAX = 0.35f  // 边缘相似度上限
+        private const val MIN_SNIPPET_LENGTH = 80  // SNIPPET 最小长度（<80 退 HINT）
     }
 
     /**
@@ -180,11 +189,51 @@ class ArchiveSourceCandidateGenerator(
             )
         )
 
-        // 10. 生成候选：优先 SNIPPET（Phase E），回退 HINT
+        // 10. 生成候选：优先 SNIPPET（Phase G3：添加质量护栏），回退 HINT
         for ((archive, similarity) in archiveWithSimilarity) {
             if (candidates.size >= MAX_PER_SOURCE) break
 
-            // Phase E: 优先生成 SNIPPET（<=800 chars）
+            // Phase G3.2 质量护栏1：边缘相似度区间 [0.30, 0.35) 只生成 HINT
+            val isInEdgeZone = similarity >= EDGE_SIMILARITY_MIN && similarity < EDGE_SIMILARITY_MAX
+            if (isInEdgeZone) {
+                debugLogger.log(
+                    LogLevel.DEBUG,
+                    TAG,
+                    "Edge similarity zone, falling back to HINT",
+                    mapOf(
+                        "archiveId" to archive.id,
+                        "similarity" to similarity,
+                        "EDGE_SIMILARITY_MIN" to EDGE_SIMILARITY_MIN,
+                        "EDGE_SIMILARITY_MAX" to EDGE_SIMILARITY_MAX
+                    )
+                )
+
+                // 直接生成 HINT 候选
+                val hintContent = archive.content.take(HINT_MAX_CHARS)
+                val candidate = Candidate(
+                    id = me.rerere.rikkahub.service.recall.model.CandidateBuilder.buildASourceId(
+                        archiveId = archive.id,
+                        kind = CandidateKind.HINT
+                    ),
+                    source = CandidateSource.A_ARCHIVE,
+                    kind = CandidateKind.HINT,
+                    content = hintContent,
+                    anchors = buildAnchors(lastUserText),
+                    cost = hintContent.length,
+                    evidenceKey = me.rerere.rikkahub.service.recall.model.CandidateBuilder.buildASourceEvidenceKey(
+                        archiveId = archive.id
+                    ),
+                    evidenceRaw = mapOf(
+                        "archive_id" to archive.id,
+                        "max_cos_sim" to similarity.toString(),
+                        "created_at" to archive.createdAt.toString()
+                    )
+                )
+                candidates.add(candidate)
+                continue  // 跳过后续逻辑
+            }
+
+            // Phase E/G3.1: 尝试组装 SNIPPET（<=800 chars）
             val snippetContent = tryAssembleSnippet(
                 conversationId = conversationId,
                 windowStartIndex = archive.windowStartIndex,
@@ -192,19 +241,35 @@ class ArchiveSourceCandidateGenerator(
             )
 
             val (kind, content, maxChars) = if (snippetContent != null) {
-                // SNIPPET 成功
-                debugLogger.log(
-                    LogLevel.DEBUG,
-                    TAG,
-                    "Assembled SNIPPET for archive",
-                    mapOf(
-                        "archiveId" to archive.id,
-                        "snippetLength" to snippetContent.length,
-                        "windowStartIndex" to archive.windowStartIndex,
-                        "windowEndIndex" to archive.windowEndIndex
+                // Phase G3.2 质量护栏2：SNIPPET 清理后长度 < 80 chars 退 HINT
+                val cleanedSnippet = snippetContent.trim()
+                if (cleanedSnippet.length < MIN_SNIPPET_LENGTH) {
+                    debugLogger.log(
+                        LogLevel.DEBUG,
+                        TAG,
+                        "Snippet too short, falling back to HINT",
+                        mapOf(
+                            "archiveId" to archive.id,
+                            "snippetLength" to cleanedSnippet.length,
+                            "MIN_SNIPPET_LENGTH" to MIN_SNIPPET_LENGTH
+                        )
                     )
-                )
-                Triple(CandidateKind.SNIPPET, snippetContent, SNIPPET_MAX_CHARS)
+                    Triple(CandidateKind.HINT, archive.content, HINT_MAX_CHARS)
+                } else {
+                    // SNIPPET 成功
+                    debugLogger.log(
+                        LogLevel.DEBUG,
+                        TAG,
+                        "Assembled SNIPPET for archive",
+                        mapOf(
+                            "archiveId" to archive.id,
+                            "snippetLength" to snippetContent.length,
+                            "windowStartIndex" to archive.windowStartIndex,
+                            "windowEndIndex" to archive.windowEndIndex
+                        )
+                    )
+                    Triple(CandidateKind.SNIPPET, snippetContent, SNIPPET_MAX_CHARS)
+                }
             } else {
                 // SNIPPET 失败，回退 HINT（<=200 chars）
                 debugLogger.log(
@@ -245,10 +310,15 @@ class ArchiveSourceCandidateGenerator(
     }
 
     /**
-     * 尝试组装 SNIPPET（Phase E）
+     * 尝试组装 SNIPPET（Phase G3：添加成本护栏）
      *
      * 使用 MessageNodeTextDao 根据 windowStartIndex/windowEndIndex 获取原始文本，
      * 拼接后截断到 SNIPPET_MAX_CHARS（800）。
+     *
+     * Phase G3.1 成本护栏：
+     * - MAX_NODE_TEXT_ROWS = 50（硬上限）
+     * - 拼接过程中一旦达到 800 chars 立即停止
+     * - 若 window > 200，只取前 50 条；不得全量拉取
      *
      * @param conversationId 会话ID
      * @param windowStartIndex 窗口起始索引
@@ -261,22 +331,64 @@ class ArchiveSourceCandidateGenerator(
         windowEndIndex: Int
     ): String? = withContext(Dispatchers.IO) {
         try {
-            // 1. 生成 indices 列表 [windowStartIndex, windowEndIndex]
-            val indices = (windowStartIndex..windowEndIndex).toList()
+            val debugLogger = DebugLogger.getInstance(context)
 
-            // 2. 从 MessageNodeTextDao 批量获取原始文本
+            // 1. 生成 indices 列表 [windowStartIndex, windowEndIndex]
+            val windowSize = windowEndIndex - windowStartIndex + 1
+            val indices = if (windowSize > MAX_WINDOW_SIZE_FOR_FULL) {
+                // Phase G3.1: window > 200 时只取前 50 条，不得全量拉取
+                (windowStartIndex until (windowStartIndex + MAX_NODE_TEXT_ROWS)).toList()
+            } else {
+                // 正常情况：取全部，但不超过 MAX_NODE_TEXT_ROWS
+                val allIndices = (windowStartIndex..windowEndIndex).toList()
+                allIndices.take(MAX_NODE_TEXT_ROWS)
+            }
+
+            debugLogger.log(
+                LogLevel.DEBUG,
+                TAG,
+                "Assembling SNIPPET with cost guardrails",
+                mapOf(
+                    "windowSize" to windowSize,
+                    "indicesToFetch" to indices.size,
+                    "MAX_NODE_TEXT_ROWS" to MAX_NODE_TEXT_ROWS
+                )
+            )
+
+            // 2. 从 MessageNodeTextDao 批量获取原始文本（已限制条数）
             val nodeTexts = messageNodeTextDao.getByConversationIdAndIndices(
                 conversationId = conversationId,
                 indices = indices
             )
 
-            // 3. 拼接 rawText（按 node_index 排序）
-            val snippetText = nodeTexts
-                .sortedBy { it.nodeIndex }
-                .joinToString(separator = "\n") { it.rawText }
+            // 3. 拼接 rawText（按 node_index 排序），一旦达到 800 chars 立即停止
+            val snippetBuilder = StringBuilder()
+            var totalLength = 0
+
+            for (nodeText in nodeTexts.sortedBy { it.nodeIndex }) {
+                val textLength = nodeText.rawText.length
+
+                // Phase G3.1: 拼接过程中一旦达到 800 chars 立即停止
+                if (totalLength + textLength > SNIPPET_MAX_CHARS) {
+                    val remainingChars = SNIPPET_MAX_CHARS - totalLength
+                    if (remainingChars > 0) {
+                        snippetBuilder.append(nodeText.rawText.take(remainingChars))
+                    }
+                    break  // 达到 800 chars，停止拼接
+                }
+
+                snippetBuilder.append(nodeText.rawText)
+                totalLength += textLength
+
+                // 分隔符（最后一个不加）
+                if (totalLength < SNIPPET_MAX_CHARS) {
+                    snippetBuilder.append("\n")
+                    totalLength += 1
+                }
+            }
 
             // 4. 返回拼接结果（调用方会截断到 SNIPPET_MAX_CHARS）
-            snippetText.ifEmpty { null }
+            snippetBuilder.toString().ifEmpty { null }
         } catch (e: Exception) {
             DebugLogger.getInstance(context).log(
                 LogLevel.WARN,
