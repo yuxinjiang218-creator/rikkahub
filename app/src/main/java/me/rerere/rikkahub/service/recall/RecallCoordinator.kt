@@ -59,6 +59,7 @@ class RecallCoordinator(
             context = context,
             archiveSummaryDao = archiveSummaryDao,
             vectorIndexDao = vectorIndexDao,
+            messageNodeTextDao = messageNodeTextDao,
             providerManager = providerManager
         )
     }
@@ -112,10 +113,40 @@ class RecallCoordinator(
 
         debugLogger.log(LogLevel.DEBUG, TAG, "NeedGate passed in ${needGateTime}ms")
 
+        // 阶段1.5：评估上一轮试探结果（Phase E：ProbeControl）
+        val updatedLedger = me.rerere.rikkahub.service.recall.probe.ProbeControl.evaluateAndUpdate(
+            ledger = queryContext.ledger,
+            lastUserText = queryContext.lastUserText,
+            nowTurnIndex = queryContext.nowTurnIndex,
+            context = context
+        )
+
+        // 更新 QueryContext.ledger
+        val updatedQueryContext = queryContext.copy(ledger = updatedLedger)
+
+        // 阶段1.6：检查静默窗口（Phase E：快速停止）
+        if (!queryContext.explicitSignal.explicit &&
+            me.rerere.rikkahub.service.recall.probe.ProbeControl.isInSilentWindow(
+                ledger = updatedLedger,
+                nowTurnIndex = queryContext.nowTurnIndex
+            )
+        ) {
+            debugLogger.log(
+                LogLevel.INFO,
+                TAG,
+                "Silent window active, blocking non-explicit recall",
+                mapOf(
+                    "silentUntilTurn" to updatedLedger.silentUntilTurn,
+                    "nowTurnIndex" to queryContext.nowTurnIndex
+                )
+            )
+            return null  // 静默窗口内，non-explicit 一律 NONE
+        }
+
         // 阶段2：P源候选生成
         val candidates = mutableListOf<Candidate>()
         val pSourceTime = measureTimeMillis {
-            val pSourceCandidates = textSourceCandidateGenerator.generate(queryContext)
+            val pSourceCandidates = textSourceCandidateGenerator.generate(updatedQueryContext)
             candidates.addAll(pSourceCandidates)
 
             debugLogger.log(
@@ -130,7 +161,7 @@ class RecallCoordinator(
         // 阶段2.5：A源候选生成（Phase C）
         val aSourceTime = measureTimeMillis {
             val aSourceCandidates = archiveSourceCandidateGenerator.generate(
-                queryContext = queryContext,
+                queryContext = updatedQueryContext,
                 pSourceCandidateCount = candidates.size,
                 settings = settings
             )
@@ -158,14 +189,14 @@ class RecallCoordinator(
         )
 
         // 阶段3：获取最大 node_index（用于 recency 归一化）
-        val maxNodeIndex = messageNodeTextDao.getMaxNodeIndex(queryContext.conversationId) ?: 0
+        val maxNodeIndex = messageNodeTextDao.getMaxNodeIndex(updatedQueryContext.conversationId) ?: 0
 
         // 阶段4：评分
-        val needScore = NeedGate.computeNeedScoreHeuristic(queryContext)
+        val needScore = NeedGate.computeNeedScoreHeuristic(updatedQueryContext)
         val scoredCandidates = candidates.map { candidate ->
             candidate to EvidenceScorer.score(
                 candidate = candidate,
-                queryContext = queryContext,
+                queryContext = updatedQueryContext,
                 needScore = needScore,
                 maxNodeIndex = maxNodeIndex
             )
@@ -176,7 +207,7 @@ class RecallCoordinator(
         // 阶段5：决策
         val decisionResult = RecallDecisionEngine.decide(
             scoredCandidates = scoredCandidates,
-            queryContext = queryContext
+            queryContext = updatedQueryContext
         )
         val decisionTime = 0L  // 已在上面计算
 
@@ -191,16 +222,26 @@ class RecallCoordinator(
             )
         )
 
-        // 阶段6：账本更新 + 冷却
-        if (decisionResult.action != RecallAction.NONE && decisionResult.selectedCandidate != null) {
+        // 阶段6：账本更新 + 冷却（Phase E：记录本轮试探）
+        val finalLedger = if (decisionResult.action != RecallAction.NONE && decisionResult.selectedCandidate != null) {
+            // 6.1 记录本轮试探（用于下一轮判定）
+            val ledgerWithProbe = me.rerere.rikkahub.service.recall.probe.ProbeControl.recordProbe(
+                ledger = updatedLedger,
+                action = decisionResult.action,
+                candidate = decisionResult.selectedCandidate,
+                nowTurnIndex = updatedQueryContext.nowTurnIndex
+            )
+
+            // 6.2 创建账本条目
             val ledgerEntry = RecallDecisionEngine.createLedgerEntry(
                 candidate = decisionResult.selectedCandidate,
                 action = decisionResult.action,
-                queryContext = queryContext
+                queryContext = updatedQueryContext
             )
 
-            val updatedLedger = queryContext.ledger.addEntry(ledgerEntry)
-            val updatedLedgerJson = json.encodeToString(updatedLedger)
+            // 6.3 添加条目到账本
+            val ledgerWithEntry = ledgerWithProbe.addEntry(ledgerEntry)
+            val updatedLedgerJson = json.encodeToString(ledgerWithEntry)
 
             debugLogger.log(
                 LogLevel.DEBUG,
@@ -209,12 +250,23 @@ class RecallCoordinator(
                 mapOf(
                     "candidateId" to ledgerEntry.candidateId,
                     "action" to ledgerEntry.action.name,
-                    "cooldownUntilTurn" to ledgerEntry.cooldownUntilTurn
+                    "cooldownUntilTurn" to ledgerEntry.cooldownUntilTurn,
+                    "globalProbeStrikes" to ledgerWithEntry.globalProbeStrikes
                 )
             )
 
             // 回调更新账本
             onRecallLedgerUpdate?.invoke(updatedLedgerJson)
+
+            ledgerWithEntry
+        } else {
+            // 无动作，清空上一轮试探观察
+            val clearedLedger = updatedLedger.clearLastObservation()
+            if (clearedLedger != updatedLedger) {
+                val updatedLedgerJson = json.encodeToString(clearedLedger)
+                onRecallLedgerUpdate?.invoke(updatedLedgerJson)
+            }
+            clearedLedger
         }
 
         // 阶段7：构建注入块
