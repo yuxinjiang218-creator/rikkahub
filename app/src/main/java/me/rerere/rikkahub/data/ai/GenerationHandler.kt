@@ -74,6 +74,7 @@ class GenerationHandler(
     private val vectorIndexDao: me.rerere.rikkahub.data.db.dao.VectorIndexDao,
     private val verbatimRecallService: me.rerere.rikkahub.service.VerbatimRecallService,
     private val semanticRecallService: me.rerere.rikkahub.service.SemanticRecallService,
+    private val recallCoordinator: me.rerere.rikkahub.service.recall.RecallCoordinator,
 ) {
     fun generateText(
         settings: Settings,
@@ -88,8 +89,10 @@ class GenerationHandler(
         maxSteps: Int = 256,
         conversationSummary: String = "",  // 对话摘要
         conversationId: Uuid? = null,     // 会话 ID，用于归档回填
-        lastArchiveRecallIds: List<String> = emptyList(),  // 上次语义召回的 ID
-        onSemanticRecall: ((List<String>) -> Unit)? = null,  // 语义召回成功回调
+        lastArchiveRecallIds: List<String> = emptyList(),  // 上次语义召回的 ID（已废弃，保留兼容性）
+        recallLedgerJson: String = "{}",  // 探针账本 JSON
+        onRecallLedgerUpdate: ((String) -> Unit)? = null,  // 账本更新回调
+        onSemanticRecall: ((List<String>) -> Unit)? = null,  // 语义召回成功回调（已废弃，保留兼容性）
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
@@ -152,6 +155,8 @@ class GenerationHandler(
                 stream = assistant.streamOutput,
                 conversationSummary = conversationSummary,
                 lastArchiveRecallIds = lastArchiveRecallIds,
+                recallLedgerJson = recallLedgerJson,
+                onRecallLedgerUpdate = onRecallLedgerUpdate,
                 onSemanticRecall = onSemanticRecall,
             )
             messages = messages.visualTransforms(
@@ -270,6 +275,8 @@ class GenerationHandler(
         stream: Boolean,
         conversationSummary: String,
         lastArchiveRecallIds: List<String>,
+        recallLedgerJson: String,
+        onRecallLedgerUpdate: ((String) -> Unit)?,
         onSemanticRecall: ((List<String>) -> Unit)?,
     ) {
         val internalMessages = buildList {
@@ -288,50 +295,45 @@ class GenerationHandler(
                     append(conversationSummary)
                 }
 
-                // [RECALL] 召回注入（VERBATIM vs SEMANTIC 互斥）
+                // [RECALL] vNext 智能召回系统（统一候选池 + 裁决器）
                 val lastUserMessage = messages.lastOrNull { it.role == me.rerere.ai.core.MessageRole.USER }
                 if (lastUserMessage != null && conversationId != null) {
                     val lastUserText = lastUserMessage.toText()
-                    val route = me.rerere.rikkahub.service.IntentRouter.routeIntent(lastUserText)
 
-                    when (route) {
-                        me.rerere.rikkahub.service.Route.VERBATIM -> {
-                            // VERBATIM 路径：逐字召回（不依赖 embeddingModelId）
-                            val verbatimRecall = verbatimRecallService.recallVerbatim(
-                                conversationId = conversationId.toString(),
-                                lastUserText = lastUserText
-                            )
-                            if (verbatimRecall != null) {
-                                appendLine()
-                                appendLine()
-                                append(verbatimRecall)
-                            }
-                            // ❗️ VERBATIM 路径严禁更新 lastArchiveRecallIds
-                        }
+                    // 构造 QueryContext（使用真实账本解析）
+                    val explicitSignal = me.rerere.rikkahub.service.IntentRouter.detectExplicitRecallSignal(lastUserText)
+                    val ledger = me.rerere.rikkahub.service.recall.ledger.LedgerCodec.decodeOrEmpty(
+                        jsonStr = recallLedgerJson,
+                        context = context
+                    )
+                    val queryContext = me.rerere.rikkahub.service.recall.model.QueryContext(
+                        conversationId = conversationId.toString(),
+                        lastUserText = lastUserText,
+                        runningSummary = conversationSummary.ifBlank { null },
+                        windowTexts = messages.takeLast(8).map { it.toText() },
+                        settingsSnapshot = me.rerere.rikkahub.service.recall.model.SettingsSnapshot(
+                            enableVerbatimRecall = true,
+                            enableArchiveRecall = assistant.enableArchiveRecall,
+                            embeddingModelId = settings.embeddingModelId?.toString()
+                        ),
+                        assistantSnapshot = me.rerere.rikkahub.service.recall.model.AssistantSnapshot(
+                            id = assistant.id.toString(),
+                            name = assistant.name
+                        ),
+                        ledger = ledger,  // 从 conversation.recallLedgerJson 解析
+                        nowTurnIndex = 0,
+                        explicitSignal = explicitSignal
+                    )
 
-                        me.rerere.rikkahub.service.Route.SEMANTIC -> {
-                            // SEMANTIC 路径：语义召回（依赖 embeddingModelId）
-                            if (assistant.enableArchiveRecall && settings.embeddingModelId != null) {
-                                val semanticRecall = semanticRecallService.recallSemantic(
-                                    settings = settings,
-                                    conversationId = conversationId.toString(),
-                                    lastUserText = lastUserText,
-                                    runningSummary = conversationSummary.ifBlank { null },
-                                    lastRecallIds = lastArchiveRecallIds
-                                )
-                                if (semanticRecall != null) {
-                                    appendLine()
-                                    appendLine()
-                                    append(semanticRecall)
+                    val recallBlock = recallCoordinator.coordinateRecall(
+                        queryContext = queryContext,
+                        onRecallLedgerUpdate = onRecallLedgerUpdate
+                    )
 
-                                    // 提取并回调新的 recall IDs
-                                    val newRecallIds = extractArchiveRecallIds(semanticRecall)
-                                    if (newRecallIds.isNotEmpty()) {
-                                        onSemanticRecall?.invoke(newRecallIds)
-                                    }
-                                }
-                            }
-                        }
+                    if (recallBlock != null) {
+                        appendLine()
+                        appendLine()
+                        append(recallBlock)
                     }
                 }
 
