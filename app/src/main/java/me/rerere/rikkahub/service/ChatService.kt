@@ -697,33 +697,55 @@ class ChatService(
             )
         )
 
-        // 确定压缩模型
-        val compressionModelId = assistant.compressionModelId ?: settings.compressionModelId
-        val compressionModel = settings.findModelById(compressionModelId)
-        if (compressionModel == null) {
-            Log.w(TAG, "Compression model not found: $compressionModelId")
+        // 确定归档摘要模型（写向量库用于 A 源检索）
+        val archiveSummaryModelId = settings.archiveSummaryModelId ?: settings.chatModelId
+        val archiveSummaryModel = settings.findModelById(archiveSummaryModelId)
+        if (archiveSummaryModel == null) {
+            Log.w(TAG, "Archive summary model not found: $archiveSummaryModelId")
             return conversation
         }
 
-        val provider = compressionModel.findProvider(settings.providers)
-        if (provider == null) {
-            Log.w(TAG, "Compression provider not found for model: $compressionModelId")
+        val archiveSummaryProvider = archiveSummaryModel.findProvider(settings.providers)
+        if (archiveSummaryProvider == null) {
+            Log.w(TAG, "Archive summary provider not found for model: $archiveSummaryModelId")
             return conversation
         }
 
-        val providerHandler = providerManager.getProviderByType(provider)
+        // 确定上下文压缩模型（Running Summary 用于上下文管理）
+        val contextCompressionModelId = settings.contextCompressionModelId ?: settings.chatModelId
+        val contextCompressionModel = settings.findModelById(contextCompressionModelId)
+        if (contextCompressionModel == null) {
+            Log.w(TAG, "Context compression model not found: $contextCompressionModelId")
+            return conversation
+        }
+
+        val contextCompressionProvider = contextCompressionModel.findProvider(settings.providers)
+        if (contextCompressionProvider == null) {
+            Log.w(TAG, "Context compression provider not found for model: $contextCompressionModelId")
+            return conversation
+        }
+
+        val archiveSummaryProviderHandler = providerManager.getProviderByType(archiveSummaryProvider)
+        val contextCompressionProviderHandler = providerManager.getProviderByType(contextCompressionProvider)
 
         return try {
             // 2. 生成归档摘要 Aₖ = archive(Wₖ)
-            val archiveContent = generateArchiveSummary(windowMessages, providerHandler, compressionModel, provider)
+            val archiveContent = generateArchiveSummary(
+                windowMessages = windowMessages,
+                provider = archiveSummaryProviderHandler,
+                model = archiveSummaryModel,
+                providerSetting = archiveSummaryProvider,
+                promptTemplate = settings.archiveSummaryPrompt
+            )
 
             // 3. 更新运行摘要 Sₖ = update(Sₖ₋₁, Wₖ)
             val newRunningSummary = updateRunningSummary(
                 previousSummary = conversation.conversationSummary,
                 windowMessages = windowMessages,
-                provider = providerHandler,
-                compressionModel = compressionModel,
-                providerSetting = provider
+                provider = contextCompressionProviderHandler,
+                model = contextCompressionModel,
+                providerSetting = contextCompressionProvider,
+                promptTemplate = settings.contextCompressionPrompt
             )
 
             // 4. 原子化保存
@@ -780,34 +802,31 @@ class ChatService(
         }
     }
 
+    /**
+     * 简单的变量替换函数
+     * 替换 prompt 中的 {key} 为实际值
+     */
+    private fun renderPrompt(template: String, variables: Map<String, String>): String {
+        var result = template
+        variables.forEach { (key, value) ->
+            result = result.replace("{$key}", value)
+        }
+        return result
+    }
+
     // 生成归档摘要 Aₖ = archive(Wₖ)
     @Suppress("UNCHECKED_CAST")
     private suspend fun generateArchiveSummary(
         windowMessages: List<me.rerere.rikkahub.data.model.MessageNode>,
         provider: me.rerere.ai.provider.Provider<*>,
-        compressionModel: me.rerere.ai.provider.Model,
-        providerSetting: me.rerere.ai.provider.ProviderSetting
+        model: me.rerere.ai.provider.Model,
+        providerSetting: me.rerere.ai.provider.ProviderSetting,
+        promptTemplate: String
     ): String {
         val debugLogger = DebugLogger.getInstance(context)
-        val prompt = buildString {
-            appendLine("你是一个对话归档专家。请从以下对话片段中提取并归档关键信息。")
-            appendLine()
-            appendLine("归档内容必须严格限制为以下5类：")
-            appendLine("1. 发生的事件事实")
-            appendLine("2. 已达成的结论/决策")
-            appendLine("3. 新增或变更的约束/偏好")
-            appendLine("4. 未解决的问题")
-            appendLine("5. 检索关键词")
-            appendLine()
-            appendLine("禁止项：")
-            appendLine("- 推导过程")
-            appendLine("- 教学步骤")
-            appendLine("- 长原文复述")
-            appendLine("- 情绪/气氛/修辞")
-            appendLine()
-            appendLine("长度要求：100-300字，上限500字")
-            appendLine()
-            appendLine("对话内容：")
+
+        // 格式化消息内容
+        val formattedMessages = buildString {
             windowMessages.forEach { node ->
                 val msg = node.currentMessage
                 val role = when(msg.role) {
@@ -818,9 +837,10 @@ class ChatService(
                 appendLine("[$role] ${msg.toText().take(500)}")
                 appendLine()
             }
-            appendLine()
-            appendLine("请输出归档内容：")
         }
+
+        // 使用配置的 prompt template，替换变量
+        val prompt = renderPrompt(promptTemplate, mapOf("messages" to formattedMessages))
 
         return try {
             @Suppress("UNCHECKED_CAST")
@@ -830,9 +850,9 @@ class ChatService(
                     UIMessage.user(prompt = prompt)
                 ),
                 params = TextGenerationParams(
-                    model = compressionModel,
+                    model = model,
                     temperature = 0.3f,
-                    maxTokens = 800,
+                    maxTokens = 1000,  // 归档摘要维持 1000
                     thinkingBudget = 0,
                 ),
             )
@@ -862,17 +882,14 @@ class ChatService(
         previousSummary: String,
         windowMessages: List<me.rerere.rikkahub.data.model.MessageNode>,
         provider: me.rerere.ai.provider.Provider<*>,
-        compressionModel: me.rerere.ai.provider.Model,
-        providerSetting: me.rerere.ai.provider.ProviderSetting
+        model: me.rerere.ai.provider.Model,
+        providerSetting: me.rerere.ai.provider.ProviderSetting,
+        promptTemplate: String
     ): String {
         val debugLogger = DebugLogger.getInstance(context)
-        val prompt = buildString {
-            if (previousSummary.isNotBlank()) {
-                appendLine("当前会话摘要：")
-                appendLine(previousSummary)
-                appendLine()
-            }
-            appendLine("新增对话内容：")
+
+        // 格式化消息内容
+        val formattedMessages = buildString {
             windowMessages.forEach { node ->
                 val msg = node.currentMessage
                 val role = when(msg.role) {
@@ -883,10 +900,16 @@ class ChatService(
                 appendLine("[$role] ${msg.toText().take(500)}")
                 appendLine()
             }
-            appendLine()
-            appendLine("请基于当前摘要和新增对话，输出一份完整的、涵盖所有信息的更新后摘要。")
-            appendLine("注意：输出应该是完整的摘要，而不是追加内容。")
         }
+
+        // 使用配置的 prompt template，替换变量
+        val prompt = renderPrompt(
+            promptTemplate,
+            mapOf(
+                "previous_summary" to (if (previousSummary.isNotBlank()) previousSummary else "(无)"),
+                "messages" to formattedMessages
+            )
+        )
 
         return try {
             @Suppress("UNCHECKED_CAST")
@@ -896,9 +919,9 @@ class ChatService(
                     UIMessage.user(prompt = prompt)
                 ),
                 params = TextGenerationParams(
-                    model = compressionModel,
+                    model = model,
                     temperature = 0.3f,
-                    maxTokens = 1000,
+                    maxTokens = 10000,  // 上下文压缩改为 10000
                     thinkingBudget = 0,
                 ),
             )
