@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.rikkahub.data.db.dao.ArchiveSummaryDao
+import me.rerere.rikkahub.data.db.dao.MessageNodeTextDao
 import me.rerere.rikkahub.data.db.dao.VectorIndexDao
 import me.rerere.rikkahub.debug.DebugLogger
 import me.rerere.rikkahub.debug.model.LogLevel
@@ -17,17 +18,20 @@ import me.rerere.rikkahub.service.recall.model.QueryContext
  * A源候选生成器（ArchiveSourceCandidateGenerator）
  *
  * Phase C: 最小闭环实现（HINT候选 + embedding检索）
+ * Phase E: 优先 SNIPPET（<=800 chars），回退 HINT（<=200 chars）
  *
  * 功能：
  * 1. Gating 检查（enableArchiveRecall + embeddingModelId）
  * 2. 从 archiveSummaryDao 获取归档摘要
  * 3. 使用 embedding + vectorIndex cosineSimilarity 做检索
- * 4. 生成 HINT 候选（<=200 chars）
- * 5. 失败/异常 => 返回 emptyList
+ * 4. 优先生成 SNIPPET 候选（<=800 chars），使用 MessageNodeTextDao 获取原始文本
+ * 5. 回退生成 HINT 候选（<=200 chars），使用摘要内容
+ * 6. 失败/异常 => 返回 emptyList
  *
  * 预算护栏：
  * - MAX_PER_SOURCE = 3（每来源最多3个候选）
- * - HINT_MAX_CHARS = 200
+ * - SNIPPET_MAX_CHARS = 800（Phase E: 优先 SNIPPET）
+ * - HINT_MAX_CHARS = 200（回退）
  * - MIN_COS_SIM = 0.3（余弦相似度阈值）
  * - EMBEDDING_MAX_CALLS = 3（默认1次，条件满足时最多3次）
  */
@@ -35,12 +39,14 @@ class ArchiveSourceCandidateGenerator(
     private val context: Context,
     private val archiveSummaryDao: ArchiveSummaryDao,
     private val vectorIndexDao: VectorIndexDao,
+    private val messageNodeTextDao: MessageNodeTextDao,
     private val providerManager: ProviderManager
 ) {
     companion object {
         private const val TAG = "ArchiveSourceCandidateGenerator"
         private const val MAX_PER_SOURCE = 3  // 每来源最多3个候选
-        private const val HINT_MAX_CHARS = 200
+        private const val SNIPPET_MAX_CHARS = 800  // Phase E: 优先 SNIPPET
+        private const val HINT_MAX_CHARS = 200  // 回退 HINT
         private const val MIN_COS_SIM = 0.3f  // 余弦相似度阈值
         private const val EMBEDDING_MAX_CALLS = 3  // 最多3次 embedding 调用
         private const val MULTI_QUERY_NEED_SCORE_THRESHOLD = 0.75f  // MultiQuery 触发阈值
@@ -173,23 +179,55 @@ class ArchiveSourceCandidateGenerator(
             )
         )
 
-        // 10. 生成 HINT 候选
+        // 10. 生成候选：优先 SNIPPET（Phase E），回退 HINT
         for ((archive, similarity) in archiveWithSimilarity) {
             if (candidates.size >= MAX_PER_SOURCE) break
 
-            // 截断内容为 HINT（<=200 chars）
-            val hintContent = archive.content.take(HINT_MAX_CHARS)
+            // Phase E: 优先生成 SNIPPET（<=800 chars）
+            val snippetContent = tryAssembleSnippet(
+                conversationId = conversationId,
+                windowStartIndex = archive.windowStartIndex,
+                windowEndIndex = archive.windowEndIndex
+            )
+
+            val (kind, content, maxChars) = if (snippetContent != null) {
+                // SNIPPET 成功
+                debugLogger.log(
+                    LogLevel.DEBUG,
+                    TAG,
+                    "Assembled SNIPPET for archive",
+                    mapOf(
+                        "archiveId" to archive.id,
+                        "snippetLength" to snippetContent.length,
+                        "windowStartIndex" to archive.windowStartIndex,
+                        "windowEndIndex" to archive.windowEndIndex
+                    )
+                )
+                Triple(CandidateKind.SNIPPET, snippetContent, SNIPPET_MAX_CHARS)
+            } else {
+                // SNIPPET 失败，回退 HINT（<=200 chars）
+                debugLogger.log(
+                    LogLevel.DEBUG,
+                    TAG,
+                    "Falling back to HINT for archive",
+                    mapOf("archiveId" to archive.id)
+                )
+                Triple(CandidateKind.HINT, archive.content, HINT_MAX_CHARS)
+            }
+
+            // 截断内容
+            val truncatedContent = content.take(maxChars)
 
             val candidate = Candidate(
                 id = me.rerere.rikkahub.service.recall.model.CandidateBuilder.buildASourceId(
                     archiveId = archive.id,
-                    kind = CandidateKind.HINT
+                    kind = kind
                 ),
                 source = CandidateSource.A_ARCHIVE,
-                kind = CandidateKind.HINT,
-                content = hintContent,
-                anchors = listOf("archive_id:${archive.id}"),
-                cost = hintContent.length,
+                kind = kind,
+                content = truncatedContent,
+                anchors = buildAnchors(archive, kind),
+                cost = truncatedContent.length,
                 evidenceRaw = mapOf(
                     "archive_id" to archive.id,
                     "max_cos_sim" to similarity.toString(),
@@ -200,6 +238,72 @@ class ArchiveSourceCandidateGenerator(
         }
 
         return@withContext candidates
+    }
+
+    /**
+     * 尝试组装 SNIPPET（Phase E）
+     *
+     * 使用 MessageNodeTextDao 根据 windowStartIndex/windowEndIndex 获取原始文本，
+     * 拼接后截断到 SNIPPET_MAX_CHARS（800）。
+     *
+     * @param conversationId 会话ID
+     * @param windowStartIndex 窗口起始索引
+     * @param windowEndIndex 窗口结束索引
+     * @return 拼接后的 SNIPPET 内容，失败返回 null
+     */
+    private suspend fun tryAssembleSnippet(
+        conversationId: String,
+        windowStartIndex: Int,
+        windowEndIndex: Int
+    ): String? = withContext(Dispatchers.IO) {
+        try {
+            // 1. 生成 indices 列表 [windowStartIndex, windowEndIndex]
+            val indices = (windowStartIndex..windowEndIndex).toList()
+
+            // 2. 从 MessageNodeTextDao 批量获取原始文本
+            val nodeTexts = messageNodeTextDao.getByConversationIdAndIndices(
+                conversationId = conversationId,
+                indices = indices
+            )
+
+            // 3. 拼接 rawText（按 node_index 排序）
+            val snippetText = nodeTexts
+                .sortedBy { it.nodeIndex }
+                .joinToString(separator = "\n") { it.rawText }
+
+            // 4. 返回拼接结果（调用方会截断到 SNIPPET_MAX_CHARS）
+            snippetText.ifEmpty { null }
+        } catch (e: Exception) {
+            DebugLogger.getInstance(context).log(
+                LogLevel.WARN,
+                TAG,
+                "Failed to assemble SNIPPET",
+                mapOf(
+                    "conversationId" to conversationId,
+                    "windowStartIndex" to windowStartIndex,
+                    "windowEndIndex" to windowEndIndex,
+                    "error" to (e.message ?: "unknown")
+                )
+            )
+            null  // 失败返回 null，触发 HINT 回退
+        }
+    }
+
+    /**
+     * 构建 anchors 列表
+     */
+    private fun buildAnchors(
+        archive: me.rerere.rikkahub.data.db.entity.ArchiveSummaryEntity,
+        kind: CandidateKind
+    ): List<String> {
+        val anchors = mutableListOf("archive_id:${archive.id}")
+
+        if (kind == CandidateKind.SNIPPET) {
+            // SNIPPET 添加 window indices
+            anchors.add("node_indices:${archive.windowStartIndex},${archive.windowEndIndex}")
+        }
+
+        return anchors
     }
 
     /**
