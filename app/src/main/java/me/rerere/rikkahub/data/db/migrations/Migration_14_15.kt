@@ -63,36 +63,14 @@ val Migration_14_15 = object : Migration(14, 15) {
         )
 
         // ========================================
-        // 3. 创建 FTS 同步触发器（3个）
+        // 3. 创建 FTS INSERT 触发器
         // ========================================
-        // INSERT 触发器
+        // 注意：只创建 INSERT 触发器，DELETE 和 UPDATE 手动处理
+        // 因为 FTS4 的 DELETE 触发器在某些设备上不稳定（会报 SQL logic error）
         db.execSQL(
             """
             CREATE TRIGGER IF NOT EXISTS mnt_ai AFTER INSERT ON message_node_text BEGIN
-                INSERT INTO message_node_fts(rowid, search_text, node_id, conversation_id, node_index, role)
-                VALUES (new.rowid, new.search_text, new.node_id, new.conversation_id, new.node_index, new.role);
-            END
-            """.trimIndent()
-        )
-
-        // DELETE 触发器
-        db.execSQL(
-            """
-            CREATE TRIGGER IF NOT EXISTS mnt_ad AFTER DELETE ON message_node_text BEGIN
-                INSERT INTO message_node_fts(message_node_fts, rowid, search_text)
-                VALUES ('delete', old.rowid, old.search_text);
-            END
-            """.trimIndent()
-        )
-
-        // UPDATE 触发器
-        db.execSQL(
-            """
-            CREATE TRIGGER IF NOT EXISTS mnt_au AFTER UPDATE ON message_node_text BEGIN
-                INSERT INTO message_node_fts(message_node_fts, rowid, search_text)
-                VALUES ('delete', old.rowid, old.search_text);
-
-                INSERT INTO message_node_fts(rowid, search_text, node_id, conversation_id, node_index, role)
+                INSERT INTO message_node_fts(docid, search_text, node_id, conversation_id, node_index, role)
                 VALUES (new.rowid, new.search_text, new.node_id, new.conversation_id, new.node_index, new.role);
             END
             """.trimIndent()

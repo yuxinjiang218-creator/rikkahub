@@ -52,11 +52,33 @@ class VerbatimVaultService(
         val firstMessage = messages.first()
         val roleInt = firstMessage.role.ordinal
 
-        // 提取文本（从 parts 数组）
+        // 提取文本和工具调用（从 parts 数组）
         val textBuilder = StringBuilder()
         for (part in firstMessage.parts) {
-            if (part is UIMessagePart.Text) {
-                textBuilder.append(part.text)
+            when (part) {
+                is UIMessagePart.Text -> {
+                    textBuilder.append(part.text)
+                }
+                is UIMessagePart.ToolCall -> {
+                    // 工具调用：记录工具名称和参数
+                    textBuilder.append("[调用工具: ${part.toolName}")
+                    if (part.arguments.isNotEmpty()) {
+                        val argsPreview = part.arguments.take(100)  // 限制参数长度
+                        textBuilder.append(" 参数: $argsPreview")
+                    }
+                }
+                is UIMessagePart.ToolResult -> {
+                    // 工具结果：记录工具名称和结果摘要
+                    textBuilder.append("[工具结果: ${part.toolName}")
+                    val contentStr = part.content.toString()
+                    if (contentStr.isNotEmpty()) {
+                        val preview = contentStr.take(200)  // 限制结果长度
+                        textBuilder.append(" 结果: $preview")
+                    }
+                }
+                else -> {
+                    // 其他类型（如Image、Document等）不加入P层
+                }
             }
         }
 
@@ -129,21 +151,16 @@ class VerbatimVaultService(
 
         if (tokens.isEmpty()) return
 
-        // 批量插入倒排索引
+        // 批量插入倒排索引（异步执行，无需显式事务）
+        // 由于 buildMessageNodeText 现在是异步执行的，不会有外层事务冲突
         val db = database.openHelper.writableDatabase
-        db.beginTransaction()
-        try {
-            for (token in tokens) {
-                db.execSQL(
-                    """INSERT OR REPLACE INTO message_token_index
-                    (token, conversation_id, node_index, node_id)
-                    VALUES (?, ?, ?, ?)""",
-                    arrayOf(token, conversationId, nodeIndex, nodeId)
-                )
-            }
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
+        for (token in tokens) {
+            db.execSQL(
+                """INSERT OR REPLACE INTO message_token_index
+                (token, conversation_id, node_index, node_id)
+                VALUES (?, ?, ?, ?)""",
+                arrayOf(token, conversationId, nodeIndex, nodeId)
+            )
         }
     }
 
@@ -249,11 +266,19 @@ class VerbatimVaultService(
     }
 
     /**
-     * 删除会话的所有 P 层文本（含倒排索引）
+     * 删除会话的所有 P 层文本（含倒排索引和 FTS）
      *
      * @param conversationId 会话 ID
      */
     suspend fun deleteMessageNodeTextByConversation(conversationId: String) {
+        // 先删除 FTS 数据（无触发器，手动删除）
+        val ftsDeleteQuery = androidx.sqlite.db.SimpleSQLiteQuery(
+            "DELETE FROM message_node_fts WHERE conversation_id = ?",
+            arrayOf(conversationId)
+        )
+        messageNodeTextDao.deleteFtsByConversationId(ftsDeleteQuery)
+
+        // 删除 P 层文本
         messageNodeTextDao.deleteByConversationId(conversationId)
 
         // 删除倒排索引（使用 RawQuery）

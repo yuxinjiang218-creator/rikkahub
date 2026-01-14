@@ -447,8 +447,19 @@ class ChatService(
                 conversationSummary = conversation.conversationSummary,
                 conversationId = conversationId,
                 lastArchiveRecallIds = conversation.lastArchiveRecallIds,
+                recallLedgerJson = conversation.recallLedgerJson,
+                onRecallLedgerUpdate = { newLedgerJson ->
+                    // vNext 召回系统账本更新
+                    val currentConversation = getConversationFlow(conversationId).value
+                    if (currentConversation.recallLedgerJson != newLedgerJson) {
+                        updateConversation(
+                            conversationId,
+                            currentConversation.copy(recallLedgerJson = newLedgerJson)
+                        )
+                    }
+                },
                 onSemanticRecall = { newRecallIds ->
-                    // SEMANTIC 召回成功后更新 lastArchiveRecallIds
+                    // SEMANTIC 召回成功后更新 lastArchiveRecallIds（已废弃，保留兼容性）
                     val currentConversation = getConversationFlow(conversationId).value
                     if (currentConversation.lastArchiveRecallIds != newRecallIds) {
                         updateConversation(

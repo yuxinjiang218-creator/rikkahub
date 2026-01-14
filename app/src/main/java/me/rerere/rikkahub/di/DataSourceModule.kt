@@ -1,6 +1,8 @@
 package me.rerere.rikkahub.di
 
 import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.sqlite.db.SupportSQLiteDatabase
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.http.HttpHeaders
@@ -25,10 +27,12 @@ import me.rerere.rikkahub.data.db.migrations.Migration_14_15
 import me.rerere.rikkahub.data.db.migrations.Migration_6_7
 import me.rerere.rikkahub.data.db.migrations.Migration_11_12
 import me.rerere.rikkahub.data.db.migrations.Migration_15_16
+import me.rerere.rikkahub.data.db.migrations.Migration_16_17
 import me.rerere.rikkahub.service.IntentRouter
 import me.rerere.rikkahub.service.SemanticRecallService
 import me.rerere.rikkahub.service.VerbatimRecallService
 import me.rerere.rikkahub.service.VerbatimVaultService
+import me.rerere.rikkahub.service.recall.RecallCoordinator
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.sync.WebdavSync
 import me.rerere.rikkahub.data.sync.S3Sync
@@ -48,7 +52,59 @@ val dataSourceModule = module {
 
     single {
         Room.databaseBuilder(get(), AppDatabase::class.java, "rikka_hub")
-            .addMigrations(Migration_6_7, Migration_11_12, Migration_12_13, Migration_13_14, Migration_14_15, Migration_15_16)
+            .addMigrations(Migration_6_7, Migration_11_12, Migration_12_13, Migration_13_14, Migration_14_15, Migration_15_16, Migration_16_17)
+            .addCallback(object : RoomDatabase.Callback() {
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    super.onCreate(db)
+                    // 创建 message_token_index 表（全新安装时需要）
+                    db.execSQL("""
+                        CREATE TABLE IF NOT EXISTS message_token_index (
+                            token TEXT NOT NULL,
+                            conversation_id TEXT NOT NULL,
+                            node_index INTEGER NOT NULL,
+                            node_id TEXT NOT NULL,
+                            PRIMARY KEY (token, conversation_id, node_index)
+                        )
+                    """.trimIndent())
+                    db.execSQL("CREATE INDEX IF NOT EXISTS idx_token_conv ON message_token_index(conversation_id, token)")
+
+                    // 创建 message_node_text 表（全新安装时需要）
+                    db.execSQL("""
+                        CREATE TABLE IF NOT EXISTS message_node_text (
+                            node_id TEXT PRIMARY KEY NOT NULL,
+                            conversation_id TEXT NOT NULL,
+                            node_index INTEGER NOT NULL,
+                            role INTEGER NOT NULL,
+                            raw_text TEXT NOT NULL,
+                            search_text TEXT NOT NULL,
+                            FOREIGN KEY (conversation_id) REFERENCES conversationentity(id) ON DELETE CASCADE
+                        )
+                    """.trimIndent())
+                    db.execSQL("CREATE INDEX IF NOT EXISTS idx_mnt_conv_idx ON message_node_text(conversation_id, node_index)")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS idx_mnt_conv_role ON message_node_text(conversation_id, role)")
+
+                    // 创建 message_node_fts FTS4 全文搜索表（全新安装时需要，包含 role 字段）
+                    db.execSQL("""
+                        CREATE VIRTUAL TABLE IF NOT EXISTS message_node_fts USING fts4(
+                            search_text,
+                            node_id UNINDEXED,
+                            conversation_id UNINDEXED,
+                            node_index UNINDEXED,
+                            role UNINDEXED
+                        )
+                    """.trimIndent())
+
+                    // 创建 FTS INSERT 触发器（全新安装时需要）
+                    // 注意：只使用 INSERT 触发器，DELETE 和 UPDATE 手动处理
+                    // 因为 FTS4 的 DELETE 触发器在某些设备上不稳定
+                    db.execSQL("""
+                        CREATE TRIGGER IF NOT EXISTS mnt_ai AFTER INSERT ON message_node_text BEGIN
+                            INSERT INTO message_node_fts(docid, search_text, node_id, conversation_id, node_index, role)
+                            VALUES (new.rowid, new.search_text, new.node_id, new.conversation_id, new.node_index, new.role);
+                        END
+                    """.trimIndent())
+                }
+            })
             .build()
     }
 
@@ -127,6 +183,18 @@ val dataSourceModule = module {
     single { McpManager(settingsStore = get(), appScope = get()) }
 
     single {
+        RecallCoordinator(
+            context = get(),
+            conversationDao = get(),
+            messageNodeTextDao = get(),
+            verbatimArtifactDao = get(),
+            archiveSummaryDao = get(),
+            vectorIndexDao = get(),
+            providerManager = get()
+        )
+    }
+
+    single {
         GenerationHandler(
             context = get(),
             providerManager = get(),
@@ -137,7 +205,8 @@ val dataSourceModule = module {
             archiveSummaryDao = get(),
             vectorIndexDao = get(),
             verbatimRecallService = get(),
-            semanticRecallService = get()
+            semanticRecallService = get(),
+            recallCoordinator = get()
         )
     }
 

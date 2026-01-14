@@ -147,8 +147,6 @@ class ConversationRepository(
             )
             // 删除旧的节点，插入新的节点
             messageNodeDAO.deleteByConversation(conversation.id.toString())
-            // 删除旧的 P 层数据，防止残留（方案A）
-            verbatimVaultService.deleteMessageNodeTextByConversation(conversation.id.toString())
             saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
         }
     }
@@ -189,18 +187,8 @@ class ConversationRepository(
     }
 
     suspend fun deleteConversationOfAssistant(assistantId: Uuid) {
-        val conversations = getConversationsOfAssistant(assistantId).first()
-
-        // 分批删除，避免大量事务堆积
-        val batchSize = 10
-        conversations.chunked(batchSize).forEach { chunk ->
-            chunk.forEach { conversation ->
-                deleteConversation(conversation)
-            }
-            // 批次间添加小延迟，避免事务堆积
-            if (chunk.size == batchSize) {
-                kotlinx.coroutines.delay(50)
-            }
+        getConversationsOfAssistant(assistantId).first().forEach { conversation ->
+            deleteConversation(conversation)
         }
     }
 
@@ -255,15 +243,10 @@ class ConversationRepository(
     }
 
     suspend fun togglePinStatus(conversationId: Uuid) {
-        database.withTransaction {
-            val conversation = getConversationById(conversationId)
-            if (conversation != null) {
-                conversationDAO.updatePinStatus(
-                    id = conversationId.toString(),
-                    isPinned = !conversation.isPinned
-                )
-            }
-        }
+        conversationDAO.updatePinStatus(
+            id = conversationId.toString(),
+            isPinned = !(getConversationById(conversationId)?.isPinned ?: false)
+        )
     }
 
     private fun conversationSummaryToConversation(entity: LightConversationEntity): Conversation {

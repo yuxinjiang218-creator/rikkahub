@@ -44,6 +44,11 @@ interface MessageNodeTextDao {
     @Query("DELETE FROM message_node_text WHERE conversation_id = :conversationId")
     suspend fun deleteByConversationId(conversationId: String)
 
+    // 删除会话的 FTS 数据
+    // 使用 RawQuery 绕过 KSP 验证，因为 message_node_fts 是 Migration 中创建的虚拟表
+    @RawQuery
+    suspend fun deleteFtsByConversationId(query: SupportSQLiteQuery): Int
+
     // 删除会话的倒排索引
     // 使用 RawQuery 绕过 KSP 验证
     @RawQuery

@@ -1,8 +1,23 @@
 package me.rerere.rikkahub.service
 
 import android.content.Context
+import kotlinx.serialization.Serializable
 import me.rerere.rikkahub.debug.DebugLogger
 import me.rerere.rikkahub.debug.model.LogLevel
+
+/**
+ * 显式信号
+ *
+ * @param explicit 是否为显式请求（含"原文/全文/逐字"等强显式词或《...》）
+ * @param titles 提取的书名号内容列表
+ * @param keyword 命中的显式关键词（如果有）
+ */
+@Serializable
+data class ExplicitSignal(
+    val explicit: Boolean,
+    val titles: List<String>,
+    val keyword: String?
+)
 
 /**
  * 路由枚举
@@ -91,5 +106,31 @@ object IntentRouter {
             .map { it.groupValues[1] }
             .take(3)
             .toList()
+    }
+
+    /**
+     * 检测显式召回信号
+     *
+     * 检测规则（写死）：
+     * 1. 强显式词（原文/全文/逐字/一字不差/复述/贴出来/引用/原诗/原代码/那段）=> explicit=true
+     * 2. 书名号模式《...》=> explicit=true, 提取 titles
+     *
+     * @param text 输入文本
+     * @return 显式信号（explicit, titles, keyword）
+     */
+    fun detectExplicitRecallSignal(text: String): ExplicitSignal {
+        // 检测强显式关键词
+        val keyword = verbatimKeywords.firstOrNull { text.contains(it) }
+
+        // 提取书名号内容
+        val titles = extractTitles(text)
+
+        val explicit = keyword != null || titles.isNotEmpty()
+
+        return ExplicitSignal(
+            explicit = explicit,
+            titles = titles,
+            keyword = keyword
+        )
     }
 }

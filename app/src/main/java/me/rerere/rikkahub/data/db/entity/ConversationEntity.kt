@@ -30,4 +30,6 @@ data class ConversationEntity(
     val conversationSummaryUntil: Int,
     @ColumnInfo("last_archive_recall_ids", defaultValue = "[]")
     val lastArchiveRecallIds: String,
+    @ColumnInfo("recall_ledger_json", defaultValue = "{}")
+    val recallLedgerJson: String,
 )

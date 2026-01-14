@@ -3,20 +3,30 @@ package me.rerere.rikkahub.service.recall.ledger
 import android.content.Context
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.rikkahub.debug.DebugLogger
 import me.rerere.rikkahub.debug.model.LogLevel
 import me.rerere.rikkahub.service.recall.model.ProbeLedgerState
 
 /**
- * 探针账本编解码器
+ * 探针账本编解码器（Phase E：向后兼容增强）
  *
  * 提供 JSON 序列化/反序列化功能，用于将 ProbeLedgerState 持久化到数据库。
+ *
+ * 向后兼容策略：
+ * - 旧版本 JSON 缺少新字段时，使用默认值填充
+ * - 解析失败时返回空账本，不崩溃
  */
 object LedgerCodec {
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
      * 从 JSON 字符串解码账本，失败时返回空账本
+     *
+     * 向后兼容：
+     * - 旧 JSON 缺少 silentUntilTurn/lastProbeObservation 字段时自动填充默认值
      *
      * @param jsonStr JSON 字符串（可为 null、空字符串、"{}"）
      * @param context Android Context（用于日志记录，可为 null）
