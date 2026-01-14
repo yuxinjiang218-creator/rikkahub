@@ -519,31 +519,6 @@ internal fun AssistantBasicContent(
                     )
                 }
             )
-            if (assistant.enableCompression) {
-                HorizontalDivider()
-                FormItem(
-                    modifier = Modifier.padding(8.dp),
-                    label = {
-                        Text(stringResource(R.string.assistant_page_compression_model))
-                    },
-                    description = {
-                        Text(stringResource(R.string.assistant_page_compression_model_desc))
-                    },
-                    content = {
-                        ModelSelector(
-                            modelId = assistant.compressionModelId,
-                            providers = providers,
-                            type = ModelType.CHAT,
-                            allowClear = true,
-                            onSelect = {
-                                onUpdate(
-                                    assistant.copy(compressionModelId = it.id)
-                                )
-                            },
-                        )
-                    }
-                )
-            }
             HorizontalDivider()
             FormItem(
                 modifier = Modifier.padding(8.dp),
