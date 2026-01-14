@@ -122,12 +122,24 @@ object ProbeAcceptanceJudge {
     /**
      * 计算词重叠率（deterministic，不引入新依赖）
      *
-     * 策略：简单分词（按空白/标点切分 + 中文按字符 bigram）
+     * 策略：字符 bigram 重叠（对中英文都有效）
+     *
+     * Phase F 修复：
+     * - 去掉"至少包含一个字母"过滤，支持纯中文
+     * - 加启用门槛：cleaned.length >= 4 才计算 overlap（避免短文本噪声）
      *
      * @return 重叠率 [0, 1]
      */
     private fun calcOverlapRatio(lastUserText: String, lastContent: String): Float {
-        // 简化实现：使用字符 bigram 重叠（对中英文都有效）
+        // Phase F: 启用门槛（短文本抑噪）
+        val cleanedUser = lastUserText.replace(Regex("""[ \p{Punct}]"""), "")
+        val cleanedContent = lastContent.replace(Regex("""[ \p{Punct}]"""), "")
+
+        if (cleanedUser.length < 4 || cleanedContent.length < 4) {
+            return 0f  // 任一文本过短，不计算 overlap
+        }
+
+        // 提取 bigram（全量，不过滤字母）
         val lastUserBigrams = extractBigrams(lastUserText)
         val lastContentBigrams = extractBigrams(lastContent)
 
@@ -146,9 +158,14 @@ object ProbeAcceptanceJudge {
     }
 
     /**
-     * 提取字符 bigram（deterministic 分词）
+     * 提取字符 bigram（deterministic 分词，Phase F 修复）
      *
-     * 示例："你好世界" -> ["你好", "好世", "世界"]
+     * 修改：去掉"至少包含一个字母"过滤，支持纯中文 bigram
+     *
+     * 示例：
+     * - "你好世界" -> ["你好", "好世", "世界"]
+     * - "ABC" -> ["AB", "BC"]
+     * - "123" -> ["12", "23"]
      */
     private fun extractBigrams(text: String): Set<String> {
         val bigrams = mutableSetOf<String>()
@@ -156,9 +173,8 @@ object ProbeAcceptanceJudge {
 
         for (i in 0 until cleaned.length - 1) {
             val bigram = cleaned.substring(i, i + 2)
-            if (bigram.any { it.isLetter() }) {  // 至少包含一个字母
-                bigrams.add(bigram)
-            }
+            // Phase F: 去掉字母过滤，直接添加全量 bigram
+            bigrams.add(bigram)
         }
 
         return bigrams

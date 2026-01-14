@@ -11,6 +11,7 @@ import kotlinx.serialization.Serializable
  * @param content 候选内容
  * @param anchors 锚点列表（title、nodeIndex 等）
  * @param cost 成本（字符数）
+ * @param evidenceKey 证据键（Phase F：用于升级绕过冷却，不含 kind）
  * @param evidenceRaw 原始证据数据（用于调试和日志）
  */
 @Serializable
@@ -21,11 +22,12 @@ data class Candidate(
     val content: String,
     val anchors: List<String>,
     val cost: Int,
+    val evidenceKey: String,  // Phase F: 证据键（不含 kind）
     val evidenceRaw: Map<String, String?>
 )
 
 /**
- * 候选构建器（用于生成稳定ID）
+ * 候选构建器（用于生成稳定ID和evidenceKey）
  */
 object CandidateBuilder {
     /**
@@ -52,5 +54,31 @@ object CandidateBuilder {
         kind: CandidateKind
     ): String {
         return "A:$archiveId:$kind"
+    }
+
+    /**
+     * 生成 P源证据键（Phase F：用于升级绕过冷却，不含 kind）
+     * 格式：P:${conversationId}:${normalizedNodeIndices}
+     *
+     * 用途：支持同一证据的不同 kind 之间升级（如 HINT → SNIPPET）
+     */
+    fun buildPSourceEvidenceKey(
+        conversationId: String,
+        nodeIndices: List<Int>
+    ): String {
+        val normalized = nodeIndices.distinct().sorted()
+        return "P:$conversationId:${normalized.joinToString(",")}"
+    }
+
+    /**
+     * 生成 A源证据键（Phase F：用于升级绕过冷却，不含 kind）
+     * 格式：A:${archiveId}
+     *
+     * 用途：支持同一归档的不同 kind 之间升级（如 HINT → SNIPPET）
+     */
+    fun buildASourceEvidenceKey(
+        archiveId: String
+    ): String {
+        return "A:$archiveId"
     }
 }

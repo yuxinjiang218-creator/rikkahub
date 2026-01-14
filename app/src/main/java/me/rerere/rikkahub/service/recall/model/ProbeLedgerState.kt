@@ -72,22 +72,24 @@ data class ProbeLedgerState(
     /**
      * 检查是否允许一次性绕过冷却（升级机制）
      *
+     * Phase F 修改：使用 evidenceKey 比对，支持同一证据的不同 kind 之间升级（如 HINT → SNIPPET）
+     *
      * 条件：
      * - 上一轮 outcome = ACCEPT
      * - 上一轮 action 属于 PROBE/FACT/HINT（非 FULL）
-     * - 本轮 candidateId 匹配上一轮
+     * - 本轮 evidenceKey 匹配上一轮
      *
-     * @param candidateId 候选ID
-     * @return true 如果上一轮是 ACCEPT 且 candidateId 匹配且非 FULL，false 否则
+     * @param evidenceKey 证据键（Phase F）
+     * @return true 如果上一轮是 ACCEPT 且 evidenceKey 匹配且非 FULL，false 否则
      */
-    fun canUpgradeOnce(candidateId: String): Boolean {
+    fun canUpgradeOnce(evidenceKey: String): Boolean {
         return lastProbeObservation?.let { obs ->
             // FULL_VERBATIM 不允许升级
             if (obs.action == RecallAction.FULL_VERBATIM) {
                 return false
             }
-            // ACCEPT 且 candidateId 匹配则允许升级
-            obs.outcome == ProbeOutcome.ACCEPT && obs.candidateId == candidateId
+            // Phase F: ACCEPT 且 evidenceKey 匹配则允许升级（支持 kind 不同）
+            obs.outcome == ProbeOutcome.ACCEPT && obs.evidenceKey == evidenceKey
         } ?: false
     }
 
@@ -132,6 +134,7 @@ data class ProbeLedgerState(
  * @param turnIndex 回合索引
  * @param action 执行的动作
  * @param candidateId 候选ID
+ * @param evidenceKey 证据键（Phase F：用于升级绕过冷却，不含 kind）
  * @param content 候选内容
  * @param anchors 锚点列表
  * @param outcome 接住判定结果（本轮评估后填入）
@@ -141,6 +144,7 @@ data class LastProbeObservation(
     val turnIndex: Int,
     val action: RecallAction,
     val candidateId: String,
+    val evidenceKey: String,  // Phase F: 证据键（不含 kind）
     val content: String,
     val anchors: List<String>,
     val outcome: ProbeOutcome = ProbeOutcome.IGNORE  // 默认 IGNORE

@@ -228,6 +228,9 @@ class ArchiveSourceCandidateGenerator(
                 content = truncatedContent,
                 anchors = buildAnchors(archive, kind),
                 cost = truncatedContent.length,
+                evidenceKey = me.rerere.rikkahub.service.recall.model.CandidateBuilder.buildASourceEvidenceKey(
+                    archiveId = archive.id
+                ),  // Phase F: 添加 evidenceKey
                 evidenceRaw = mapOf(
                     "archive_id" to archive.id,
                     "max_cos_sim" to similarity.toString(),

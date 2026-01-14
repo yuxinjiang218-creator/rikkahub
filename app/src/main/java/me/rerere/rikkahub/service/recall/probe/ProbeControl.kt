@@ -242,6 +242,7 @@ object ProbeControl {
             turnIndex = nowTurnIndex,
             action = action,
             candidateId = candidate.id,
+            evidenceKey = candidate.evidenceKey,  // Phase F: 记录证据键
             content = candidate.content.take(200),  // 预算护栏：≤200 chars
             anchors = candidate.anchors.take(10),   // 预算护栏：≤10 条
             outcome = ProbeOutcome.IGNORE  // 默认，下一轮会重新评估

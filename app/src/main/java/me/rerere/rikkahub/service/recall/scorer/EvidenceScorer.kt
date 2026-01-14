@@ -193,12 +193,12 @@ object EvidenceScorer {
     /**
      * 计算重复惩罚（redundancyPenalty）
      * - 相同 contentHash 或 candidateId 在冷却内 => 1
-     * - 例外：如果上一轮是 ACCEPT 且允许升级，绕过冷却一次（Phase E：选项A）
+     * - 例外：如果上一轮是 ACCEPT 且允许升级，绕过冷却一次（Phase F：使用 evidenceKey 比对）
      * - 否则 0
      */
     private fun computeRedundancyPenalty(candidate: Candidate, queryContext: QueryContext): Float {
-        // Phase E：检查是否允许升级绕过冷却（选项A：同证据强化注入）
-        val canUpgrade = queryContext.ledger.canUpgradeOnce(candidate.id)
+        // Phase F：检查是否允许升级绕过冷却（使用 evidenceKey 比对）
+        val canUpgrade = queryContext.ledger.canUpgradeOnce(candidate.evidenceKey)
         if (canUpgrade) {
             // 允许升级，绕过冷却一次
             return 0f

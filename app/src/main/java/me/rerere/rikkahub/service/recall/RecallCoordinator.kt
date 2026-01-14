@@ -95,40 +95,57 @@ class RecallCoordinator(
             )
         )
 
-        // 阶段1：NeedGate 判断
-        val needGateTime = measureTimeMillis {
-            if (!NeedGate.shouldProceed(queryContext)) {
-                debugLogger.log(
-                    LogLevel.INFO,
-                    TAG,
-                    "NeedGate blocked",
-                    mapOf(
-                        "needScore" to NeedGate.computeNeedScoreHeuristic(queryContext),
-                        "threshold" to NeedGate.getThreshold()
-                    )
-                )
-                return null  // NeedGate 未通过，不调用任何 DAO
-            }
-        }
-
-        debugLogger.log(LogLevel.DEBUG, TAG, "NeedGate passed in ${needGateTime}ms")
-
-        // 阶段1.5：评估上一轮试探结果（Phase E：ProbeControl）
+        // 阶段1：评估上一轮试探结果（Phase F：ProbeControl 纯内存计算，优先于 NeedGate）
+        // 目的：即使 NeedGate blocked，也要更新 outcome/strikes，避免短回复（"对/继续"）无法判定
+        val evaluateProbeStartTime = System.currentTimeMillis()
         val updatedLedger = me.rerere.rikkahub.service.recall.probe.ProbeControl.evaluateAndUpdate(
             ledger = queryContext.ledger,
             lastUserText = queryContext.lastUserText,
             nowTurnIndex = queryContext.nowTurnIndex,
             context = context
         )
+        val evaluateProbeTime = System.currentTimeMillis() - evaluateProbeStartTime
+
+        debugLogger.log(
+            LogLevel.DEBUG,
+            TAG,
+            "Probe evaluation completed",
+            mapOf(
+                "time" to "${evaluateProbeTime}ms",
+                "outcome" to (updatedLedger.lastProbeObservation?.outcome?.name ?: "null"),
+                "strikes" to updatedLedger.globalProbeStrikes
+            )
+        )
 
         // 更新 QueryContext.ledger
         val updatedQueryContext = queryContext.copy(ledger = updatedLedger)
 
-        // 阶段1.6：检查静默窗口（Phase E：快速停止）
-        if (!queryContext.explicitSignal.explicit &&
+        // 阶段2：NeedGate 判断（是否进入候选生成）
+        val needGateTime = measureTimeMillis {
+            if (!NeedGate.shouldProceed(updatedQueryContext)) {
+                debugLogger.log(
+                    LogLevel.INFO,
+                    TAG,
+                    "NeedGate blocked",
+                    mapOf(
+                        "needScore" to NeedGate.computeNeedScoreHeuristic(updatedQueryContext),
+                        "threshold" to NeedGate.getThreshold()
+                    )
+                )
+                // Phase F: 即使 blocked，也要回调更新后的 ledger（outcome/strikes 已更新）
+                val updatedLedgerJson = json.encodeToString(updatedLedger)
+                onRecallLedgerUpdate?.invoke(updatedLedgerJson)
+                return null  // NeedGate 未通过，不调用任何 DAO
+            }
+        }
+
+        debugLogger.log(LogLevel.DEBUG, TAG, "NeedGate passed in ${needGateTime}ms")
+
+        // 阶段3：检查静默窗口（Phase E：快速停止）
+        if (!updatedQueryContext.explicitSignal.explicit &&
             me.rerere.rikkahub.service.recall.probe.ProbeControl.isInSilentWindow(
                 ledger = updatedLedger,
-                nowTurnIndex = queryContext.nowTurnIndex
+                nowTurnIndex = updatedQueryContext.nowTurnIndex
             )
         ) {
             debugLogger.log(
@@ -137,13 +154,16 @@ class RecallCoordinator(
                 "Silent window active, blocking non-explicit recall",
                 mapOf(
                     "silentUntilTurn" to updatedLedger.silentUntilTurn,
-                    "nowTurnIndex" to queryContext.nowTurnIndex
+                    "nowTurnIndex" to updatedQueryContext.nowTurnIndex
                 )
             )
+            // Phase F: 即使 blocked，也要回调更新后的 ledger
+            val updatedLedgerJson = json.encodeToString(updatedLedger)
+            onRecallLedgerUpdate?.invoke(updatedLedgerJson)
             return null  // 静默窗口内，non-explicit 一律 NONE
         }
 
-        // 阶段2：P源候选生成
+        // 阶段4：P源候选生成
         val candidates = mutableListOf<Candidate>()
         val pSourceTime = measureTimeMillis {
             val pSourceCandidates = textSourceCandidateGenerator.generate(updatedQueryContext)
@@ -158,7 +178,7 @@ class RecallCoordinator(
         }
         debugLogger.log(LogLevel.DEBUG, TAG, "P source generation took ${pSourceTime}ms")
 
-        // 阶段2.5：A源候选生成（Phase C）
+        // 阶段5：A源候选生成（Phase C）
         val aSourceTime = measureTimeMillis {
             val aSourceCandidates = archiveSourceCandidateGenerator.generate(
                 queryContext = updatedQueryContext,
@@ -188,10 +208,10 @@ class RecallCoordinator(
             mapOf("count" to candidates.size)
         )
 
-        // 阶段3：获取最大 node_index（用于 recency 归一化）
+        // 阶段6：获取最大 node_index（用于 recency 归一化）
         val maxNodeIndex = messageNodeTextDao.getMaxNodeIndex(updatedQueryContext.conversationId) ?: 0
 
-        // 阶段4：评分
+        // 阶段7：评分
         val needScore = NeedGate.computeNeedScoreHeuristic(updatedQueryContext)
         val scoredCandidates = candidates.map { candidate ->
             candidate to EvidenceScorer.score(
@@ -204,7 +224,7 @@ class RecallCoordinator(
         val scoringTime = 0L  // 已在上面计算
         debugLogger.log(LogLevel.DEBUG, TAG, "Scoring completed")
 
-        // 阶段5：决策
+        // 阶段8：决策
         val decisionResult = RecallDecisionEngine.decide(
             scoredCandidates = scoredCandidates,
             queryContext = updatedQueryContext
@@ -222,7 +242,7 @@ class RecallCoordinator(
             )
         )
 
-        // 阶段6：账本更新 + 冷却（Phase E：记录本轮试探）
+        // 阶段9：账本更新 + 冷却（Phase E：记录本轮试探）
         val finalLedger = if (decisionResult.action != RecallAction.NONE && decisionResult.selectedCandidate != null) {
             // 6.1 记录本轮试探（用于下一轮判定）
             val ledgerWithProbe = me.rerere.rikkahub.service.recall.probe.ProbeControl.recordProbe(

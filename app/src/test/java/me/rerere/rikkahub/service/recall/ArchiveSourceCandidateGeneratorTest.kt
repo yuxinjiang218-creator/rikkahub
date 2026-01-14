@@ -47,6 +47,7 @@ class ArchiveSourceCandidateGeneratorTest {
                 "node_indices:10,20"
             ),
             cost = 800,
+            evidenceKey = "A:archive123",  // Phase F: 添加 evidenceKey
             evidenceRaw = mapOf(
                 "archive_id" to "archive123",
                 "max_cos_sim" to "0.85",
@@ -98,6 +99,7 @@ class ArchiveSourceCandidateGeneratorTest {
                 "archive_id:archive456"
             ),
             cost = hintContent.length,
+            evidenceKey = "A:archive456",  // Phase F: 添加 evidenceKey
             evidenceRaw = mapOf(
                 "archive_id" to "archive456",
                 "max_cos_sim" to "0.72",
