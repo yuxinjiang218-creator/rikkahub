@@ -231,13 +231,35 @@ class RecallCoordinator(
         )
         val decisionTime = 0L  // 已在上面计算
 
+        // Phase H2: 结构化日志（冻结字段，便于调试）
+        val bestCandidate = decisionResult.selectedCandidate
+        val bestScores = scoredCandidates.firstOrNull { it.first.id == bestCandidate?.id }?.second
+        val secondBest = scoredCandidates
+            .filter { it.first.id != bestCandidate?.id }
+            .maxByOrNull { it.second.finalScore }
+        val margin = if (secondBest != null && bestScores != null) {
+            bestScores.finalScore - secondBest.second.finalScore
+        } else {
+            null
+        }
+
         debugLogger.log(
             LogLevel.INFO,
             TAG,
-            "Decision made",
+            "Recall decision summary (Phase H)",
             mapOf(
+                "needScore" to needScore,
+                "explicit" to updatedQueryContext.explicitSignal.explicit,
+                "silent" to me.rerere.rikkahub.service.recall.probe.ProbeControl.isInSilentWindow(
+                    ledger = updatedLedger,
+                    nowTurnIndex = updatedQueryContext.nowTurnIndex
+                ),
+                "bestScore" to (bestScores?.finalScore ?: 0f),
+                "secondScore" to (secondBest?.second?.finalScore ?: 0f),
+                "margin" to (margin ?: "null"),
+                "precision" to (bestScores?.precision ?: 0f),
+                "risk" to (bestScores?.risk ?: 0f),
                 "action" to decisionResult.action.name,
-                "candidateId" to (decisionResult.selectedCandidate?.id ?: "null"),
                 "vetoReason" to (decisionResult.vetoReason ?: "null")
             )
         )
