@@ -327,7 +327,8 @@ class GenerationHandler(
 
                     val recallBlock = recallCoordinator.coordinateRecall(
                         queryContext = queryContext,
-                        onRecallLedgerUpdate = onRecallLedgerUpdate
+                        onRecallLedgerUpdate = onRecallLedgerUpdate,
+                        settings = settings  // 传递 settings 用于 A源 embedding 调用
                     )
 
                     if (recallBlock != null) {
