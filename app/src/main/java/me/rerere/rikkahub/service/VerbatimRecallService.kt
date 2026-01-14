@@ -8,6 +8,7 @@ import me.rerere.rikkahub.data.db.dao.VerbatimArtifactDao
 import me.rerere.rikkahub.data.db.entity.VerbatimArtifactEntity
 import me.rerere.rikkahub.debug.DebugLogger
 import me.rerere.rikkahub.debug.model.LogLevel
+import me.rerere.rikkahub.util.FtsRanker
 import me.rerere.rikkahub.util.normalizeForSearch
 import kotlin.math.max
 import kotlin.math.min
@@ -16,7 +17,7 @@ import kotlin.math.min
  * Verbatim Recall 服务（逐字回收服务）
  *
  * 职责：
- * 1. 实现两阶段检索（title 匹配 → FTS5 兜底）
+ * 1. 实现两阶段检索（title 匹配 → FTS4 兜底 → 倒排索引兜底）
  * 2. 从 message_node_text 回拼逐字原文
  * 3. 生成 [VERBATIM_RECALL] 注入块
  */
@@ -65,8 +66,8 @@ class VerbatimRecallService(
             }
         }
 
-        // 阶段二：FTS5 兜底检索
-        debugLogger.log(LogLevel.DEBUG, "VerbatimRecall", "FTS5 fallback")
+        // 阶段二：FTS4 兜底检索 → 倒排索引兜底
+        debugLogger.log(LogLevel.DEBUG, "VerbatimRecall", "FTS4 fallback")
 
         val qNorm = normalizeForSearch(lastUserText)
         val tokens = qNorm.split(" ").filter { it.isNotEmpty() }.distinct().take(16)
@@ -74,29 +75,45 @@ class VerbatimRecallService(
 
         val matchQuery = tokens.joinToString(" OR ") { "\"$it\"" }
 
-        // FTS 查询（使用 RawQuery 绕过 Room 验证）
+        // FTS4 查询（返回 matchinfo 用于 Kotlin 侧排序）
         val ftsQuery = SimpleSQLiteQuery(
             """
-            SELECT node_id, node_index, bm25(message_node_fts) AS score
+            SELECT node_id, node_index, matchinfo(message_node_fts) AS mi
             FROM message_node_fts
             WHERE message_node_fts MATCH ?
-            AND conversation_id = ?
-            AND role = ?
-            ORDER BY score DESC
-            LIMIT 10
+              AND conversation_id = ?
+              AND role = ?
+            LIMIT 50
             """.trimIndent(),
             arrayOf(matchQuery, conversationId, MessageRole.USER.ordinal)
         )
 
-        val ftsResults = messageNodeTextDao.searchByFts(ftsQuery)
+        // 尝试 FTS4，失败时自动降级到倒排索引
+        val candidateIndices = try {
+            val ftsResults = messageNodeTextDao.searchByFts(ftsQuery)
 
-        if (ftsResults.isEmpty()) return null
+            if (ftsResults.isEmpty()) {
+                // FTS4 无结果，尝试倒排索引兜底
+                debugLogger.log(LogLevel.DEBUG, "VerbatimRecall", "FTS4 empty, trying inverted index")
+                searchByInvertedIndex(conversationId, tokens)
+            } else {
+                // FTS4 有结果，使用 FtsRanker 排序
+                debugLogger.log(LogLevel.DEBUG, "VerbatimRecall", "FTS4 success, ranking results")
+                FtsRanker.rankAndTakeTop(ftsResults)
+            }
+        } catch (e: Exception) {
+            // FTS4 查询失败（如不支持 FTS4），降级到倒排索引兜底
+            debugLogger.log(LogLevel.WARN, "VerbatimRecall", "FTS4 failed, using inverted index fallback", mapOf("error" to e.message))
+            searchByInvertedIndex(conversationId, tokens)
+        }
+
+        if (candidateIndices.isEmpty()) return null
 
         // 获取当前会话的真实最大 node_index（从数据库查询，而非 ftsResults.max）
         val maxIndex = messageNodeTextDao.getMaxNodeIndex(conversationId) ?: return null
 
         // 窗口扩展：{idx-1, idx, idx+1}（写死上下界过滤）
-        val expandedIndices = expandWindow(ftsResults, maxIndex)
+        val expandedIndices = expandIndices(candidateIndices, maxIndex)
 
         // 批量获取完整记录
         val messageNodes = messageNodeTextDao.getByConversationIdAndIndices(
@@ -173,19 +190,48 @@ class VerbatimRecallService(
     }
 
     /**
+     * 倒排索引兜底查询（FTS4 不可用时使用）
+     *
+     * @param conversationId 会话 ID
+     * @param tokens 查询词列表
+     * @return Top 10 node_index 列表
+     */
+    private suspend fun searchByInvertedIndex(
+        conversationId: String,
+        tokens: List<String>
+    ): List<Int> {
+        // 构建 IN 子句（动态参数）
+        val placeholders = tokens.indices.joinToString(",") { "?" }
+        val query = SimpleSQLiteQuery(
+            """
+            SELECT node_index, COUNT(*) AS hit
+            FROM message_token_index
+            WHERE conversation_id = ?
+              AND token IN ($placeholders)
+            GROUP BY node_index
+            ORDER BY hit DESC
+            LIMIT 10
+            """.trimIndent(),
+            arrayOf(conversationId, *tokens.toTypedArray())
+        )
+
+        val results = messageNodeTextDao.searchByInvertedIndex(query)
+        return results.map { it.node_index }
+    }
+
+    /**
      * 窗口扩展：{idx-1, idx, idx+1}（写死上下界过滤）
      *
-     * @param ftsResults FTS 查询结果
+     * @param indices 候选索引列表
      * @param maxIndex 会话的最大 node_index
      * @return 扩展后的索引列表
      */
-    private fun expandWindow(
-        ftsResults: List<me.rerere.rikkahub.data.db.dao.FtsSearchResult>,
+    private fun expandIndices(
+        indices: List<Int>,
         maxIndex: Int
     ): List<Int> {
         val expanded = mutableSetOf<Int>()
-        for (result in ftsResults) {
-            val idx = result.node_index
+        for (idx in indices) {
             // 写死上下界：idx - 1 >= 0, idx + 1 <= maxIndex
             expanded.add(max(0, idx - 1))
             expanded.add(idx)

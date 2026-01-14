@@ -295,24 +295,24 @@ class SemanticRecallService(
     /**
      * 构建 [ARCHIVE_RECALL] 注入块
      *
+     * 格式（写死）：
+     * [ARCHIVE_RECALL]
+     * |archive_id=<ID_1>
+     * |content=<archive_content_1>
+     * |archive_id=<ID_2>
+     * |content=<archive_content_2>
+     * ...
+     * [/ARCHIVE_RECALL]
+     *
      * @param results 选中的归档列表
      * @return 格式化的注入块
      */
     private fun buildArchiveInjection(results: List<ArchiveSummaryWithScore>): String {
         val content = results.joinToString("\n\n") { archive ->
-            """
-            |[归档 ${archive.windowStartIndex}-${archive.windowEndIndex}]
-            |${archive.content}
-            """.trimMargin()
+            "|archive_id=${archive.id}\n|content=${archive.content}"
         }
 
-        return """
-            |[ARCHIVE_RECALL]
-            |----BEGIN_ARCHIVE----
-            |$content
-            |----END_ARCHIVE----
-            |[/ARCHIVE_RECALL]
-        """.trimMargin()
+        return "[ARCHIVE_RECALL]\n$content\n[/ARCHIVE_RECALL]"
     }
 
     /**

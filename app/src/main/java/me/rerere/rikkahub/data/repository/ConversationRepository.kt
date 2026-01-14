@@ -29,6 +29,8 @@ class ConversationRepository(
     private val messageNodeDAO: MessageNodeDAO,
     private val database: AppDatabase,
     private val verbatimVaultService: me.rerere.rikkahub.service.VerbatimVaultService,
+    private val archiveSummaryDao: me.rerere.rikkahub.data.db.dao.ArchiveSummaryDao,
+    private val vectorIndexDao: me.rerere.rikkahub.data.db.dao.VectorIndexDao,
 ) {
     companion object {
         private const val PAGE_SIZE = 20
@@ -292,19 +294,15 @@ class ConversationRepository(
         }
         messageNodeDAO.insertAll(entities)
 
-        // 同步构建 P 层（Verbatim Vault）
-        // 只构建 ASSISTANT 消息，避免用户输入时过度构建
-        nodes.forEachIndexed { index, node ->
-            val firstMessage = node.messages.firstOrNull()
-            // 只在 ASSISTANT 消息时构建 P 层
-            if (firstMessage?.role == me.rerere.ai.core.MessageRole.ASSISTANT) {
-                verbatimVaultService.buildMessageNodeText(
-                    nodeId = node.id.toString(),
-                    conversationId = conversationId,
-                    nodeIndex = index,
-                    messages = node.messages
-                )
-            }
+        // 同步构建 P 层（所有消息，不过滤角色）
+        // 使用 MessageNodeEntity.nodeIndex 而非 forEachIndexed 的局部 index
+        entities.forEach { entity ->
+            verbatimVaultService.buildMessageNodeText(
+                nodeId = entity.id,
+                conversationId = conversationId,
+                nodeIndex = entity.nodeIndex,
+                messages = JsonInstant.decodeFromString<List<UIMessage>>(entity.messages)
+            )
         }
     }
 }

@@ -25,6 +25,7 @@ import me.rerere.rikkahub.data.db.entity.VectorIndexEntity
 import me.rerere.rikkahub.data.db.migrations.Migration_12_13
 import me.rerere.rikkahub.data.db.migrations.Migration_13_14
 import me.rerere.rikkahub.data.db.migrations.Migration_14_15
+import me.rerere.rikkahub.data.db.migrations.Migration_15_16
 import me.rerere.rikkahub.data.db.migrations.Migration_8_9
 import me.rerere.rikkahub.utils.JsonInstant
 
@@ -39,7 +40,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         MessageNodeTextEntity::class,
         VerbatimArtifactEntity::class
     ],
-    version = 15,
+    version = 16,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),

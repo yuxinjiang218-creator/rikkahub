@@ -10,9 +10,15 @@ import me.rerere.rikkahub.data.db.entity.MessageNodeTextEntity
 
 @Dao
 interface MessageNodeTextDao {
-    // FTS5 查询（使用 RawQuery 绕过 KSP 验证，因为 message_node_fts 是 Migration 中创建的虚拟表）
+    // FTS4 查询（返回 matchinfo 用于 Kotlin 侧排序）
+    // 使用 RawQuery 绕过 KSP 验证，因为 message_node_fts 是 Migration 中创建的虚拟表
     @RawQuery
     suspend fun searchByFts(query: SupportSQLiteQuery): List<FtsSearchResult>
+
+    // 倒排索引兜底查询（FTS4 不可用时使用）
+    // 使用 RawQuery 绕过 KSP 验证，因为 message_token_index 是 Migration 中创建的表
+    @RawQuery
+    suspend fun searchByInvertedIndex(query: SupportSQLiteQuery): List<InvertedIndexResult>
 
     // 根据 node_index 批量获取完整记录（用于拼接逐字文本）
     @Query("""
@@ -37,11 +43,22 @@ interface MessageNodeTextDao {
     // 删除会话的所有记录
     @Query("DELETE FROM message_node_text WHERE conversation_id = :conversationId")
     suspend fun deleteByConversationId(conversationId: String)
+
+    // 删除会话的倒排索引
+    // 使用 RawQuery 绕过 KSP 验证
+    @RawQuery
+    suspend fun deleteInvertedIndexByConversationId(query: SupportSQLiteQuery): Int
 }
 
-// FTS 查询结果数据类
+// FTS4 查询结果数据类（包含 matchinfo 用于排序）
 data class FtsSearchResult(
     val node_id: String,
     val node_index: Int,
-    val score: Double  // BM25 分数
+    val mi: ByteArray  // matchinfo，用于 Kotlin 侧排序
+)
+
+// 倒排索引查询结果数据类
+data class InvertedIndexResult(
+    val node_index: Int,
+    val hit: Int  // 命中词数
 )

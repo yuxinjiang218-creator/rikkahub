@@ -24,6 +24,7 @@ import me.rerere.rikkahub.data.db.migrations.Migration_13_14
 import me.rerere.rikkahub.data.db.migrations.Migration_14_15
 import me.rerere.rikkahub.data.db.migrations.Migration_6_7
 import me.rerere.rikkahub.data.db.migrations.Migration_11_12
+import me.rerere.rikkahub.data.db.migrations.Migration_15_16
 import me.rerere.rikkahub.service.IntentRouter
 import me.rerere.rikkahub.service.SemanticRecallService
 import me.rerere.rikkahub.service.VerbatimRecallService
@@ -47,8 +48,7 @@ val dataSourceModule = module {
 
     single {
         Room.databaseBuilder(get(), AppDatabase::class.java, "rikka_hub")
-            .addMigrations(Migration_6_7, Migration_11_12, Migration_12_13, Migration_13_14, Migration_14_15)
-            .setForeignKeyConstraintsEnabled(true)  // 启用外键约束（确保 CASCADE 生效）
+            .addMigrations(Migration_6_7, Migration_11_12, Migration_12_13, Migration_13_14, Migration_14_15, Migration_15_16)
             .build()
     }
 
@@ -102,7 +102,8 @@ val dataSourceModule = module {
         VerbatimVaultService(
             context = get(),
             messageNodeTextDao = get(),
-            verbatimArtifactDao = get()
+            verbatimArtifactDao = get(),
+            database = get()
         )
     }
 

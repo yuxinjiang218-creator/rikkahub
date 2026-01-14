@@ -1,8 +1,11 @@
 package me.rerere.rikkahub.service
 
 import android.content.Context
+import androidx.sqlite.db.SupportSQLiteQuery
+import androidx.sqlite.db.SupportSQLiteQueryBuilder
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.dao.MessageNodeTextDao
 import me.rerere.rikkahub.data.db.dao.VerbatimArtifactDao
 import me.rerere.rikkahub.data.db.entity.MessageNodeTextEntity
@@ -18,16 +21,18 @@ import java.util.UUID
  *
  * 职责：
  * 1. 每次消息写入时同步构建 message_node_text
- * 2. 扫描并生成 verbatim_artifact
- * 3. 判定 artifact 类型（写死规则）
+ * 2. 同步构建倒排索引（message_token_index）兜底
+ * 3. 扫描并生成 verbatim_artifact
+ * 4. 判定 artifact 类型（写死规则）
  */
 class VerbatimVaultService(
     private val context: Context,
     private val messageNodeTextDao: MessageNodeTextDao,
-    private val verbatimArtifactDao: VerbatimArtifactDao
+    private val verbatimArtifactDao: VerbatimArtifactDao,
+    private val database: AppDatabase
 ) {
     /**
-     * 构建消息节点文本（同步 message_node_text）
+     * 构建消息节点文本（同步 message_node_text + 倒排索引）
      *
      * @param nodeId 消息节点 ID
      * @param conversationId 会话 ID
@@ -71,6 +76,14 @@ class VerbatimVaultService(
             )
             messageNodeTextDao.insertOrReplace(entity)
 
+            // 写入倒排索引（兜底方案）
+            buildInvertedIndex(
+                nodeId = nodeId,
+                conversationId = conversationId,
+                nodeIndex = nodeIndex,
+                searchText = searchText
+            )
+
             debugLogger.log(
                 LogLevel.DEBUG,
                 "VerbatimVault",
@@ -91,6 +104,46 @@ class VerbatimVaultService(
                     rawText = rawText
                 )
             }
+        }
+    }
+
+    /**
+     * 构建倒排索引（写入 message_token_index）
+     *
+     * @param nodeId 消息节点 ID
+     * @param conversationId 会话 ID
+     * @param nodeIndex 消息索引
+     * @param searchText 归一化后的搜索文本
+     */
+    private suspend fun buildInvertedIndex(
+        nodeId: String,
+        conversationId: String,
+        nodeIndex: Int,
+        searchText: String
+    ) {
+        // 分词：最多取 64 个 token
+        val tokens = searchText.split(" ")
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(64)
+
+        if (tokens.isEmpty()) return
+
+        // 批量插入倒排索引
+        val db = database.openHelper.writableDatabase
+        db.beginTransaction()
+        try {
+            for (token in tokens) {
+                db.execSQL(
+                    """INSERT OR REPLACE INTO message_token_index
+                    (token, conversation_id, node_index, node_id)
+                    VALUES (?, ?, ?, ?)""",
+                    arrayOf(token, conversationId, nodeIndex, nodeId)
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
     }
 
@@ -196,12 +249,19 @@ class VerbatimVaultService(
     }
 
     /**
-     * 删除会话的所有 P 层文本
+     * 删除会话的所有 P 层文本（含倒排索引）
      *
      * @param conversationId 会话 ID
      */
     suspend fun deleteMessageNodeTextByConversation(conversationId: String) {
         messageNodeTextDao.deleteByConversationId(conversationId)
+
+        // 删除倒排索引（使用 RawQuery）
+        val deleteQuery = androidx.sqlite.db.SimpleSQLiteQuery(
+            "DELETE FROM message_token_index WHERE conversation_id = ?",
+            arrayOf(conversationId)
+        )
+        messageNodeTextDao.deleteInvertedIndexByConversationId(deleteQuery)
     }
 
     /**
