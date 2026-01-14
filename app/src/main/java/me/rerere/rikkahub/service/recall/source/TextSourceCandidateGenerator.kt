@@ -15,6 +15,7 @@ import me.rerere.rikkahub.service.recall.model.Candidate
 import me.rerere.rikkahub.service.recall.model.CandidateKind
 import me.rerere.rikkahub.service.recall.model.CandidateSource
 import me.rerere.rikkahub.service.recall.model.QueryContext
+import me.rerere.rikkahub.service.recall.anchor.AnchorGenerator
 import me.rerere.rikkahub.util.FtsRanker
 import me.rerere.rikkahub.util.normalizeForSearch
 import kotlin.math.max
@@ -81,7 +82,7 @@ class TextSourceCandidateGenerator(
                 mapOf("titles" to titles)
             )
 
-            val titleCandidates = searchByTitle(conversationId, titles, isExplicit)
+            val titleCandidates = searchByTitle(conversationId, titles, isExplicit, lastUserText)
             candidates.addAll(titleCandidates)
 
             if (candidates.size >= MAX_PER_SOURCE) {
@@ -119,7 +120,8 @@ class TextSourceCandidateGenerator(
     private suspend fun searchByTitle(
         conversationId: String,
         titles: List<String>,
-        isExplicit: Boolean
+        isExplicit: Boolean,
+        query: String
     ): List<Candidate> {
         val candidates = mutableListOf<Candidate>()
 
@@ -151,7 +153,8 @@ class TextSourceCandidateGenerator(
                             nodeIndices = nodeIndices,
                             text = fullText,
                             kind = CandidateKind.FULL,
-                            title = title
+                            title = title,
+                            query = query
                         ))
                     }
 
@@ -162,7 +165,8 @@ class TextSourceCandidateGenerator(
                         nodeIndices = nodeIndices,
                         text = snippetText,
                         kind = CandidateKind.SNIPPET,
-                        title = title
+                        title = title,
+                        query = query
                     ))
                 }
             }
@@ -247,7 +251,8 @@ class TextSourceCandidateGenerator(
                     nodeIndices = expandedIndices,
                     text = snippetText,
                     kind = CandidateKind.SNIPPET,
-                    title = null
+                    title = null,
+                    query = lastUserText
                 ))
             }
         }
@@ -263,7 +268,8 @@ class TextSourceCandidateGenerator(
         nodeIndices: List<Int>,
         text: String,
         kind: CandidateKind,
-        title: String?
+        title: String?,
+        query: String
     ): Candidate {
         val candidateId = me.rerere.rikkahub.service.recall.model.CandidateBuilder.buildPSourceId(
             conversationId = conversationId,
@@ -276,10 +282,11 @@ class TextSourceCandidateGenerator(
             nodeIndices = nodeIndices
         )
 
-        val anchors = buildList {
-            if (title != null) add("title:$title")
-            add("node_indices:${nodeIndices.joinToString(",")}")
-        }
+        // Phase G: 使用统一的 AnchorGenerator 生成 anchors（禁止 node_indices）
+        val anchors = AnchorGenerator.buildPSourceAnchors(
+            query = query,
+            explicitTitle = title
+        )
 
         return Candidate(
             id = candidateId,
@@ -288,7 +295,7 @@ class TextSourceCandidateGenerator(
             content = text,
             anchors = anchors,
             cost = text.length,
-            evidenceKey = evidenceKey,  // Phase F: 添加 evidenceKey
+            evidenceKey = evidenceKey,
             evidenceRaw = mapOf(
                 "node_indices" to nodeIndices.joinToString(","),
                 "title" to (title ?: "")

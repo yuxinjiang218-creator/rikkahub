@@ -9,6 +9,7 @@ import me.rerere.rikkahub.data.db.dao.MessageNodeTextDao
 import me.rerere.rikkahub.data.db.dao.VectorIndexDao
 import me.rerere.rikkahub.debug.DebugLogger
 import me.rerere.rikkahub.debug.model.LogLevel
+import me.rerere.rikkahub.service.recall.anchor.AnchorGenerator
 import me.rerere.rikkahub.service.recall.model.Candidate
 import me.rerere.rikkahub.service.recall.model.CandidateKind
 import me.rerere.rikkahub.service.recall.model.CandidateSource
@@ -226,11 +227,11 @@ class ArchiveSourceCandidateGenerator(
                 source = CandidateSource.A_ARCHIVE,
                 kind = kind,
                 content = truncatedContent,
-                anchors = buildAnchors(archive, kind),
+                anchors = buildAnchors(lastUserText),  // Phase G: 使用统一的 AnchorGenerator
                 cost = truncatedContent.length,
                 evidenceKey = me.rerere.rikkahub.service.recall.model.CandidateBuilder.buildASourceEvidenceKey(
                     archiveId = archive.id
-                ),  // Phase F: 添加 evidenceKey
+                ),
                 evidenceRaw = mapOf(
                     "archive_id" to archive.id,
                     "max_cos_sim" to similarity.toString(),
@@ -293,20 +294,14 @@ class ArchiveSourceCandidateGenerator(
     }
 
     /**
-     * 构建 anchors 列表
+     * 构建 anchors 列表（Phase G：禁止结构信息）
+     *
+     * 使用统一的 AnchorGenerator 生成 anchors
+     * - 禁止包含 windowStartIndex/windowEndIndex/node_indices 等结构信息
+     * - 只包含 query 中的高相关 token
      */
-    private fun buildAnchors(
-        archive: me.rerere.rikkahub.data.db.entity.ArchiveSummaryEntity,
-        kind: CandidateKind
-    ): List<String> {
-        val anchors = mutableListOf("archive_id:${archive.id}")
-
-        if (kind == CandidateKind.SNIPPET) {
-            // SNIPPET 添加 window indices
-            anchors.add("node_indices:${archive.windowStartIndex},${archive.windowEndIndex}")
-        }
-
-        return anchors
+    private fun buildAnchors(query: String): List<String> {
+        return AnchorGenerator.buildASourceAnchors(query)
     }
 
     /**
