@@ -28,6 +28,7 @@ import me.rerere.rikkahub.data.db.migrations.Migration_6_7
 import me.rerere.rikkahub.data.db.migrations.Migration_11_12
 import me.rerere.rikkahub.data.db.migrations.Migration_15_16
 import me.rerere.rikkahub.data.db.migrations.Migration_16_17
+import me.rerere.rikkahub.data.db.migrations.Migration_17_18
 import me.rerere.rikkahub.service.IntentRouter
 import me.rerere.rikkahub.service.SemanticRecallService
 import me.rerere.rikkahub.service.VerbatimRecallService
@@ -52,7 +53,7 @@ val dataSourceModule = module {
 
     single {
         Room.databaseBuilder(get(), AppDatabase::class.java, "rikka_hub")
-            .addMigrations(Migration_6_7, Migration_11_12, Migration_12_13, Migration_13_14, Migration_14_15, Migration_15_16, Migration_16_17)
+            .addMigrations(Migration_6_7, Migration_11_12, Migration_12_13, Migration_13_14, Migration_14_15, Migration_15_16, Migration_16_17, Migration_17_18)
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     super.onCreate(db)

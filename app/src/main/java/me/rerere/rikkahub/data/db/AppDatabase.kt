@@ -9,6 +9,9 @@ import me.rerere.ai.core.TokenUsage
 import me.rerere.rikkahub.data.db.dao.ArchiveSummaryDao
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
 import me.rerere.rikkahub.data.db.dao.GenMediaDAO
+import me.rerere.rikkahub.data.db.dao.KnowledgeChunkDao
+import me.rerere.rikkahub.data.db.dao.KnowledgeDocumentDao
+import me.rerere.rikkahub.data.db.dao.KnowledgeVectorDao
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeTextDao
@@ -17,6 +20,9 @@ import me.rerere.rikkahub.data.db.dao.VectorIndexDao
 import me.rerere.rikkahub.data.db.entity.ArchiveSummaryEntity
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
+import me.rerere.rikkahub.data.db.entity.KnowledgeChunkEntity
+import me.rerere.rikkahub.data.db.entity.KnowledgeDocumentEntity
+import me.rerere.rikkahub.data.db.entity.KnowledgeVectorEntity
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeTextEntity
@@ -26,7 +32,6 @@ import me.rerere.rikkahub.data.db.migrations.Migration_12_13
 import me.rerere.rikkahub.data.db.migrations.Migration_13_14
 import me.rerere.rikkahub.data.db.migrations.Migration_14_15
 import me.rerere.rikkahub.data.db.migrations.Migration_15_16
-import me.rerere.rikkahub.data.db.migrations.Migration_16_17
 import me.rerere.rikkahub.data.db.migrations.Migration_8_9
 import me.rerere.rikkahub.utils.JsonInstant
 
@@ -39,9 +44,12 @@ import me.rerere.rikkahub.utils.JsonInstant
         ArchiveSummaryEntity::class,
         VectorIndexEntity::class,
         MessageNodeTextEntity::class,
-        VerbatimArtifactEntity::class
+        VerbatimArtifactEntity::class,
+        KnowledgeDocumentEntity::class,
+        KnowledgeChunkEntity::class,
+        KnowledgeVectorEntity::class
     ],
-    version = 17,
+    version = 18,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -53,6 +61,10 @@ import me.rerere.rikkahub.utils.JsonInstant
         AutoMigration(from = 9, to = 10),
         AutoMigration(from = 10, to = 11),
         AutoMigration(from = 11, to = 12),
+        AutoMigration(from = 12, to = 13),
+        AutoMigration(from = 13, to = 14),
+        AutoMigration(from = 14, to = 15),
+        AutoMigration(from = 15, to = 16),
     ]
 )
 @TypeConverters(TokenUsageConverter::class, FloatArrayConverter::class)
@@ -72,6 +84,12 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun messageNodeTextDao(): MessageNodeTextDao
 
     abstract fun verbatimArtifactDao(): VerbatimArtifactDao
+
+    abstract fun knowledgeDocumentDao(): KnowledgeDocumentDao
+
+    abstract fun knowledgeChunkDao(): KnowledgeChunkDao
+
+    abstract fun knowledgeVectorDao(): KnowledgeVectorDao
 }
 
 object TokenUsageConverter {
