@@ -128,9 +128,11 @@ class RecallCoordinator(
         // 更新 QueryContext.ledger
         val updatedQueryContext = queryContext.copy(ledger = updatedLedger)
 
+        // P0-1: 统一计算 needScore（用于 NeedGate、A源、EvidenceScorer、RecallDecisionEngine）
+        val needScore = NeedGate.computeNeedScoreHeuristic(updatedQueryContext)
+
         // 阶段2：NeedGate 判断（是否进入候选生成）
         val needGateTime = measureTimeMillis {
-            val needScore = NeedGate.computeNeedScoreHeuristic(updatedQueryContext)
             val shouldProceed = NeedGate.shouldProceed(updatedQueryContext)
 
             Log.i(TAG, "=== NeedGate CHECK ===")
@@ -200,10 +202,12 @@ class RecallCoordinator(
         debugLogger.log(LogLevel.DEBUG, TAG, "P source generation took ${pSourceTime}ms")
 
         // 阶段5：A源候选生成（Phase C）
+        // P0-1: 传入 needScore（统一计算，不得使用 ledger.recent.size 派生）
         val aSourceTime = measureTimeMillis {
             val aSourceCandidates = archiveSourceCandidateGenerator.generate(
                 queryContext = updatedQueryContext,
                 pSourceCandidateCount = candidates.size,
+                needScore = needScore,  // P0-1: 传入统一计算的 needScore
                 settings = settings
             )
             candidates.addAll(aSourceCandidates)
@@ -233,10 +237,8 @@ class RecallCoordinator(
         val maxNodeIndex = messageNodeTextDao.getMaxNodeIndex(updatedQueryContext.conversationId) ?: 0
 
         // 阶段7：评分
-        // Phase J0: 统一使用 NeedGate 计算的 needScore（与 EvidenceScorer 保持一致）
-        val needScore = NeedGate.computeNeedScoreHeuristic(updatedQueryContext)
-
-        // Phase J0: 显式请求时，needScore 强制为 1.0（仅用于评分/决策一致性，不影响 shouldProceed）
+        // P0-1: 使用统一计算的 needScore（不再重复计算）
+        // 显式请求时，needScore 强制为 1.0（仅用于评分/决策一致性，不影响 shouldProceed）
         val scoringNeedScore = if (updatedQueryContext.explicitSignal.explicit) {
             1.0f
         } else {

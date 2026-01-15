@@ -76,12 +76,14 @@ class ArchiveSourceCandidateGenerator(
      *
      * @param queryContext 查询上下文
      * @param pSourceCandidateCount P源候选数量（用于判断是否需要 Q1/Q2）
+     * @param needScore 需求分数（来自 RecallCoordinator 统一计算，不得使用 ledger 派生）
      * @param settings 设置（用于获取 providers）
      * @return 候选列表（最多3个）
      */
     suspend fun generate(
         queryContext: QueryContext,
         pSourceCandidateCount: Int,
+        needScore: Float,  // P0-1: needScore 必须从外部传入，不得使用 ledger.recent.size 派生
         settings: me.rerere.rikkahub.data.datastore.Settings? = null
     ): List<Candidate> = withContext(Dispatchers.IO) {
         val debugLogger = DebugLogger.getInstance(context)
@@ -130,20 +132,20 @@ class ArchiveSourceCandidateGenerator(
             (queryContext.explicitSignal.keyword == null ||
              queryContext.explicitSignal.keyword !in HARD_VERBATIM_KEYWORDS)
 
-        // 4. 计算 needScore（简化：用账本大小）
-        val needScore = queryContext.ledger.recent.size.toFloat()
-
-        // 5. 决定执行多少次 embedding（Q0、Q1、Q2）
+        // 4. 决定执行多少次 embedding（Q0、Q1、Q2）
+        // P0-1: needScore 来自入参，不得使用 ledger.recent.size 派生
         val embeddingCalls = decideEmbeddingCalls(needScore, pSourceCandidateCount)
 
+        // P0-1: 日志必须包含 needScore（入参）、pSourceCandidateCount、explicit、embeddingCalls
         debugLogger.log(
             LogLevel.DEBUG,
             TAG,
             "MultiQuery scheduling",
             mapOf(
-                "embeddingCalls" to embeddingCalls,
-                "needScore" to needScore,
-                "pSourceCandidateCount" to pSourceCandidateCount
+                "needScore" to needScore,  // P0-1: 入参 needScore
+                "pSourceCandidateCount" to pSourceCandidateCount,
+                "explicit" to queryContext.explicitSignal.explicit,  // P0-1: 来自 explicitSignal
+                "embeddingCalls" to embeddingCalls
             )
         )
 
