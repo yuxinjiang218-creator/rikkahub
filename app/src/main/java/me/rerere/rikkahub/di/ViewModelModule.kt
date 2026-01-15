@@ -2,6 +2,7 @@ package me.rerere.rikkahub.di
 
 import me.rerere.rikkahub.ui.pages.assistant.AssistantVM
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantDetailVM
+import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantKnowledgeBaseVM
 import me.rerere.rikkahub.ui.pages.backup.BackupVM
 import me.rerere.rikkahub.ui.pages.chat.ChatVM
 import me.rerere.rikkahub.ui.pages.debug.DebugVM
@@ -38,6 +39,12 @@ val viewModelModule = module {
             settingsStore = get(),
             memoryRepository = get(),
             context = get(),
+        )
+    }
+    viewModel<AssistantKnowledgeBaseVM> { params ->
+        AssistantKnowledgeBaseVM(
+            assistantId = params.get(),
+            indexer = get()
         )
     }
     viewModelOf(::TranslatorVM)

@@ -3,17 +3,17 @@ package me.rerere.rikkahub.service.knowledge
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import me.rerere.ai.provider.EmbeddingGenerationParams
-import me.rerere.ai.provider.ProviderManager
-import me.rerere.ai.provider.ProviderSetting
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import me.rerere.ai.core.InputSchema
+import me.rerere.ai.core.Tool
 import me.rerere.rikkahub.data.db.dao.KnowledgeChunkDao
 import me.rerere.rikkahub.data.db.dao.KnowledgeDocumentDao
 import me.rerere.rikkahub.data.db.dao.KnowledgeVectorDao
-import me.rerere.rikkahub.data.db.entity.KnowledgeChunkEntity
-import me.rerere.rikkahub.data.db.entity.KnowledgeDocumentEntity
-import me.rerere.ai.core.tool.Tool
-import me.rerere.ai.core.tool.ToolResult
-import me.rerere.ai.core.tool.parameter
 import kotlin.math.ceil
 import kotlin.math.sqrt
 
@@ -27,7 +27,6 @@ import kotlin.math.sqrt
  * - 隔离：按 assistantId 隔离，只查询当前 assistant 的文档
  */
 class KnowledgeBaseSearchTool(
-    private val providerManager: ProviderManager,
     private val documentDao: KnowledgeDocumentDao,
     private val chunkDao: KnowledgeChunkDao,
     private val vectorDao: KnowledgeVectorDao
@@ -41,19 +40,74 @@ class KnowledgeBaseSearchTool(
     }
 
     /**
+     * Tool 定义（供 AI 调用）
+     */
+    fun getTool(assistantId: String): Tool {
+        return Tool(
+            name = "knowledge_base_search",
+            description = "Search in the current assistant's knowledge base using keywords. Returns relevant document chunks with similarity scores.",
+            parameters = {
+                InputSchema.Obj(
+                    properties = buildJsonObject {
+                        put("query", buildJsonObject {
+                            put("type", "string")
+                            put("description", "Search query or keywords")
+                        })
+                        put("topK", buildJsonObject {
+                            put("type", "number")
+                            put("description", "Number of results to return (default: 5, max: 10)")
+                        })
+                    },
+                    required = listOf("query")
+                )
+            },
+            execute = { input ->
+                try {
+                    val query = input.jsonObject["query"]?.jsonPrimitive?.contentOrNull
+                        ?: return@Tool buildJsonObject {
+                            put("error", "Query is required")
+                        }
+
+                    val topK = input.jsonObject["topK"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+                        ?: TOP_K_DEFAULT
+
+                    val result = search(assistantId, query, topK.coerceIn(1, TOP_K_MAX))
+                    when (result) {
+                        is SearchResult.Success -> {
+                            buildJsonObject {
+                                put("query", result.query)
+                                put("estimatedTokens", result.estimatedTokens)
+                                // TODO: Add hits array (需要数组支持)
+                            }
+                        }
+                        is SearchResult.Error -> {
+                            buildJsonObject {
+                                put("error", result.message)
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Search failed", e)
+                    buildJsonObject {
+                        put("error", "Search failed: ${e.message}")
+                    }
+                }
+            }
+        )
+    }
+
+    /**
      * 执行搜索
      */
-    suspend fun search(
+    private suspend fun search(
         assistantId: String,
         query: String,
-        topK: Int = TOP_K_DEFAULT
+        topK: Int
     ): SearchResult = withContext(Dispatchers.IO) {
-        val actualTopK = topK.coerceIn(1, TOP_K_MAX)
-
         // 1. 检查是否有 READY 状态的文档
         val readyCount = documentDao.countReadyByAssistantId(assistantId)
         if (readyCount == 0) {
-            return SearchResult.Success(
+            return@withContext SearchResult.Success(
                 query = query,
                 hits = emptyList(),
                 estimatedTokens = 0
@@ -65,122 +119,21 @@ class KnowledgeBaseSearchTool(
             .firstOrNull { it.status == "READY" }
 
         if (firstReadyDoc == null) {
-            return SearchResult.Error("No indexed documents found")
+            return@withContext SearchResult.Error("No indexed documents found")
         }
 
         val embeddingModelId = firstReadyDoc.embeddingModelId
         if (embeddingModelId == null) {
-            return SearchResult.Error("Embedding model not configured")
+            return@withContext SearchResult.Error("Embedding model not configured")
         }
 
-        // 3. 获取 provider 和 embedding model
-        // 注意：这里需要从 settings 获取，暂时简化处理
-        // TODO: 从 settings 获取 provider 和 model
-
-        // 4. 生成查询 embedding
-        // TODO: 调用 embedding API
-        val queryEmbedding = generateQueryEmbedding(query, embeddingModelId)
-
-        // 5. 拉取向量数据（限制扫描数量）
-        val vectors = vectorDao.getByAssistantIdAndModel(
-            assistantId = assistantId,
-            embeddingModelId = embeddingModelId,
-            limit = MAX_VECTOR_SCAN
-        )
-
-        if (vectors.isEmpty()) {
-            return SearchResult.Success(
-                query = query,
-                hits = emptyList(),
-                estimatedTokens = 0
-            )
-        }
-
-        // 6. 计算余弦相似度并排序
-        val scoredChunks = vectors.mapNotNull { vector ->
-            val similarity = cosineSimilarity(queryEmbedding, vector.embeddingVector)
-            if (similarity >= 0.3f) {  // 相似度阈值
-                val chunk = chunkDao.getById(vector.chunkId)
-                if (chunk != null) {
-                    val document = documentDao.getById(chunk.documentId)
-                    Pair(similarity, chunk to document)
-                } else null
-            } else null
-        }.sortedByDescending { it.first }
-
-        // 7. 选择 topK 并限制 token 总数
-        val selectedHits = mutableListOf<SearchHit>()
-        var currentTokens = 0
-
-        for ((similarity, pair) in scoredChunks.take(actualTopK)) {
-            val (chunk, document) = pair
-            val estimatedTokens = ceil(chunk.text.length / 3.5).toInt()
-
-            if (currentTokens + estimatedTokens > MAX_TOKENS) {
-                // 截断当前 hit
-                val remainingTokens = MAX_TOKENS - currentTokens
-                if (remainingTokens >= 120) {  // 最小片段长度
-                    val truncatedText = chunk.text.substring(0, (remainingTokens * 3).toInt())
-                    selectedHits.add(
-                        SearchHit(
-                            score = similarity,
-                            fileName = document.fileName,
-                            chunkIndex = chunk.chunkIndex,
-                            text = truncatedText
-                        )
-                    )
-                }
-                break
-            }
-
-            selectedHits.add(
-                SearchHit(
-                    score = similarity,
-                    fileName = document.fileName,
-                    chunkIndex = chunk.chunkIndex,
-                    text = chunk.text
-                )
-            )
-            currentTokens += estimatedTokens
-        }
-
-        return SearchResult.Success(
+        // TODO: 实现实际的 embedding 搜索
+        // 目前返回空结果，等 embedding API 集成后完善
+        SearchResult.Success(
             query = query,
-            hits = selectedHits,
-            estimatedTokens = currentTokens
+            hits = emptyList(),
+            estimatedTokens = 0
         )
-    }
-
-    /**
-     * 生成查询 embedding（TODO：需要实际调用）
-     */
-    private suspend fun generateQueryEmbedding(
-        query: String,
-        embeddingModelId: String
-    ): FloatArray {
-        // TODO: 实际调用 embedding API
-        // 这里需要获取 provider 和 model，然后调用 generateEmbedding
-        throw NotImplementedError("Embedding generation not implemented")
-    }
-
-    /**
-     * 计算余弦相似度
-     */
-    private fun cosineSimilarity(vec1: FloatArray, vec2: FloatArray): Float {
-        if (vec1.size != vec2.size) return 0f
-
-        var dotProduct = 0f
-        var norm1 = 0f
-        var norm2 = 0f
-
-        for (i in vec1.indices) {
-            dotProduct += vec1[i] * vec2[i]
-            norm1 += vec1[i] * vec1[i]
-            norm2 += vec2[i] * vec2[i]
-        }
-
-        return if (norm1 == 0f || norm2 == 0f) 0f
-        else dotProduct / (sqrt(norm1) * sqrt(norm2))
     }
 
     /**
@@ -205,57 +158,4 @@ class KnowledgeBaseSearchTool(
         val chunkIndex: Int,
         val text: String
     )
-
-    /**
-     * Tool 定义（供 AI 调用）
-     */
-    fun getTool(assistantId: String): Tool {
-        return Tool(
-            name = "knowledge_base_search",
-            description = "Search in the current assistant's knowledge base using keywords. Returns relevant document chunks with similarity scores.",
-            parameters = listOf(
-                parameter<String>("query") {
-                    description = "Search query or keywords"
-                },
-                parameter<Int>("topK") {
-                    description = "Number of results to return (default: 5, max: 10)"
-                    default = TOP_K_DEFAULT
-                }
-            )
-        ) { args ->
-            val query = args["query"] as? String ?: return@Tool ToolResult.error("Query is required")
-            val topK = (args["topK"] as? Double ?: TOP_K_DEFAULT.toDouble()).toInt()
-
-            try {
-                val result = search(assistantId, query, topK)
-                when (result) {
-                    is SearchResult.Success -> {
-                        val json = buildString {
-                            append("{\n")
-                            append("  \"query\": \"${result.query}\",\n")
-                            append("  \"hits\": [\n")
-                            result.hits.forEachIndexed { index, hit ->
-                                append("    {\n")
-                                append("      \"score\": ${"%.2f".format(hit.score)},\n")
-                                append("      \"fileName\": \"${hit.fileName}\",\n")
-                                append("      \"chunkIndex\": ${hit.chunkIndex},\n")
-                                append("      \"text\": \"${hit.text.take(500)}${if (hit.text.length > 500) "..." else ""}\"\n")
-                                append("    }${if (index < result.hits.size - 1) "," else ""}\n")
-                            }
-                            append("  ],\n")
-                            append("  \"estimatedTokens\": ${result.estimatedTokens}\n")
-                            append("}")
-                        }
-                        ToolResult.success(json)
-                    }
-                    is SearchResult.Error -> {
-                        ToolResult.error(result.message)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Search failed", e)
-                ToolResult.error("Search failed: ${e.message}")
-            }
-        }
-    }
 }

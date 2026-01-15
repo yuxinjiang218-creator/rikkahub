@@ -323,6 +323,11 @@ class KnowledgeBaseIndexer(
     }
 
     /**
+     * 获取指定 assistant 的所有文档
+     */
+    fun getDocumentsByAssistantId(assistantId: String) = documentDao.getByAssistantId(assistantId)
+
+    /**
      * 索引结果
      */
     sealed class IndexResult {

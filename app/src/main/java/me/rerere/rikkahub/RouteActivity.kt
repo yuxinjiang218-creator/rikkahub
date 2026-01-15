@@ -68,6 +68,7 @@ import me.rerere.rikkahub.ui.pages.assistant.AssistantPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantBasicPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantDetailPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantInjectionsPage
+import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantKnowledgeBasePage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantLocalToolPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantMcpPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantMemoryPage
@@ -319,6 +320,11 @@ class RouteActivity : ComponentActivity() {
                         AssistantLocalToolPage(route.id)
                     }
 
+                    composable<Screen.AssistantKnowledgeBase> { backStackEntry ->
+                        val route = backStackEntry.toRoute<Screen.AssistantKnowledgeBase>()
+                        AssistantKnowledgeBasePage(route.id)
+                    }
+
                     composable<Screen.AssistantInjections> { backStackEntry ->
                         val route = backStackEntry.toRoute<Screen.AssistantInjections>()
                         AssistantInjectionsPage(route.id)
@@ -483,6 +489,9 @@ sealed interface Screen {
 
     @Serializable
     data class AssistantLocalTool(val id: String) : Screen
+
+    @Serializable
+    data class AssistantKnowledgeBase(val id: String) : Screen
 
     @Serializable
     data class AssistantInjections(val id: String) : Screen
