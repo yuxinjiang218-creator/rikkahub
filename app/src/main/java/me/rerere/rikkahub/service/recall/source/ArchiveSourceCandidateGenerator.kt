@@ -61,6 +61,14 @@ class ArchiveSourceCandidateGenerator(
         private val EDGE_SIMILARITY_MIN get() = me.rerere.rikkahub.service.recall.RecallConstants.EDGE_SIMILARITY_MIN
         private val EDGE_SIMILARITY_MAX get() = me.rerere.rikkahub.service.recall.RecallConstants.EDGE_SIMILARITY_MAX
         private val MIN_SNIPPET_LENGTH get() = me.rerere.rikkahub.service.recall.RecallConstants.MIN_SNIPPET_LENGTH
+
+        /**
+         * Phase J4: 硬逐字关键词（显式逐字请求时 A 源完全跳过）
+         * 当用户使用这些关键词时，说明用户要求逐字原文，A源的摘要不满足需求
+         */
+        private val HARD_VERBATIM_KEYWORDS = listOf(
+            "原文", "全文", "逐字", "一字不差", "复述", "贴出来", "引用", "原诗", "原代码"
+        )
     }
 
     /**
@@ -98,8 +106,29 @@ class ArchiveSourceCandidateGenerator(
             return@withContext emptyList()
         }
 
+        // Phase J4: 显式逐字请求时，A源完全跳过
+        // 用户使用硬逐字关键词（如"原文"、"全文"等）说明要求逐字原文，A源的摘要不满足需求
+        if (queryContext.explicitSignal.explicit) {
+            val hardVerbatimKeyword = queryContext.explicitSignal.keyword
+            if (hardVerbatimKeyword != null && hardVerbatimKeyword in HARD_VERBATIM_KEYWORDS) {
+                debugLogger.log(
+                    LogLevel.DEBUG,
+                    TAG,
+                    "Hard verbatim explicit request, skipping A source",
+                    mapOf("keyword" to hardVerbatimKeyword)
+                )
+                return@withContext emptyList()
+            }
+        }
+
         val conversationId = queryContext.conversationId
         val lastUserText = queryContext.lastUserText
+
+        // Phase J4: 判断是否是"非硬逐字的显式请求"（如《title》触发）
+        // 这种情况下允许 SNIPPET，但禁止 HINT fallback
+        val isExplicitNonHardVerbatim = queryContext.explicitSignal.explicit &&
+            (queryContext.explicitSignal.keyword == null ||
+             queryContext.explicitSignal.keyword !in HARD_VERBATIM_KEYWORDS)
 
         // 4. 计算 needScore（简化：用账本大小）
         val needScore = queryContext.ledger.recent.size.toFloat()
@@ -195,8 +224,23 @@ class ArchiveSourceCandidateGenerator(
             if (candidates.size >= MAX_PER_SOURCE) break
 
             // Phase G3.2 质量护栏1：边缘相似度区间 [0.30, 0.35) 只生成 HINT
+            // Phase J4: 但显式非硬逐字请求时禁止 HINT fallback
             val isInEdgeZone = similarity >= EDGE_SIMILARITY_MIN && similarity < EDGE_SIMILARITY_MAX
             if (isInEdgeZone) {
+                if (isExplicitNonHardVerbatim) {
+                    // Phase J4: 显式非硬逐字请求时，边缘区域跳过（禁止 HINT）
+                    debugLogger.log(
+                        LogLevel.DEBUG,
+                        TAG,
+                        "Edge similarity zone with explicit non-hard verbatim, skipping (no HINT fallback)",
+                        mapOf(
+                            "archiveId" to archive.id,
+                            "similarity" to similarity
+                        )
+                    )
+                    continue  // 跳过此 archive
+                }
+
                 debugLogger.log(
                     LogLevel.DEBUG,
                     TAG,
@@ -243,8 +287,24 @@ class ArchiveSourceCandidateGenerator(
 
             val (kind, content, maxChars) = if (snippetContent != null) {
                 // Phase G3.2 质量护栏2：SNIPPET 清理后长度 < 80 chars 退 HINT
+                // Phase J4: 但显式非硬逐字请求时禁止 HINT fallback
                 val cleanedSnippet = snippetContent.trim()
                 if (cleanedSnippet.length < MIN_SNIPPET_LENGTH) {
+                    if (isExplicitNonHardVerbatim) {
+                        // Phase J4: 显式非硬逐字请求时，SNIPPET 太短跳过（禁止 HINT）
+                        debugLogger.log(
+                            LogLevel.DEBUG,
+                            TAG,
+                            "Snippet too short with explicit non-hard verbatim, skipping (no HINT fallback)",
+                            mapOf(
+                                "archiveId" to archive.id,
+                                "snippetLength" to cleanedSnippet.length,
+                                "MIN_SNIPPET_LENGTH" to MIN_SNIPPET_LENGTH
+                            )
+                        )
+                        continue  // 跳过此 archive
+                    }
+
                     debugLogger.log(
                         LogLevel.DEBUG,
                         TAG,
@@ -273,6 +333,18 @@ class ArchiveSourceCandidateGenerator(
                 }
             } else {
                 // SNIPPET 失败，回退 HINT（<=200 chars）
+                // Phase J4: 但显式非硬逐字请求时禁止 HINT fallback
+                if (isExplicitNonHardVerbatim) {
+                    // Phase J4: 显式非硬逐字请求时，SNIPPET 失败跳过（禁止 HINT）
+                    debugLogger.log(
+                        LogLevel.DEBUG,
+                        TAG,
+                        "Snippet assembly failed with explicit non-hard verbatim, skipping (no HINT fallback)",
+                        mapOf("archiveId" to archive.id)
+                    )
+                    continue  // 跳过此 archive
+                }
+
                 debugLogger.log(
                     LogLevel.DEBUG,
                     TAG,
