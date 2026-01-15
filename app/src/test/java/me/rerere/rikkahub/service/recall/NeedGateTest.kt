@@ -59,9 +59,9 @@ class NeedGateTest {
         val needScore = NeedGate.computeNeedScoreHeuristic(context)
         val shouldProceed = NeedGate.shouldProceed(context)
 
-        // 单个回指词 => needScore = 0.35 < 0.55（不够强，需要显式信号）
-        assertEquals(0.35f, needScore, "回指词得分应该是 0.35")
-        assertFalse(shouldProceed, "单个回指词不应该通过 NeedGate（需要显式信号或更高分数）")
+        // Phase J3: "那个" + "方案" => 0.35 + 0.25 = 0.60 >= 0.55 => 通过
+        assertEquals(0.60f, needScore, 0.001f, "回指词+对象词得分应该是 0.60")
+        assertTrue(shouldProceed, "回指词+对象词应该通过 NeedGate")
     }
 
     @Test
@@ -113,10 +113,9 @@ class NeedGateTest {
         val needScore = NeedGate.computeNeedScoreHeuristic(context)
         val shouldProceed = NeedGate.shouldProceed(context)
 
-        // 多个回指词 => needScore 仍然是 0.35（当前实现不累加，只检测有无）
-        // 这是设计决策：避免过度召回，保持"默认更安静"原则
-        assertEquals(0.35f, needScore, "多个回指词得分应该是 0.35（不累加）")
-        assertFalse(shouldProceed, "多个回指词不应该通过 NeedGate（需要显式信号）")
+        // Phase J3: "你刚才说的" + "代码" => 0.35 + 0.25 = 0.60 >= 0.55 => 通过
+        assertEquals(0.60f, needScore, 0.001f, "回指词+对象词得分应该是 0.60")
+        assertTrue(shouldProceed, "回指词+对象词应该通过 NeedGate")
     }
 
     @Test

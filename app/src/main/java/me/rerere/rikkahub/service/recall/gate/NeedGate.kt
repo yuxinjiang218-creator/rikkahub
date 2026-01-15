@@ -26,12 +26,25 @@ object NeedGate {
     /** 回指词列表 */
     private val ANAPHORA_WORDS = listOf(
         "那个", "这段", "上次", "之前", "刚才", "你说的",
-        "我们讨论过", "继续", "接着", "按你刚给的方案"
+        "我们讨论过", "继续", "接着", "按你刚给的方案",
+        "这首", "这个", "那首", "该", "上述", "刚才说的"
     )
 
     /** 新话题词列表 */
     private val NEW_TOPIC_WORDS = listOf(
         "另外", "顺便", "换个", "新问题", "不相关"
+    )
+
+    /**
+     * Phase J3: 对象词列表（指代清晰加分）
+     * 与回指词组合触发时额外 +0.25
+     *
+     * 注意：这些词应该不与 ANAPHORA_WORDS 中的词重叠，
+     * 否则会导致一个词既触发 anaphora 又触发 object 加分
+     */
+    private val OBJECT_WORDS = listOf(
+        "诗", "代码", "方案", "步骤", "公式", "参数",
+        "阈值", "设置", "配置", "实现", "逻辑"
     )
 
     /**
@@ -61,6 +74,14 @@ object NeedGate {
         val hasAnaphora = ANAPHORA_WORDS.any { text.contains(it) }
         if (hasAnaphora) {
             score += 0.35f
+        }
+
+        // Phase J3: 指代清晰加分（组合触发：回指词 + 对象词）
+        if (hasAnaphora) {
+            val hasObject = OBJECT_WORDS.any { text.contains(it) }
+            if (hasObject) {
+                score += 0.25f
+            }
         }
 
         // 检测新话题词
