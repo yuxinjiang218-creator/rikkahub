@@ -99,23 +99,35 @@ object ProbeAcceptanceJudge {
 
     /**
      * 检查是否命中 anchors
+     *
+     * 修复：规范化匹配 keyword/title/token anchors
+     * - 对每个 anchor 做 normalize：取 : 后面的部分（如果有前缀）
+     * - trim；空字符串跳过
+     * - 噪声抑制：长度 < 2 的跳过
+     * - 命中判断：lastUserText.contains(normalizedAnchor)
      */
     private fun hitsAnchors(lastUserText: String, anchors: List<String>): Boolean {
-        // anchors 格式示例：["title:静夜思", "node_indices:45,46,47"]
-        // 提取有意义的部分（跳过前缀）
+        // anchors 格式示例：["title:静夜思", "keyword:原文", "node_indices:45,46,47", "archive_id:xxx"]
         return anchors.any { anchor ->
-            val meaningfulPart = when {
+            // 1. normalize：取 : 后面的部分（如果有前缀）
+            val normalizedAnchor = when {
                 anchor.startsWith("title:") -> anchor.substringAfter("title:")
-                anchor.startsWith("node_indices:") -> null  // 跳过纯数字
+                anchor.startsWith("keyword:") -> anchor.substringAfter("keyword:")
+                anchor.startsWith("token:") -> anchor.substringAfter("token:")
+                anchor.startsWith("node_indices:") -> null  // 跳过结构锚点
                 anchor.startsWith("archive_id:") -> null  // 跳过 ID
                 else -> anchor
             }
 
-            if (meaningfulPart != null && meaningfulPart.isNotEmpty()) {
-                lastUserText.contains(meaningfulPart, ignoreCase = true)
-            } else {
-                false
-            }
+            // 2. 处理：trim + 空字符串跳过
+            val trimmed = normalizedAnchor?.trim() ?: return@any false
+            if (trimmed.isEmpty()) return@any false
+
+            // 3. 噪声抑制：长度 < 2 的跳过（避免单字误触发）
+            if (trimmed.length < 2) return@any false
+
+            // 4. 命中判断
+            lastUserText.contains(trimmed, ignoreCase = true)
         }
     }
 
