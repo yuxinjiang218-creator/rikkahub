@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.service.recall
 
 import android.content.Context
+import android.util.Log
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import me.rerere.ai.provider.ProviderManager
@@ -84,6 +85,13 @@ class RecallCoordinator(
         // 总体性能监控
         val totalStartTime = System.currentTimeMillis()
 
+        Log.i(TAG, "=== RecallCoordinator.coordinateRecall STARTED ===")
+        Log.i(TAG, "conversationId: ${queryContext.conversationId}")
+        Log.i(TAG, "lastUserText: ${queryContext.lastUserText.take(100)}")
+        Log.i(TAG, "explicitSignal.explicit: ${queryContext.explicitSignal.explicit}")
+        Log.i(TAG, "enableVerbatimRecall: ${queryContext.settingsSnapshot.enableVerbatimRecall}")
+        Log.i(TAG, "enableArchiveRecall: ${queryContext.settingsSnapshot.enableArchiveRecall}")
+
         debugLogger.log(
             LogLevel.INFO,
             TAG,
@@ -122,13 +130,23 @@ class RecallCoordinator(
 
         // 阶段2：NeedGate 判断（是否进入候选生成）
         val needGateTime = measureTimeMillis {
-            if (!NeedGate.shouldProceed(updatedQueryContext)) {
+            val needScore = NeedGate.computeNeedScoreHeuristic(updatedQueryContext)
+            val shouldProceed = NeedGate.shouldProceed(updatedQueryContext)
+
+            Log.i(TAG, "=== NeedGate CHECK ===")
+            Log.i(TAG, "needScore: $needScore")
+            Log.i(TAG, "threshold: ${NeedGate.getThreshold()}")
+            Log.i(TAG, "explicit: ${updatedQueryContext.explicitSignal.explicit}")
+            Log.i(TAG, "shouldProceed: $shouldProceed")
+
+            if (!shouldProceed) {
+                Log.w(TAG, "=== NeedGate BLOCKED recall ===")
                 debugLogger.log(
                     LogLevel.INFO,
                     TAG,
                     "NeedGate blocked",
                     mapOf(
-                        "needScore" to NeedGate.computeNeedScoreHeuristic(updatedQueryContext),
+                        "needScore" to needScore,
                         "threshold" to NeedGate.getThreshold()
                     )
                 )
@@ -139,6 +157,7 @@ class RecallCoordinator(
             }
         }
 
+        Log.i(TAG, "=== NeedGate PASSED in ${needGateTime}ms ===")
         debugLogger.log(LogLevel.DEBUG, TAG, "NeedGate passed in ${needGateTime}ms")
 
         // 阶段3：检查静默窗口（Phase E：快速停止）
@@ -166,9 +185,11 @@ class RecallCoordinator(
         // 阶段4：P源候选生成
         val candidates = mutableListOf<Candidate>()
         val pSourceTime = measureTimeMillis {
+            Log.i(TAG, "=== P Source Candidate Generation START ===")
             val pSourceCandidates = textSourceCandidateGenerator.generate(updatedQueryContext)
             candidates.addAll(pSourceCandidates)
 
+            Log.i(TAG, "=== P Source generated ${pSourceCandidates.size} candidates ===")
             debugLogger.log(
                 LogLevel.INFO,
                 TAG,
@@ -212,12 +233,21 @@ class RecallCoordinator(
         val maxNodeIndex = messageNodeTextDao.getMaxNodeIndex(updatedQueryContext.conversationId) ?: 0
 
         // 阶段7：评分
+        // Phase J0: 统一使用 NeedGate 计算的 needScore（与 EvidenceScorer 保持一致）
         val needScore = NeedGate.computeNeedScoreHeuristic(updatedQueryContext)
+
+        // Phase J0: 显式请求时，needScore 强制为 1.0（仅用于评分/决策一致性，不影响 shouldProceed）
+        val scoringNeedScore = if (updatedQueryContext.explicitSignal.explicit) {
+            1.0f
+        } else {
+            needScore.coerceIn(0f, 1f)
+        }
+
         val scoredCandidates = candidates.map { candidate ->
             candidate to EvidenceScorer.score(
                 candidate = candidate,
                 queryContext = updatedQueryContext,
-                needScore = needScore,
+                needScore = scoringNeedScore,
                 maxNodeIndex = maxNodeIndex
             )
         }
@@ -225,9 +255,11 @@ class RecallCoordinator(
         debugLogger.log(LogLevel.DEBUG, TAG, "Scoring completed")
 
         // 阶段8：决策
+        // Phase J0: 传入统一计算的 needScore（与 EvidenceScorer 保持一致）
         val decisionResult = RecallDecisionEngine.decide(
             scoredCandidates = scoredCandidates,
-            queryContext = updatedQueryContext
+            queryContext = updatedQueryContext,
+            needScore = scoringNeedScore
         )
         val decisionTime = 0L  // 已在上面计算
 
@@ -248,7 +280,7 @@ class RecallCoordinator(
             TAG,
             "Recall decision summary (Phase H)",
             mapOf(
-                "needScore" to needScore,
+                "needScore" to scoringNeedScore,  // Phase J0: 使用统一计算的 needScore
                 "explicit" to updatedQueryContext.explicitSignal.explicit,
                 "silent" to me.rerere.rikkahub.service.recall.probe.ProbeControl.isInSilentWindow(
                     ledger = updatedLedger,
@@ -314,40 +346,57 @@ class RecallCoordinator(
         // 阶段7：构建注入块
         val injectionTime = 0L  // 简化：不单独测量
 
+        Log.i(TAG, "=== Building injection block ===")
+        Log.i(TAG, "decisionResult.action: ${decisionResult.action}")
+        Log.i(TAG, "decisionResult.selectedCandidate: ${decisionResult.selectedCandidate?.id}")
+        Log.i(TAG, "decisionResult.vetoReason: ${decisionResult.vetoReason}")
+
         if (decisionResult.action != RecallAction.NONE && decisionResult.selectedCandidate != null) {
-            val injectionBlock = buildInjectionBlock(
-                candidate = decisionResult.selectedCandidate,
-                scores = scoredCandidates.firstOrNull { it.first == decisionResult.selectedCandidate }?.second,
-                action = decisionResult.action
-            )
+            Log.i(TAG, "=== Building injection block (action != NONE) ===")
 
-            debugLogger.log(
-                LogLevel.INFO,
-                TAG,
-                "Recall injection block created",
-                mapOf(
-                    "type" to decisionResult.action.name,
-                    "charCount" to injectionBlock.length
+            try {
+                val injectionBlock = buildInjectionBlock(
+                    candidate = decisionResult.selectedCandidate,
+                    scores = scoredCandidates.firstOrNull { it.first == decisionResult.selectedCandidate }?.second,
+                    action = decisionResult.action
                 )
-            )
 
-            // 记录总性能
-            val totalTime = System.currentTimeMillis() - totalStartTime
-            logPerformanceMetrics(
-                needGateTime = needGateTime,
-                pSourceTime = pSourceTime,
-                aSourceTime = aSourceTime,
-                scoringTime = scoringTime,
-                decisionTime = decisionTime,
-                injectionTime = injectionTime,
-                totalTime = totalTime
-            )
+                Log.i(TAG, "=== Injection block built successfully, length: ${injectionBlock.length} ===")
+                Log.i(TAG, "=== First 200 chars of injection block: ${injectionBlock.take(200)} ===")
 
-            return injectionBlock
+                debugLogger.log(
+                    LogLevel.INFO,
+                    TAG,
+                    "Recall injection block created",
+                    mapOf(
+                        "type" to decisionResult.action.name,
+                        "charCount" to injectionBlock.length
+                    )
+                )
+
+                // 记录总性能
+                val totalTime = System.currentTimeMillis() - totalStartTime
+                logPerformanceMetrics(
+                    needGateTime = needGateTime,
+                    pSourceTime = pSourceTime,
+                    aSourceTime = aSourceTime,
+                    scoringTime = scoringTime,
+                    decisionTime = decisionTime,
+                    injectionTime = injectionTime,
+                    totalTime = totalTime
+                )
+
+                Log.i(TAG, "=== Returning injection block ===")
+                return injectionBlock
+            } catch (e: Exception) {
+                Log.e(TAG, "=== ERROR building injection block: ${e.message} ===", e)
+                throw e
+            }
         }
 
         // 记录总性能（未召回的情况）
         val totalTime = System.currentTimeMillis() - totalStartTime
+        Log.i(TAG, "=== Recall returning NULL (no recall) in ${totalTime}ms ===")
         logPerformanceMetrics(
             needGateTime = needGateTime,
             pSourceTime = pSourceTime,

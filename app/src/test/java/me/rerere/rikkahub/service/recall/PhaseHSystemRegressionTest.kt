@@ -303,7 +303,8 @@ class PhaseHSystemRegressionTest {
         // 4. 决策
         val result = RecallDecisionEngine.decide(
             scoredCandidates = scoredCandidates,
-            queryContext = queryContext
+            queryContext = queryContext,
+            needScore = 0.6f
         )
 
         // 验收：action = PROBE_VERBATIM_SNIPPET（高置信度）
@@ -433,7 +434,8 @@ class PhaseHSystemRegressionTest {
         // 决策
         val result = RecallDecisionEngine.decide(
             scoredCandidates = scoredCandidates,
-            queryContext = queryContext
+            queryContext = queryContext,
+            needScore = 0.6f
         )
 
         // 验收：action = NONE（margin veto 生效）

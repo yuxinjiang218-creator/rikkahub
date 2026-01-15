@@ -266,7 +266,8 @@ class PhaseIBalancedV1Test {
         // 决策
         val result = RecallDecisionEngine.decide(
             scoredCandidates = scoredCandidates,
-            queryContext = queryContext
+            queryContext = queryContext,
+            needScore = 0.6f
         )
 
         // 验收：不触发 margin veto（action 不能因 veto 变 NONE）

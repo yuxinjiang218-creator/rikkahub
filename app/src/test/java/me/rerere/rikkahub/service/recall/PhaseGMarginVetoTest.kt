@@ -128,7 +128,7 @@ class PhaseGMarginVetoTest {
             candidate2 to scores2
         )
 
-        val result = RecallDecisionEngine.decide(scoredCandidates, queryContext)
+        val result = RecallDecisionEngine.decide(scoredCandidates, queryContext, needScore = 0.6f)
 
         // 验证：action = NONE（margin veto 生效）
         assertEquals(RecallAction.NONE, result.action, "margin veto 应阻断模糊召回")
@@ -176,7 +176,7 @@ class PhaseGMarginVetoTest {
             candidate2 to scores2
         )
 
-        val result = RecallDecisionEngine.decide(scoredCandidates, queryContext)
+        val result = RecallDecisionEngine.decide(scoredCandidates, queryContext, needScore = 0.6f)
 
         // 验证：action != NONE（margin veto 不应用于 explicit）
         // explicit 场景按 explicit 规则：SNIPPET + relevance>=0.55 => PROBE_VERBATIM_SNIPPET
@@ -224,7 +224,7 @@ class PhaseGMarginVetoTest {
             candidate2 to scores2
         )
 
-        val result = RecallDecisionEngine.decide(scoredCandidates, queryContext)
+        val result = RecallDecisionEngine.decide(scoredCandidates, queryContext, needScore = 0.6f)
 
         // 验证：action = PROBE_VERBATIM_SNIPPET（margin 足够大，不触发 veto）
         assertEquals(
@@ -265,7 +265,7 @@ class PhaseGMarginVetoTest {
             candidate2 to scores2
         )
 
-        val result = RecallDecisionEngine.decide(scoredCandidates, queryContext)
+        val result = RecallDecisionEngine.decide(scoredCandidates, queryContext, needScore = 0.6f)
 
         // 验证：action = PROBE_VERBATIM_SNIPPET（precision 足够高，不触发 veto）
         assertEquals(
@@ -306,7 +306,7 @@ class PhaseGMarginVetoTest {
             candidate2 to scores2
         )
 
-        val result = RecallDecisionEngine.decide(scoredCandidates, queryContext)
+        val result = RecallDecisionEngine.decide(scoredCandidates, queryContext, needScore = 0.6f)
 
         // 验证：action = NONE（分数不够）
         assertEquals(RecallAction.NONE, result.action, "分数不够时应返回 NONE")
@@ -344,7 +344,7 @@ class PhaseGMarginVetoTest {
             candidate1 to scores1
         )
 
-        val result = RecallDecisionEngine.decide(scoredCandidates, queryContext)
+        val result = RecallDecisionEngine.decide(scoredCandidates, queryContext, needScore = 0.6f)
 
         // 验证：action = PROBE_VERBATIM_SNIPPET（只有一个候选，不触发 veto）
         assertEquals(

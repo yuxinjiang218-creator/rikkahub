@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.service.recall.decision
 
+import android.util.Log
 import me.rerere.rikkahub.service.recall.model.Candidate
 import me.rerere.rikkahub.service.recall.model.CandidateKind
 import me.rerere.rikkahub.service.recall.model.EntryStatus
@@ -51,8 +52,8 @@ object RecallDecisionEngine {
     /** 显式召回的最小相关性阈值（FULL） */
     private const val EXPLICIT_FULL_MIN_RELEVANCE = 0.75f
 
-    /** 显式召回的最小相关性阈值（SNIPPET） */
-    private const val EXPLICIT_SNIPPET_MIN_RELEVANCE = 0.55f
+    /** 显式召回的最小相关性阈值（SNIPPET） - Phase J0: 使用 RecallConstants 统一管理 */
+    private val EXPLICIT_SNIPPET_MIN_RELEVANCE get() = me.rerere.rikkahub.service.recall.RecallConstants.EXPLICIT_SNIPPET_MIN_RELEVANCE
 
     /** Phase G2: margin veto 阈值（灰区保守策略） */
     private const val MARGIN_VETO_THRESHOLD = 0.05f
@@ -65,18 +66,40 @@ object RecallDecisionEngine {
      *
      * @param scoredCandidates 评分后的候选列表（候选 -> 评分）
      * @param queryContext 查询上下文
+     * @param needScore 需求分数（来自 NeedGate.computeNeedScoreHeuristic，与 EvidenceScorer 保持一致）
      * @return 决策结果（动作 + 选中的候选）
      */
     fun decide(
         scoredCandidates: List<Pair<Candidate, EvidenceScores>>,
-        queryContext: QueryContext
+        queryContext: QueryContext,
+        needScore: Float
     ): DecisionResult {
         val isExplicit = queryContext.explicitSignal.explicit
-        val needScore = queryContext.ledger.recent.size.toFloat()  // 简化：用账本大小代替
+
+        // Phase J0: 在单元测试环境中 Log 可能不可用，使用 try-catch 保护
+        try {
+            Log.i("RecallDecisionEngine", "=== DECIDE START ===")
+            Log.i("RecallDecisionEngine", "isExplicit: $isExplicit")
+            Log.i("RecallDecisionEngine", "scoredCandidates count: ${scoredCandidates.size}")
+        } catch (e: Exception) {
+            // 单元测试环境 Log 不可用，忽略
+        }
+
+        // 记录所有候选的分数
+        try {
+            scoredCandidates.forEach { (candidate, scores) ->
+                Log.i("RecallDecisionEngine", "Candidate: ${candidate.id}, kind: ${candidate.kind}")
+                Log.i("RecallDecisionEngine", "  relevance: ${scores.relevance}, precision: ${scores.precision}, risk: ${scores.risk}")
+                Log.i("RecallDecisionEngine", "  finalScore: ${scores.finalScore}, novelty: ${scores.novelty}, redundancyPenalty: ${scores.redundancyPenalty}")
+            }
+        } catch (e: Exception) {
+            // 单元测试环境 Log 不可用，忽略
+        }
 
         // 硬性否决检查
         val vetoReason = checkHardVeto(scoredCandidates, queryContext, isExplicit, needScore)
         if (vetoReason != null) {
+            try { Log.w("RecallDecisionEngine", "=== HARD VETO: $vetoReason ===") } catch (e: Exception) {}
             return DecisionResult(
                 action = RecallAction.NONE,
                 selectedCandidate = null,
@@ -119,6 +142,7 @@ object RecallDecisionEngine {
             decideNonExplicit(bestCandidate, bestScores)
         }
 
+        try { Log.i("RecallDecisionEngine", "=== FINAL DECISION: $action ===") } catch (e: Exception) {}
         return DecisionResult(
             action = action,
             selectedCandidate = bestCandidate,
@@ -228,8 +252,14 @@ object RecallDecisionEngine {
         scores: EvidenceScores,
         allCandidates: List<Pair<Candidate, EvidenceScores>>
     ): RecallAction {
+        try { Log.i("RecallDecisionEngine", "=== decideExplicit ===") } catch (e: Exception) {}
+        try { Log.i("RecallDecisionEngine", "bestCandidate kind: ${candidate.kind}, relevance: ${scores.relevance}") } catch (e: Exception) {}
+        try { Log.i("RecallDecisionEngine", "EXPLICIT_FULL_MIN_RELEVANCE: $EXPLICIT_FULL_MIN_RELEVANCE") } catch (e: Exception) {}
+        try { Log.i("RecallDecisionEngine", "EXPLICIT_SNIPPET_MIN_RELEVANCE: $EXPLICIT_SNIPPET_MIN_RELEVANCE") } catch (e: Exception) {}
+
         // 1. 优先选择 FULL 候选（如果 relevance>=0.75）
         if (candidate.kind == CandidateKind.FULL && scores.relevance >= EXPLICIT_FULL_MIN_RELEVANCE) {
+            try { Log.i("RecallDecisionEngine", "=== DECISION: FULL_VERBATIM (best FULL meets threshold) ===") } catch (e: Exception) {}
             return RecallAction.FULL_VERBATIM
         }
 
@@ -238,11 +268,15 @@ object RecallDecisionEngine {
             c.kind == CandidateKind.FULL && s.relevance >= EXPLICIT_FULL_MIN_RELEVANCE
         }
         if (fullCandidate != null) {
+            try { Log.i("RecallDecisionEngine", "=== DECISION: FULL_VERBATIM (found FULL meeting threshold) ===") } catch (e: Exception) {}
             return RecallAction.FULL_VERBATIM
         }
 
-        // 3. SNIPPET 候选（relevance>=0.55）
+        try { Log.i("RecallDecisionEngine", "No FULL candidate meets threshold") } catch (e: Exception) {}
+
+        // 3. SNIPPET 候选（relevance>=0.45，降低阈值）
         if (candidate.kind == CandidateKind.SNIPPET && scores.relevance >= EXPLICIT_SNIPPET_MIN_RELEVANCE) {
+            try { Log.i("RecallDecisionEngine", "=== DECISION: PROBE_VERBATIM_SNIPPET (best SNIPPET meets threshold) ===") } catch (e: Exception) {}
             return RecallAction.PROBE_VERBATIM_SNIPPET
         }
 
@@ -251,9 +285,12 @@ object RecallDecisionEngine {
             c.kind == CandidateKind.SNIPPET && s.relevance >= EXPLICIT_SNIPPET_MIN_RELEVANCE
         }
         if (snippetCandidate != null) {
+            try { Log.i("RecallDecisionEngine", "=== DECISION: PROBE_VERBATIM_SNIPPET (found SNIPPET meeting threshold) ===") } catch (e: Exception) {}
             return RecallAction.PROBE_VERBATIM_SNIPPET
         }
 
+        try { Log.w("RecallDecisionEngine", "=== DECISION: NONE (no candidate meets relevance threshold) ===") } catch (e: Exception) {}
+        try { Log.w("RecallDecisionEngine", "=== Best relevance was: ${allCandidates.maxByOrNull { it.second.relevance }?.second?.relevance} ===") } catch (e: Exception) {}
         // 否则 NONE
         return RecallAction.NONE
     }
