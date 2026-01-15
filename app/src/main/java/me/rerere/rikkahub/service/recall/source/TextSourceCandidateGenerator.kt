@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.service.recall.source
 
 import android.content.Context
+import android.util.Log
 import androidx.sqlite.db.SimpleSQLiteQuery
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -58,8 +59,12 @@ class TextSourceCandidateGenerator(
         val debugLogger = DebugLogger.getInstance(context)
         val candidates = mutableListOf<Candidate>()
 
+        Log.i(TAG, "=== TextSourceCandidateGenerator.generate START ===")
+        Log.i(TAG, "enableVerbatimRecall: ${queryContext.settingsSnapshot.enableVerbatimRecall}")
+
         // 检查是否启用逐字召回
         if (!queryContext.settingsSnapshot.enableVerbatimRecall) {
+            Log.w(TAG, "=== Verbatim recall DISABLED, returning empty list ===")
             debugLogger.log(
                 LogLevel.DEBUG,
                 TAG,
@@ -72,9 +77,16 @@ class TextSourceCandidateGenerator(
         val lastUserText = queryContext.lastUserText
         val isExplicit = queryContext.explicitSignal.explicit
 
+        Log.i(TAG, "conversationId: $conversationId")
+        Log.i(TAG, "lastUserText: $lastUserText")
+        Log.i(TAG, "isExplicit: $isExplicit")
+
         // 策略1：title 匹配
         val titles = IntentRouter.extractTitles(lastUserText)
+        Log.i(TAG, "extracted titles: $titles")
+
         if (titles.isNotEmpty()) {
+            Log.i(TAG, "=== Title matching strategy ===")
             debugLogger.log(
                 LogLevel.DEBUG,
                 TAG,
@@ -84,8 +96,10 @@ class TextSourceCandidateGenerator(
 
             val titleCandidates = searchByTitle(conversationId, titles, isExplicit, lastUserText)
             candidates.addAll(titleCandidates)
+            Log.i(TAG, "titleCandidates count: ${titleCandidates.size}")
 
             if (candidates.size >= MAX_PER_SOURCE) {
+                Log.i(TAG, "=== Enough candidates from title matching ===")
                 debugLogger.log(
                     LogLevel.DEBUG,
                     TAG,
@@ -98,12 +112,15 @@ class TextSourceCandidateGenerator(
 
         // 策略2：FTS4 兜底检索（仅在 title 未产生足够候选时）
         if (candidates.size < MAX_PER_SOURCE) {
+            Log.i(TAG, "=== FTS4 fallback strategy ===")
             debugLogger.log(LogLevel.DEBUG, TAG, "FTS4 fallback")
 
             val ftsCandidates = searchByFts(conversationId, lastUserText, isExplicit)
             candidates.addAll(ftsCandidates)
+            Log.i(TAG, "ftsCandidates count: ${ftsCandidates.size}")
         }
 
+        Log.i(TAG, "=== Total P source candidates: ${candidates.size} ===")
         debugLogger.log(
             LogLevel.INFO,
             TAG,
@@ -125,16 +142,26 @@ class TextSourceCandidateGenerator(
     ): List<Candidate> {
         val candidates = mutableListOf<Candidate>()
 
+        Log.i(TAG, "=== searchByTitle START ===")
+        Log.i(TAG, "titles: $titles")
+        Log.i(TAG, "isExplicit: $isExplicit")
+
         for (title in titles) {
             if (candidates.size >= MAX_PER_SOURCE) break
+
+            Log.i(TAG, "Searching for artifact with title: '$title'")
 
             val artifacts = verbatimArtifactDao.getByConversationIdAndTitle(
                 conversationId = conversationId,
                 title = title
             )
 
+            Log.i(TAG, "Found ${artifacts.size} artifacts for title '$title'")
+
             if (artifacts.isNotEmpty()) {
                 val artifact = artifacts.first()  // 取最新的一条
+                Log.i(TAG, "artifact: startNodeIndex=${artifact.startNodeIndex}, endNodeIndex=${artifact.endNodeIndex}")
+
                 val nodeIndices = (artifact.startNodeIndex..artifact.endNodeIndex).toList()
 
                 // 获取消息文本
@@ -143,11 +170,15 @@ class TextSourceCandidateGenerator(
                     indices = nodeIndices
                 )
 
+                Log.i(TAG, "Retrieved ${messageNodes.size} message nodes")
+
                 if (messageNodes.isNotEmpty()) {
                     val fullText = messageNodes.joinToString("\n\n") { it.rawText }
+                    Log.i(TAG, "fullText length: ${fullText.length}")
 
                     // 显式请求：生成 FULL 候选
                     if (isExplicit && fullText.length <= FULL_MAX_CHARS) {
+                        Log.i(TAG, "Adding FULL candidate")
                         candidates.add(buildCandidate(
                             conversationId = conversationId,
                             nodeIndices = nodeIndices,
@@ -160,6 +191,7 @@ class TextSourceCandidateGenerator(
 
                     // 同时生成 SNIPPET 候选（<=800 chars）
                     val snippetText = fullText.take(SNIPPET_MAX_CHARS)
+                    Log.i(TAG, "Adding SNIPPET candidate (length: ${snippetText.length})")
                     candidates.add(buildCandidate(
                         conversationId = conversationId,
                         nodeIndices = nodeIndices,
@@ -172,11 +204,13 @@ class TextSourceCandidateGenerator(
             }
         }
 
+        Log.i(TAG, "=== searchByTitle returning ${candidates.size} candidates ===")
         return candidates
     }
 
     /**
      * 策略2：FTS4 兜底检索
+     * Phase J1: 传递 FTS 排名信息给 EvidenceScorer 使用
      */
     private suspend fun searchByFts(
         conversationId: String,
@@ -205,14 +239,27 @@ class TextSourceCandidateGenerator(
             arrayOf(matchQuery, conversationId, MessageRole.USER.ordinal)
         )
 
-        val candidateIndices = try {
+        // Phase J1: 获取排序后的 node_index 列表及对应的排名分数
+        val rankedIndices = try {
             val ftsResults = messageNodeTextDao.searchByFts(ftsQuery)
             if (ftsResults.isEmpty()) {
                 // FTS4 无结果，使用倒排索引兜底
                 DebugLogger.getInstance(context).log(LogLevel.DEBUG, TAG, "FTS4 empty, skipping")
                 return emptyList()
             } else {
-                FtsRanker.rankAndTakeTop(ftsResults).take(MAX_PER_SOURCE)
+                // Phase J1: rankAndTakeTop 返回的是已排序的 node_index 列表
+                // 我们需要保留排名信息：top1=1.0, top2=0.7, top3=0.5
+                val rankedList = FtsRanker.rankAndTakeTop(ftsResults).take(MAX_PER_SOURCE)
+                rankedList.mapIndexed { index, nodeIndex ->
+                    // 归一化排名分数：top1=1.0, top2=0.7, top3=0.5
+                    val rankScore = when (index) {
+                        0 -> 1.0f
+                        1 -> 0.7f
+                        2 -> 0.5f
+                        else -> 0.3f
+                    }
+                    nodeIndex to rankScore
+                }
             }
         } catch (e: Exception) {
             DebugLogger.getInstance(context).log(
@@ -227,8 +274,8 @@ class TextSourceCandidateGenerator(
         // 获取最大 node_index
         val maxIndex = messageNodeTextDao.getMaxNodeIndex(conversationId) ?: return emptyList()
 
-        // 窗口扩展：{idx-1, idx, idx+1}
-        for (idx in candidateIndices) {
+        // Phase J1: 窗口扩展：{idx-1, idx, idx+1}，同时传递 fts_rank_norm
+        for ((idx, ftsRankNorm) in rankedIndices) {
             if (candidates.size >= MAX_PER_SOURCE) break
 
             val expandedIndices = listOf(
@@ -246,13 +293,15 @@ class TextSourceCandidateGenerator(
                 val fullText = messageNodes.joinToString("\n\n") { it.rawText }
                 val snippetText = fullText.take(SNIPPET_MAX_CHARS)
 
+                // Phase J1: 传递 ftsRankNorm 参数
                 candidates.add(buildCandidate(
                     conversationId = conversationId,
                     nodeIndices = expandedIndices,
                     text = snippetText,
                     kind = CandidateKind.SNIPPET,
                     title = null,
-                    query = lastUserText
+                    query = lastUserText,
+                    ftsRankNorm = ftsRankNorm
                 ))
             }
         }
@@ -262,6 +311,7 @@ class TextSourceCandidateGenerator(
 
     /**
      * 构建候选对象
+     * Phase J1: 添加 ftsRankNorm 参数用于 evidenceRaw
      */
     private fun buildCandidate(
         conversationId: String,
@@ -269,7 +319,8 @@ class TextSourceCandidateGenerator(
         text: String,
         kind: CandidateKind,
         title: String?,
-        query: String
+        query: String,
+        ftsRankNorm: Float? = null  // Phase J1: FTS 排名归一化分数
     ): Candidate {
         val candidateId = me.rerere.rikkahub.service.recall.model.CandidateBuilder.buildPSourceId(
             conversationId = conversationId,
@@ -288,6 +339,16 @@ class TextSourceCandidateGenerator(
             explicitTitle = title
         )
 
+        // Phase J1: 构建 evidenceRaw，包含 fts_rank_norm
+        val evidenceRaw = mutableMapOf(
+            "node_indices" to nodeIndices.joinToString(","),
+            "title" to (title ?: "")
+        )
+        // Phase J1: 如果有 ftsRankNorm，添加到 evidenceRaw
+        if (ftsRankNorm != null) {
+            evidenceRaw["fts_rank_norm"] = ftsRankNorm.toString()
+        }
+
         return Candidate(
             id = candidateId,
             source = CandidateSource.P_TEXT,
@@ -296,10 +357,7 @@ class TextSourceCandidateGenerator(
             anchors = anchors,
             cost = text.length,
             evidenceKey = evidenceKey,
-            evidenceRaw = mapOf(
-                "node_indices" to nodeIndices.joinToString(","),
-                "title" to (title ?: "")
-            )
+            evidenceRaw = evidenceRaw
         )
     }
 }

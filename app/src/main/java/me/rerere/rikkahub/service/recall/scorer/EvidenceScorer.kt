@@ -85,21 +85,71 @@ object EvidenceScorer {
     }
 
     /**
-     * P源相关性：keyword hit rate
+     * P源相关性计算（Phase J1: 两级策略，语言无关）
+     *
+     * 优先级：
+     * 1. 如果有 FTS 排名信号（fts_rank_norm），直接使用（语言无关，确定性）
+     * 2. 否则使用字符 bigram Jaccard 兜底（中英文都有效）
      */
     private fun computeRelevancePSource(candidate: Candidate, queryContext: QueryContext): Float {
-        val text = candidate.content.lowercase()
-        val query = queryContext.lastUserText.lowercase()
+        // Phase J1: 优先使用 FTS 排名信号
+        val ftsRankNorm = candidate.evidenceRaw["fts_rank_norm"]?.toFloatOrNull()
+        if (ftsRankNorm != null && ftsRankNorm > 0f) {
+            return ftsRankNorm.coerceIn(0f, 1f)
+        }
 
-        // 简单的 keyword hit rate
-        val queryWords = query.split(Regex("\\s+")).filter { it.length >= 2 }
-        if (queryWords.isEmpty()) return 0.5f  // 默认中等相关性
+        // Phase J1: 兜底使用字符 bigram Jaccard（语言无关，支持中文和英文）
+        return computeBigramJaccardRelevance(
+            text = candidate.content,
+            query = queryContext.lastUserText
+        )
+    }
 
-        val hitCount = queryWords.count { word -> text.contains(word) }
-        val hitRate = hitCount.toFloat() / queryWords.size
+    /**
+     * Phase J1: 字符 bigram Jaccard 相关性计算（语言无关）
+     *
+     * 算法：
+     * 1. 提取 text 和 query 的字符 bigram（相邻2字符）
+     * 2. 计算 Jaccard 相似度 = |intersection| / |union|
+     * 3. 返回 [0, 1] 范围的相似度
+     *
+     * 适用于中文和英文：
+     * - 中文："你好世界" -> ["你好", "好世", "世界"]
+     * - 英文："hello" -> ["he", "el", "ll", "lo"]
+     */
+    private fun computeBigramJaccardRelevance(text: String, query: String): Float {
+        // 提取 bigram（复用 ProbeAcceptanceJudge 的逻辑）
+        val textBigrams = extractBigrams(text)
+        val queryBigrams = extractBigrams(query)
 
-        // 结合 rank 归一化（假设候选已经按相关性排序，这里简化处理）
-        return hitRate.coerceIn(0f, 1f)
+        if (queryBigrams.isEmpty()) return 0f
+
+        // Jaccard 相似度 = |A ∩ B| / |A ∪ B|
+        val intersectionSize = textBigrams.intersect(queryBigrams).size
+        val unionSize = textBigrams.union(queryBigrams).size
+
+        return if (unionSize > 0) {
+            intersectionSize.toFloat() / unionSize.toFloat()
+        } else {
+            0f
+        }
+    }
+
+    /**
+     * Phase J1: 提取字符 bigram（与 ProbeAcceptanceExtractBigrams 保持一致）
+     *
+     * 去除空白和标点，生成相邻2字符集合
+     */
+    private fun extractBigrams(text: String): Set<String> {
+        val bigrams = mutableSetOf<String>()
+        val cleaned = text.replace(Regex("""[ \p{Punct}]"""), "")  // 移除空白和标点
+
+        for (i in 0 until cleaned.length - 1) {
+            val bigram = cleaned.substring(i, i + 2)
+            bigrams.add(bigram)
+        }
+
+        return bigrams
     }
 
     /**
