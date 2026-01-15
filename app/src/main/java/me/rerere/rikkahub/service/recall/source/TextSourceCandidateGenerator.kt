@@ -45,6 +45,15 @@ class TextSourceCandidateGenerator(
         private const val SNIPPET_MAX_CHARS = 800
         private const val FULL_MAX_CHARS = 6000
         private const val TAG = "TextSourceCandidateGenerator"
+
+        /**
+         * Phase J2: 回指助手词组（写死，避免泛化）
+         * 当用户明确指代助手生成的内容时，扩展搜索 ASSISTANT 角色
+         */
+        private val ASSISTANT_ANAPHORA_PHRASES = listOf(
+            "你说的", "你刚才", "按你刚给的", "按你给的方案", "照你说的",
+            "继续", "接着", "你刚发的", "你刚写的"
+        )
     }
 
     /**
@@ -226,18 +235,37 @@ class TextSourceCandidateGenerator(
 
         val matchQuery = tokens.joinToString(" OR ") { "\"$it\"" }
 
-        // FTS4 查询
-        val ftsQuery = SimpleSQLiteQuery(
-            """
-            SELECT node_id, node_index, matchinfo(message_node_fts) AS mi
-            FROM message_node_fts
-            WHERE message_node_fts MATCH ?
-              AND conversation_id = ?
-              AND role = ?
-            LIMIT 50
-            """.trimIndent(),
-            arrayOf(matchQuery, conversationId, MessageRole.USER.ordinal)
-        )
+        // Phase J2: 检测回指助手词组
+        val hasAssistantAnaphora = ASSISTANT_ANAPHORA_PHRASES.any { lastUserText.contains(it) }
+
+        // Phase J2: 根据是否有回指助手词，决定搜索的角色范围
+        val ftsQuery = if (hasAssistantAnaphora) {
+            // 扩展搜索：USER + ASSISTANT
+            SimpleSQLiteQuery(
+                """
+                SELECT node_id, node_index, matchinfo(message_node_fts) AS mi
+                FROM message_node_fts
+                WHERE message_node_fts MATCH ?
+                  AND conversation_id = ?
+                  AND role IN (?, ?)
+                LIMIT 50
+                """.trimIndent(),
+                arrayOf(matchQuery, conversationId, MessageRole.USER.ordinal, MessageRole.ASSISTANT.ordinal)
+            )
+        } else {
+            // 默认：只搜 USER
+            SimpleSQLiteQuery(
+                """
+                SELECT node_id, node_index, matchinfo(message_node_fts) AS mi
+                FROM message_node_fts
+                WHERE message_node_fts MATCH ?
+                  AND conversation_id = ?
+                  AND role = ?
+                LIMIT 50
+                """.trimIndent(),
+                arrayOf(matchQuery, conversationId, MessageRole.USER.ordinal)
+            )
+        }
 
         // Phase J1: 获取排序后的 node_index 列表及对应的排名分数
         val rankedIndices = try {
