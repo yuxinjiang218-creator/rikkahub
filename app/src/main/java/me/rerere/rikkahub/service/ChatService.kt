@@ -57,6 +57,7 @@ import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.LocalTools
+import me.rerere.rikkahub.service.knowledge.KnowledgeBaseSearchTool
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
 import me.rerere.rikkahub.data.ai.transformers.OcrTransformer
@@ -125,6 +126,7 @@ class ChatService(
     private val providerManager: ProviderManager,
     private val localTools: LocalTools,
     val mcpManager: McpManager,
+    private val knowledgeBaseSearchTool: KnowledgeBaseSearchTool,
     private val archiveSummaryDao: ArchiveSummaryDao,
     private val vectorIndexDao: VectorIndexDao,
     private val verbatimRecallService: VerbatimRecallService,
@@ -430,6 +432,8 @@ class ChatService(
                         addAll(createSearchTool(settings))
                     }
                     addAll(localTools.getTools(settings.getCurrentAssistant().localTools))
+                    // 添加知识库搜索工具
+                    add(knowledgeBaseSearchTool.getTool(settings.getCurrentAssistant().id.toString()))
                     mcpManager.getAllAvailableTools().forEach { tool ->
                         add(
                             Tool(

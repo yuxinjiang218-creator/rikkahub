@@ -6,10 +6,10 @@ import java.io.File
 object PdfParser {
     /**
      * 最大页数限制（防止内存溢出）
-     * 假设平均每页500字符，100页约50KB文本，预留3MB上限约6000页
-     * 但考虑到图片、格式等，保守限制为200页
+     * 使用流式处理，可以支持更多页数
+     * 1000页约等于500KB-1MB纯文本（取决于内容密度）
      */
-    private const val MAX_PAGES = 200
+    private const val MAX_PAGES = 1000
 
     /**
      * 流式解析PDF（带页数限制）

@@ -16,10 +16,11 @@ object DocumentExtractor {
 
     /**
      * 文件大小限制（写死）
+     * 提高到 50MB 以支持大文档
      */
-    private const val MAX_FILE_SIZE = 10 * 1024 * 1024L  // 10MB
-    private const val MAX_PDF_SIZE = 10 * 1024 * 1024L  // PDF限制10MB
-    private const val MAX_DOCX_SIZE = 10 * 1024 * 1024L  // DOCX限制10MB
+    private const val MAX_FILE_SIZE = 50 * 1024 * 1024L  // 50MB
+    private const val MAX_PDF_SIZE = 50 * 1024 * 1024L  // PDF限制50MB
+    private const val MAX_DOCX_SIZE = 20 * 1024 * 1024L  // DOCX限制20MB
 
     /**
      * 从文件中提取文本
@@ -62,10 +63,53 @@ object DocumentExtractor {
     }
 
     /**
+     * 流式提取文本（支持大文档）
+     * @param file 文件
+     * @param mime MIME 类型
+     * @param onChunk 每提取一段文本的回调，返回 true 继续，false 停止
+     */
+    suspend fun extractTextStreaming(file: File, mime: String, onChunk: (String) -> Unit) = withContext(Dispatchers.IO) {
+        // 检查文件大小
+        val maxSize = when (mime) {
+            "application/pdf" -> MAX_PDF_SIZE
+            else -> MAX_FILE_SIZE
+        }
+
+        if (file.length() > maxSize) {
+            val maxSizeMB = maxSize / (1024 * 1024)
+            throw DocumentParseException(
+                "File too large: ${file.length() / (1024 * 1024)}MB (max: ${maxSizeMB}MB for ${mime}). " +
+                "Please split the file or compress it."
+            )
+        }
+
+        try {
+            when (mime) {
+                "application/pdf" -> parsePdfStreaming(file, onChunk)
+                "text/plain" -> onChunk(file.readText())
+                "text/markdown" -> onChunk(file.readText())
+                else -> {
+                    // 其他类型暂时不支持流式，回退到一次性读取
+                    onChunk(extractText(file, mime))
+                }
+            }
+        } catch (e: Exception) {
+            throw DocumentParseException("Failed to extract text from ${file.name}: ${e.message}", e)
+        }
+    }
+
+    /**
      * 从 Uri 提取文本
      */
     suspend fun extractText(uri: Uri, file: File, mime: String): String {
         return extractText(file, mime)
+    }
+
+    private fun parsePdfStreaming(file: File, onChunk: (String) -> Unit) {
+        PdfParser.parsePdfStreaming(file) { _, pageText ->
+            onChunk(pageText)
+            true  // 继续处理下一页
+        }
     }
 
     private fun parsePdf(file: File): String {

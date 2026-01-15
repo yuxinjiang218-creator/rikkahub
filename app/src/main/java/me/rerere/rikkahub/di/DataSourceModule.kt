@@ -33,6 +33,7 @@ import me.rerere.rikkahub.service.IntentRouter
 import me.rerere.rikkahub.service.SemanticRecallService
 import me.rerere.rikkahub.service.VerbatimRecallService
 import me.rerere.rikkahub.service.VerbatimVaultService
+import me.rerere.rikkahub.service.knowledge.KnowledgeBaseSearchTool
 import me.rerere.rikkahub.service.recall.RecallCoordinator
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.sync.WebdavSync
@@ -166,6 +167,16 @@ val dataSourceModule = module {
 
     single {
         get<AppDatabase>().knowledgeVectorDao()
+    }
+
+    single {
+        KnowledgeBaseSearchTool(
+            documentDao = get(),
+            chunkDao = get(),
+            vectorDao = get(),
+            providerManager = get(),
+            settingsStore = get()
+        )
     }
 
     single {

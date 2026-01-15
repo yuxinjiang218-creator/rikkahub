@@ -1,6 +1,8 @@
 package me.rerere.rikkahub.service.knowledge
 
 import kotlin.math.ceil
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * 文本分块器
@@ -11,7 +13,7 @@ object TextChunker {
     /**
      * 分块参数（写死）
      */
-    private const val CHUNK_MAX_CHARS = 1200  // 最大块大小
+    private const val CHUNK_MAX_CHARS = 900  // 最大块大小
     private const val CHUNK_OVERLAP_CHARS = 200  // 块间重叠
     private const val MIN_CHUNK_CHARS = 200  // 最小块大小
 
@@ -34,9 +36,10 @@ object TextChunker {
      * 将文本切分成块
      *
      * 算法：
-     * 1. 按 CHUNK_MAX_CHARS 步长切分，保留 CHUNK_OVERLAP_CHARS 重叠
-     * 2. 如果最后一块太小（< MIN_CHUNK_CHARS），合并到前一块
-     * 3. 每块去除首尾空白
+     * 1. 清理文本（统一换行符，压缩多余空行）
+     * 2. 按 CHUNK_MAX_CHARS 步长切分，保留 CHUNK_OVERLAP_CHARS 重叠
+     * 3. 智能边界检测：在 200 字符窗口内查找句子/段落结尾
+     * 4. 如果最后一块太小（< MIN_CHUNK_CHARS），合并到前一块
      *
      * @param text 输入文本
      * @return 文本块列表
@@ -52,40 +55,30 @@ object TextChunker {
             )
         }
 
+        // 清理文本：统一换行符，压缩多余空行
+        val cleanedText = preprocessText(text)
+
         // 预估chunk数量，避免ArrayList扩容
-        val estimatedChunks = estimateChunkCount(text.length)
+        val estimatedChunks = estimateChunkCount(cleanedText.length)
         val chunks = ArrayList<Chunk>(estimatedChunks)
-        val length = text.length
+        val length = cleanedText.length
 
         var startIndex = 0
         var chunkIndex = 0
 
-        // 优化：避免在循环中创建过多临时字符串
         while (startIndex < length) {
-            val endIndex = (startIndex + CHUNK_MAX_CHARS).coerceAtMost(length)
+            val rawEndIndex = (startIndex + CHUNK_MAX_CHARS).coerceAtMost(length)
 
-            // 找到实际的trim边界（不创建新字符串）
-            var actualStart = startIndex
-            var actualEnd = endIndex
+            // 智能边界检测：在 200 字符窗口内查找句子结尾
+            val endIndex = findSmartBoundary(cleanedText, startIndex, rawEndIndex)
 
-            // 跳过前导空白
-            while (actualStart < actualEnd && text[actualStart].isWhitespace()) {
-                actualStart++
-            }
-
-            // 跳过尾随空白
-            while (actualEnd > actualStart && text[actualEnd - 1].isWhitespace()) {
-                actualEnd--
-            }
-
-            // 只有非空chunk才添加
-            if (actualStart < actualEnd) {
-                val chunkText = text.substring(actualStart, actualEnd)
+            val chunkText = cleanedText.substring(startIndex, endIndex).trim()
+            if (chunkText.isNotEmpty()) {
                 chunks.add(
                     Chunk(
                         index = chunkIndex,
                         text = chunkText,
-                        charCount = actualEnd - actualStart
+                        charCount = chunkText.length
                     )
                 )
                 chunkIndex++
@@ -112,6 +105,53 @@ object TextChunker {
         }
 
         return chunks
+    }
+
+    /**
+     * 预处理文本：统一换行符，压缩多余空行
+     */
+    private fun preprocessText(text: String): String {
+        return text
+            .replace("\r\n", "\n")  // 统一换行符
+            .replace(Regex("\\n{3,}"), "\n\n")  // 压缩多余空行
+            .trim()
+    }
+
+    /**
+     * 智能边界检测：在 200 字符窗口内查找句子/段落结尾
+     * @return 实际的结束位置
+     */
+    private fun findSmartBoundary(text: String, start: Int, rawEnd: Int): Int {
+        // 如果已经是文本结尾，直接返回
+        if (rawEnd >= text.length) return text.length
+
+        // 在 rawEnd 前后 200 字符窗口内查找边界
+        val windowStart = max(start, rawEnd - 200)
+        val windowEnd = min(text.length, rawEnd + 200)
+
+        // 优先从 rawEnd 向后查找（避免块太小）
+        for (i in rawEnd until windowEnd) {
+            if (isSentenceBoundary(text[i])) {
+                return i + 1
+            }
+        }
+
+        // 向前查找
+        for (i in rawEnd downTo windowStart) {
+            if (isSentenceBoundary(text[i])) {
+                return i + 1
+            }
+        }
+
+        // 没找到边界，使用原始位置
+        return rawEnd
+    }
+
+    /**
+     * 判断是否是句子/段落边界
+     */
+    private fun isSentenceBoundary(char: Char): Boolean {
+        return char in listOf('\n', '。', '！', '？', '.', '!', '?', ';', '；')
     }
 
     /**

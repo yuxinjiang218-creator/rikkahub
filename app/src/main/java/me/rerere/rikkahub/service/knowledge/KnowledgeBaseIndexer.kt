@@ -5,8 +5,12 @@ import android.net.Uri
 import androidx.core.net.toFile
 import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.awaitAll
+import java.io.IOException
+import java.net.HttpURLConnection
 import me.rerere.ai.provider.EmbeddingGenerationParams
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelType
@@ -24,6 +28,7 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.service.knowledge.DocumentExtractor
 import me.rerere.rikkahub.service.knowledge.DocumentParseException
 import me.rerere.rikkahub.service.knowledge.TextChunker
+import me.rerere.rikkahub.service.knowledge.StreamingTextChunker
 import java.io.File
 import java.security.MessageDigest
 import kotlin.math.sqrt
@@ -59,8 +64,13 @@ class KnowledgeBaseIndexer(
 
     /**
      * 索引单个文档
+     * @param documentId 文档 ID
+     * @param onProgress 进度回调 (当前数, 总数)
      */
-    suspend fun indexDocument(documentId: String): IndexResult = withContext(Dispatchers.IO) {
+    suspend fun indexDocument(
+        documentId: String,
+        onProgress: ((Int, Int) -> Unit)? = null
+    ): IndexResult = withContext(Dispatchers.IO) {
         val document = documentDao.getById(documentId)
             ?: return@withContext IndexResult.Error("Document not found: $documentId")
 
@@ -76,36 +86,7 @@ class KnowledgeBaseIndexer(
                 return@withContext IndexResult.Error("Embedding model not configured")
             }
 
-            // 3. 解析全文 → 分块
-            val file = File(document.localPath)
-            if (!file.exists()) {
-                failed(document, "File not found: ${document.localPath}")
-                return@withContext IndexResult.Error("File not found")
-            }
-
-            val fullText = try {
-                DocumentExtractor.extractText(file, document.mime)
-            } catch (e: Exception) {
-                failed(document, "Failed to extract text: ${e.message}")
-                return@withContext IndexResult.Error("Failed to extract text: ${e.message}")
-            }
-
-            val chunks = try {
-                TextChunker.chunk(fullText)
-            } catch (e: IllegalArgumentException) {
-                failed(document, "Text too large: ${e.message}")
-                return@withContext IndexResult.Error("File content too large. Please split into smaller files (max 1MB text or 200 pages).")
-            } catch (e: Exception) {
-                failed(document, "Failed to chunk text: ${e.message}")
-                return@withContext IndexResult.Error("Failed to process text: ${e.message}")
-            }
-
-            if (chunks.isEmpty()) {
-                failed(document, "No chunks extracted from document")
-                return@withContext IndexResult.Error("No content extracted")
-            }
-
-            // 4. 找 provider + embedding model
+            // 3. 找 provider + embedding model（提前获取以便流式处理使用）
             val providerSetting: ProviderSetting? = settings.providers.find { provider: ProviderSetting ->
                 provider.models.any { model -> model.id == embeddingModelId }
             }
@@ -120,38 +101,98 @@ class KnowledgeBaseIndexer(
                 return@withContext IndexResult.Error("Model not found or not embedding type")
             }
 
-            // 5-6. 对每个 chunk 生成 embedding + 计算 norm
+            // 4. 解析全文 → 分块
+            val file = File(document.localPath)
+            if (!file.exists()) {
+                failed(document, "File not found: ${document.localPath}")
+                return@withContext IndexResult.Error("File not found")
+            }
+
+            // 对于 PDF 使用流式处理以避免 OOM
+            val chunks = if (document.mime == "application/pdf") {
+                try {
+                    processPdfStreaming(file, embeddingModel!!, providerSetting)
+                } catch (e: Exception) {
+                    failed(document, "Failed to process PDF: ${e.message}")
+                    return@withContext IndexResult.Error("Failed to process PDF: ${e.message}")
+                }
+            } else {
+                // 其他格式使用传统处理方式
+                try {
+                    val fullText = DocumentExtractor.extractText(file, document.mime)
+                    TextChunker.chunk(fullText)
+                } catch (e: IllegalArgumentException) {
+                    failed(document, "Text too large: ${e.message}")
+                    return@withContext IndexResult.Error("File content too large. Please split into smaller files.")
+                } catch (e: Exception) {
+                    failed(document, "Failed to extract text: ${e.message}")
+                    return@withContext IndexResult.Error("Failed to extract text: ${e.message}")
+                }
+            }
+
+            if (chunks.isEmpty()) {
+                failed(document, "No chunks extracted from document")
+                return@withContext IndexResult.Error("No content extracted")
+            }
+
+            // 5-6. 对每个 chunk 生成 embedding + 计算 norm（批量处理）
             val chunkEntities = mutableListOf<KnowledgeChunkEntity>()
             val vectorEntities = mutableListOf<KnowledgeVectorEntity>()
 
-            chunks.forEach { chunk ->
-                val chunkId = kotlin.uuid.Uuid.random().toString()
+            val batchSize = 10  // 每批处理 10 个 chunk
+            val totalChunks = chunks.size
+            var processedChunks = 0
 
-                // 生成 embedding
-                val embedding = generateEmbedding(chunk.text, embeddingModel!!, providerSetting)
-                val norm = computeNorm(embedding)
+            chunks.chunked(batchSize).forEach { batch ->
+                try {
+                    // 批量生成 embedding（并行处理）
+                    val embeddingResults = batch.map { chunk ->
+                        async {
+                            Pair(chunk, generateEmbeddingWithRetry(chunk.text, embeddingModel!!, providerSetting))
+                        }
+                    }.awaitAll()
 
-                chunkEntities.add(
-                    KnowledgeChunkEntity(
-                        id = chunkId,
-                        documentId = documentId,
-                        assistantId = document.assistantId,
-                        chunkIndex = chunk.index,
-                        text = chunk.text,
-                        charCount = chunk.charCount
-                    )
-                )
+                    // 处理结果
+                    embeddingResults.forEach { (chunk, embedding) ->
+                        val chunkId = kotlin.uuid.Uuid.random().toString()
+                        val norm = computeNorm(embedding)
 
-                vectorEntities.add(
-                    KnowledgeVectorEntity(
-                        id = kotlin.uuid.Uuid.random().toString(),
-                        chunkId = chunkId,
-                        assistantId = document.assistantId,
-                        embeddingModelId = embeddingModelId.toString(),
-                        embeddingVector = embedding,
-                        vectorNorm = norm
-                    )
-                )
+                        chunkEntities.add(
+                            KnowledgeChunkEntity(
+                                id = chunkId,
+                                documentId = documentId,
+                                assistantId = document.assistantId,
+                                chunkIndex = chunk.index,
+                                text = chunk.text,
+                                charCount = chunk.charCount
+                            )
+                        )
+
+                        vectorEntities.add(
+                            KnowledgeVectorEntity(
+                                id = kotlin.uuid.Uuid.random().toString(),
+                                chunkId = chunkId,
+                                assistantId = document.assistantId,
+                                embeddingModelId = embeddingModelId.toString(),
+                                embeddingVector = embedding,
+                                vectorNorm = norm
+                            )
+                        )
+                    }
+
+                    // 更新进度
+                    processedChunks += batch.size
+                    onProgress?.invoke(processedChunks, totalChunks)
+
+                } catch (e: EmbeddingException) {
+                    // 服务商错误，直接失败
+                    failed(document, e.message ?: "Embedding API error")
+                    return@withContext IndexResult.Error(e.message ?: "Embedding API error")
+                } catch (e: Exception) {
+                    // 本地错误，直接失败
+                    failed(document, "Local error: ${e.message}")
+                    return@withContext IndexResult.Error("Local error: ${e.message}")
+                }
             }
 
             // 7. 清理旧 chunk/vector（重建时）
@@ -283,6 +324,42 @@ class KnowledgeBaseIndexer(
     }
 
     /**
+     * 生成 embedding（带错误区分）
+     */
+    private suspend fun generateEmbeddingWithRetry(
+        text: String,
+        model: Model,
+        providerSetting: ProviderSetting
+    ): FloatArray {
+        return try {
+            generateEmbedding(text, model, providerSetting)
+        } catch (e: IOException) {
+            // 网络错误 → 服务商问题
+            throw EmbeddingException("网络错误，请检查网络连接: ${e.message}")
+        } catch (e: Exception) {
+            val message = e.message ?: ""
+            when {
+                // HTTP 错误 → 服务商问题
+                message.contains("HTTP", ignoreCase = true) ||
+                message.contains("401") ||
+                message.contains("403") ||
+                message.contains("429") ||
+                message.contains("500") ||
+                message.contains("503") -> {
+                    throw EmbeddingException("Embedding API 错误: $message")
+                }
+                // 其他错误 → 本地问题
+                else -> throw e
+            }
+        }
+    }
+
+    /**
+     * Embedding 异常（服务商错误）
+     */
+    private class EmbeddingException(message: String) : Exception(message)
+
+    /**
      * 生成 embedding
      */
     private suspend fun generateEmbedding(
@@ -322,6 +399,37 @@ class KnowledgeBaseIndexer(
             }
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * 流式处理 PDF 文件（避免 OOM）
+     * 边读取边分块，返回所有 chunk
+     */
+    private suspend fun processPdfStreaming(
+        file: File,
+        embeddingModel: Model,
+        providerSetting: ProviderSetting
+    ): List<TextChunker.Chunk> = withContext(Dispatchers.IO) {
+        val chunker = StreamingTextChunker()
+        val allChunks = mutableListOf<TextChunker.Chunk>()
+
+        // 流式解析 PDF，逐页处理
+        DocumentExtractor.extractTextStreaming(file, "application/pdf") { pageText ->
+            val chunks = chunker.addText(pageText)
+            // chunks 会在内存中累积，但每个 chunk 只有 ~1.2KB
+            // 即使有 1000 个 chunks，也就 ~1.2MB 内存
+            allChunks.addAll(chunks.map {
+                TextChunker.Chunk(it.index, it.text, it.charCount)
+            })
+        }
+
+        // 处理剩余内容
+        val remainingChunks = chunker.finish()
+        allChunks.addAll(remainingChunks.map {
+            TextChunker.Chunk(it.index, it.text, it.charCount)
+        })
+
+        allChunks
     }
 
     /**
