@@ -83,8 +83,22 @@ class KnowledgeBaseIndexer(
                 return@withContext IndexResult.Error("File not found")
             }
 
-            val fullText = DocumentExtractor.extractText(file, document.mime)
-            val chunks = TextChunker.chunk(fullText)
+            val fullText = try {
+                DocumentExtractor.extractText(file, document.mime)
+            } catch (e: Exception) {
+                failed(document, "Failed to extract text: ${e.message}")
+                return@withContext IndexResult.Error("Failed to extract text: ${e.message}")
+            }
+
+            val chunks = try {
+                TextChunker.chunk(fullText)
+            } catch (e: IllegalArgumentException) {
+                failed(document, "Text too large: ${e.message}")
+                return@withContext IndexResult.Error("File content too large. Please split into smaller files (max 1MB text or 200 pages).")
+            } catch (e: Exception) {
+                failed(document, "Failed to chunk text: ${e.message}")
+                return@withContext IndexResult.Error("Failed to process text: ${e.message}")
+            }
 
             if (chunks.isEmpty()) {
                 failed(document, "No chunks extracted from document")

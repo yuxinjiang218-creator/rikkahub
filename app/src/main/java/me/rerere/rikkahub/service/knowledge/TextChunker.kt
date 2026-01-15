@@ -16,6 +16,12 @@ object TextChunker {
     private const val MIN_CHUNK_CHARS = 200  // 最小块大小
 
     /**
+     * 内存保护限制
+     * 1MB文本约等于200-500页PDF（取决于内容密度）
+     */
+    private const val MAX_TEXT_LENGTH = 1_000_000  // 最大文本长度（约1MB，约200-500页文档）
+
+    /**
      * 分块结果
      */
     data class Chunk(
@@ -38,22 +44,48 @@ object TextChunker {
     fun chunk(text: String): List<Chunk> {
         if (text.isBlank()) return emptyList()
 
-        val chunks = mutableListOf<Chunk>()
+        // 内存保护：拒绝处理过大的文本
+        if (text.length > MAX_TEXT_LENGTH) {
+            throw IllegalArgumentException(
+                "Text too large to chunk: ${text.length} characters (max: $MAX_TEXT_LENGTH). " +
+                "Please split the file into smaller parts or reduce the content."
+            )
+        }
+
+        // 预估chunk数量，避免ArrayList扩容
+        val estimatedChunks = estimateChunkCount(text.length)
+        val chunks = ArrayList<Chunk>(estimatedChunks)
         val length = text.length
 
         var startIndex = 0
         var chunkIndex = 0
 
+        // 优化：避免在循环中创建过多临时字符串
         while (startIndex < length) {
             val endIndex = (startIndex + CHUNK_MAX_CHARS).coerceAtMost(length)
-            val chunkText = text.substring(startIndex, endIndex).trim()
 
-            if (chunkText.isNotEmpty()) {
+            // 找到实际的trim边界（不创建新字符串）
+            var actualStart = startIndex
+            var actualEnd = endIndex
+
+            // 跳过前导空白
+            while (actualStart < actualEnd && text[actualStart].isWhitespace()) {
+                actualStart++
+            }
+
+            // 跳过尾随空白
+            while (actualEnd > actualStart && text[actualEnd - 1].isWhitespace()) {
+                actualEnd--
+            }
+
+            // 只有非空chunk才添加
+            if (actualStart < actualEnd) {
+                val chunkText = text.substring(actualStart, actualEnd)
                 chunks.add(
                     Chunk(
                         index = chunkIndex,
                         text = chunkText,
-                        charCount = chunkText.length
+                        charCount = actualEnd - actualStart
                     )
                 )
                 chunkIndex++

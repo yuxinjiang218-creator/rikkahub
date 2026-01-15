@@ -155,6 +155,19 @@ val dataSourceModule = module {
         get<AppDatabase>().verbatimArtifactDao()
     }
 
+    // Knowledge Base DAOs
+    single {
+        get<AppDatabase>().knowledgeDocumentDao()
+    }
+
+    single {
+        get<AppDatabase>().knowledgeChunkDao()
+    }
+
+    single {
+        get<AppDatabase>().knowledgeVectorDao()
+    }
+
     single {
         VerbatimVaultService(
             context = get(),

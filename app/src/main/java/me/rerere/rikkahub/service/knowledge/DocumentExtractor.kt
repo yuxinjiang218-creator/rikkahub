@@ -15,6 +15,13 @@ import java.io.File
 object DocumentExtractor {
 
     /**
+     * 文件大小限制（写死）
+     */
+    private const val MAX_FILE_SIZE = 10 * 1024 * 1024L  // 10MB
+    private const val MAX_PDF_SIZE = 10 * 1024 * 1024L  // PDF限制10MB
+    private const val MAX_DOCX_SIZE = 10 * 1024 * 1024L  // DOCX限制10MB
+
+    /**
      * 从文件中提取文本
      *
      * @param file 文件
@@ -23,6 +30,20 @@ object DocumentExtractor {
      * @throws DocumentParseException 解析失败时抛出
      */
     suspend fun extractText(file: File, mime: String): String = withContext(Dispatchers.IO) {
+        // 在解析前检查文件大小
+        val maxSize = when (mime) {
+            "application/pdf" -> MAX_PDF_SIZE
+            else -> MAX_FILE_SIZE
+        }
+
+        if (file.length() > maxSize) {
+            val maxSizeMB = maxSize / (1024 * 1024)
+            throw DocumentParseException(
+                "File too large: ${file.length() / (1024 * 1024)}MB (max: ${maxSizeMB}MB for ${mime}). " +
+                "Please split the file or compress it."
+            )
+        }
+
         try {
             when (mime) {
                 "application/pdf" -> parsePdf(file)
