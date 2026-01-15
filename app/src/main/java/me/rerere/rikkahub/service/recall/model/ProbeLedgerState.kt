@@ -79,17 +79,39 @@ data class ProbeLedgerState(
      * - 上一轮 action 属于 PROBE/FACT/HINT（非 FULL）
      * - 本轮 evidenceKey 匹配上一轮
      *
-     * @param evidenceKey 证据键（Phase F）
-     * @return true 如果上一轮是 ACCEPT 且 evidenceKey 匹配且非 FULL，false 否则
+     * 兼容：同时支持 candidateId 和 evidenceKey 作为参数（修复任务2）
+     * - candidateId 格式："{source}:{kind}:{params}" (如 "P:conv123:SNIPPET:45,46,47")
+     * - evidenceKey 格式："{source}:{params}" (如 "P:conv123:45,46,47")
+     *
+     * @param evidenceKeyOrCandidateId 证据键或候选ID
+     * @return true 如果上一轮是 ACCEPT 且证据匹配且非 FULL，false 否则
      */
-    fun canUpgradeOnce(evidenceKey: String): Boolean {
+    fun canUpgradeOnce(evidenceKeyOrCandidateId: String): Boolean {
         return lastProbeObservation?.let { obs ->
             // FULL_VERBATIM 不允许升级
             if (obs.action == RecallAction.FULL_VERBATIM) {
                 return false
             }
+
+            // 兼容 candidateId 和 evidenceKey 参数（修复任务2）
+            val actualEvidenceKey = if (evidenceKeyOrCandidateId.count { it == ':' } >= 3) {
+                // candidateId 格式："{source}:{convId}:{kind}:{params}"，提取 evidenceKey
+                // 去掉第三部分（kind），保留其他部分
+                val parts = evidenceKeyOrCandidateId.split(":")
+                if (parts.size >= 4) {
+                    // 过滤掉第三部分（kind），重组为 "{source}:{convId}:{params}"
+                    // 例如：["P", "conv123", "SNIPPET", "45,46,47"] -> "P:conv123:45,46,47"
+                    parts.filterIndexed { index, _ -> index != 2 }.joinToString(":")
+                } else {
+                    evidenceKeyOrCandidateId
+                }
+            } else {
+                // evidenceKey 格式，直接使用
+                evidenceKeyOrCandidateId
+            }
+
             // Phase F: ACCEPT 且 evidenceKey 匹配则允许升级（支持 kind 不同）
-            obs.outcome == ProbeOutcome.ACCEPT && obs.evidenceKey == evidenceKey
+            obs.outcome == ProbeOutcome.ACCEPT && obs.evidenceKey == actualEvidenceKey
         } ?: false
     }
 
