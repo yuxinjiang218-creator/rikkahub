@@ -748,5 +748,21 @@
   <string name="backup_page_s3_region">Region</string>
   <string name="backup_page_s3_backup_files">S3 Backup Files</string>
   <string name="backup_page_s3_backup">S3 Backup</string>
+  <string name="assistant_page_tab_knowledge_base">Knowledge Base</string>
+  <string name="assistant_detail_knowledge_base_desc">Upload files for knowledge base search</string>
+  <string name="knowledge_base_page_title">Knowledge Base</string>
+  <string name="knowledge_base_page_upload">Upload Files</string>
+  <string name="knowledge_base_page_upload_desc">Upload PDF, DOCX, PPTX, TXT, MD files</string>
+  <string name="knowledge_base_page_empty">No documents in knowledge base</string>
+  <string name="knowledge_base_page_status_pending">Pending</string>
+  <string name="knowledge_base_page_status_indexing">Indexing</string>
+  <string name="knowledge_base_page_status_ready">Ready</string>
+  <string name="knowledge_base_page_status_failed">Failed</string>
+  <string name="knowledge_base_page_delete">Delete</string>
+  <string name="knowledge_base_page_reindex">Reindex</string>
+  <string name="knowledge_base_page_uploading">Uploading...</string>
+  <string name="knowledge_base_page_import_failed">Import failed: %s</string>
+  <string name="knowledge_base_page_delete_confirm">Delete this document?</string>
+  <string name="knowledge_base_page_file_size">%s</string>
 </resources>
 

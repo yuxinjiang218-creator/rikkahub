@@ -246,6 +246,17 @@ val dataSourceModule = module {
     }
 
     single {
+        me.rerere.rikkahub.service.knowledge.KnowledgeBaseIndexer(
+            context = get(),
+            settingsStore = get(),
+            documentDao = get(),
+            chunkDao = get(),
+            vectorDao = get(),
+            providerManager = get()
+        )
+    }
+
+    single {
         WebdavSync(settingsStore = get(), json = get(), context = get())
     }
 
