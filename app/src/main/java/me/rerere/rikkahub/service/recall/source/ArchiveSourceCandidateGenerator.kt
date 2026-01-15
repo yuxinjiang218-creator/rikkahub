@@ -83,7 +83,7 @@ class ArchiveSourceCandidateGenerator(
     suspend fun generate(
         queryContext: QueryContext,
         pSourceCandidateCount: Int,
-        needScore: Float,  // P0-1: needScore 必须从外部传入，不得使用 ledger.recent.size 派生
+        needScore: Float,  // P0-1: needScore 必须从外部传入
         settings: me.rerere.rikkahub.data.datastore.Settings? = null
     ): List<Candidate> = withContext(Dispatchers.IO) {
         val debugLogger = DebugLogger.getInstance(context)
@@ -133,7 +133,7 @@ class ArchiveSourceCandidateGenerator(
              queryContext.explicitSignal.keyword !in HARD_VERBATIM_KEYWORDS)
 
         // 4. 决定执行多少次 embedding（Q0、Q1、Q2）
-        // P0-1: needScore 来自入参，不得使用 ledger.recent.size 派生
+        // P0-1: needScore 来自入参
         val embeddingCalls = decideEmbeddingCalls(needScore, pSourceCandidateCount)
 
         // P0-1: 日志必须包含 needScore（入参）、pSourceCandidateCount、explicit、embeddingCalls
