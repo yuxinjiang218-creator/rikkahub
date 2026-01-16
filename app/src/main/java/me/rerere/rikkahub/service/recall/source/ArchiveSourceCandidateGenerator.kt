@@ -52,6 +52,10 @@ class ArchiveSourceCandidateGenerator(
         private const val EMBEDDING_MAX_CALLS = 3  // 最多3次 embedding 调用
         private const val MULTI_QUERY_NEED_SCORE_THRESHOLD = 0.75f  // MultiQuery 触发阈值
 
+        // Phase K2: A源调用节流（防止 K1 后 NeedGate 更易放行导致 embedding 被拉满）
+        private const val NEED_SCORE_MIN_FOR_A_SOURCE = 0.40f  // needScore 低于此值直接跳过 A 源
+        private const val P_SOURCE_ENOUGH_COUNT = 2  // P 源候选数 >= 此值时跳过 A 源
+
         // Phase G3.1: 成本护栏（写死）
         private const val MAX_NODE_TEXT_ROWS = 50  // DAO 拉取条数硬上限
         private const val MAX_WINDOW_SIZE_FOR_FULL = 200  // window > 200 时只取前 50 条
@@ -105,6 +109,35 @@ class ArchiveSourceCandidateGenerator(
         // 3. Gating 检查：settings
         if (settings == null) {
             debugLogger.log(LogLevel.DEBUG, TAG, "Settings not provided, skipping A source")
+            return@withContext emptyList()
+        }
+
+        // Phase K2: A源调用节流（防止 K1 后 NeedGate 更易放行导致 embedding 被拉满）
+        // 条件1：needScore 过低时直接跳过 A 源
+        if (!queryContext.explicitSignal.explicit && needScore < NEED_SCORE_MIN_FOR_A_SOURCE) {
+            debugLogger.log(
+                LogLevel.DEBUG,
+                TAG,
+                "A source throttled: needScore too low",
+                mapOf(
+                    "needScore" to needScore,
+                    "threshold" to NEED_SCORE_MIN_FOR_A_SOURCE
+                )
+            )
+            return@withContext emptyList()
+        }
+
+        // Phase K2: A源调用节流（条件2：P 源候选足够时跳过 A 源）
+        if (!queryContext.explicitSignal.explicit && pSourceCandidateCount >= P_SOURCE_ENOUGH_COUNT) {
+            debugLogger.log(
+                LogLevel.DEBUG,
+                TAG,
+                "A source throttled: P source has enough candidates",
+                mapOf(
+                    "pSourceCandidateCount" to pSourceCandidateCount,
+                    "threshold" to P_SOURCE_ENOUGH_COUNT
+                )
+            )
             return@withContext emptyList()
         }
 
