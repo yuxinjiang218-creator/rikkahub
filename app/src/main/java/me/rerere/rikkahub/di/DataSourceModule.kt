@@ -8,8 +8,12 @@ import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.http.HttpHeaders
 import io.pebbletemplates.pebble.PebbleEngine
 import kotlinx.serialization.json.Json
+import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderManager
+import me.rerere.ai.provider.ProviderSetting
 import me.rerere.common.http.AcceptLanguageBuilder
+import me.rerere.rikkahub.service.recall.planner.HeuristicRecallPlanner
+import me.rerere.rikkahub.service.recall.planner.LlmRecallPlanner
 import me.rerere.rikkahub.BuildConfig
 // Firebase 已禁用，AIRequestInterceptor 依赖 FirebaseRemoteConfig
 // import me.rerere.rikkahub.data.ai.AIRequestInterceptor
@@ -105,6 +109,39 @@ val dataSourceModule = module {
                             VALUES (new.rowid, new.search_text, new.node_id, new.conversation_id, new.node_index, new.role);
                         END
                     """.trimIndent())
+                }
+
+                override fun onOpen(db: SupportSQLiteDatabase) {
+                    super.onOpen(db)
+                    // 确保 FTS4 触发器存在（防御性修复）
+                    // 无论数据库是全新安装还是升级，都保证触发器存在
+                    try {
+                        db.execSQL("""
+                            CREATE TRIGGER IF NOT EXISTS mnt_ai AFTER INSERT ON message_node_text BEGIN
+                                INSERT INTO message_node_fts(docid, search_text, node_id, conversation_id, node_index, role)
+                                VALUES (new.rowid, new.search_text, new.node_id, new.conversation_id, new.node_index, new.role);
+                            END
+                        """.trimIndent())
+                        android.util.Log.i("DataSourceModule", "FTS4 trigger created/verified")
+                    } catch (e: Exception) {
+                        android.util.Log.e("DataSourceModule", "Failed to create FTS4 trigger", e)
+                    }
+
+                    // 同步现有数据到 FTS4（如果 FTS4 为空）
+                    try {
+                        val ftsCount = db.query("SELECT COUNT(*) FROM message_node_fts")
+                        if (ftsCount.moveToFirst() && ftsCount.getInt(0) == 0) {
+                            android.util.Log.i("DataSourceModule", "Syncing existing data to FTS4")
+                            db.execSQL("""
+                                INSERT INTO message_node_fts(docid, search_text, node_id, conversation_id, node_index, role)
+                                SELECT rowid, search_text, node_id, conversation_id, node_index, role FROM message_node_text
+                            """.trimIndent())
+                            android.util.Log.i("DataSourceModule", "Data synced to FTS4")
+                        }
+                        ftsCount.close()
+                    } catch (e: Exception) {
+                        android.util.Log.e("DataSourceModule", "Failed to sync data to FTS4", e)
+                    }
                 }
             })
             .build()
@@ -215,7 +252,12 @@ val dataSourceModule = module {
             verbatimArtifactDao = get(),
             archiveSummaryDao = get(),
             vectorIndexDao = get(),
-            providerManager = get()
+            providerManager = get(),
+            // Phase L 收尾：运行时 wiring - 动态创建 LlmRecallPlanner
+            llmPlanner = createLlmRecallPlannerOrNull(
+                settingsStore = get(),
+                providerManager = get()
+            )
         )
     }
 
@@ -318,4 +360,48 @@ val dataSourceModule = module {
     single<RikkaHubAPI> {
         get<Retrofit>().create(RikkaHubAPI::class.java)
     }
+}
+
+/**
+ * Phase L 收尾：创建 LlmRecallPlanner（如果配置可用）
+ *
+ * 复用 Settings 的 contextCompressionModelId 和 providers，
+ * 在有配置的情况下返回非空的 LlmRecallPlanner。
+ *
+ * @return LlmRecallPlanner 实例，或 null（如果没有配置）
+ */
+private fun createLlmRecallPlannerOrNull(
+    settingsStore: SettingsStore,
+    providerManager: ProviderManager
+): LlmRecallPlanner? {
+    val settings = settingsStore.settingsFlow.value
+
+    // 检查是否配置了规划模型（优先使用 contextCompressionModelId）
+    val planningModelId = settings.contextCompressionModelId
+        ?: settings.embeddingModelId  // 回退到 embedding 模型
+
+    if (planningModelId == null) {
+        // 未配置规划模型，返回 null（仅使用 HeuristicRecallPlanner）
+        return null
+    }
+
+    // 从 providers 里找到对应的 providerSetting 和 model
+    val providerSetting = settings.providers.firstOrNull { provider ->
+        provider.models.any { it.id == planningModelId }
+    }
+
+    if (providerSetting == null) {
+        // 找不到对应的 provider，返回 null
+        return null
+    }
+
+    val planningModel = providerSetting.models.firstOrNull { it.id == planningModelId }
+        ?: return null  // 找不到对应的 model，返回 null
+
+    // 创建 LlmRecallPlanner（非空）
+    return LlmRecallPlanner(
+        providerManager = providerManager,
+        planningModel = planningModel,
+        planningProvider = providerSetting
+    )
 }

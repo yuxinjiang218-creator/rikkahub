@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.service.recall.scorer
 
+import android.util.Log
 import me.rerere.rikkahub.service.recall.model.Candidate
 import me.rerere.rikkahub.service.recall.model.CandidateSource
 import me.rerere.rikkahub.service.recall.model.EvidenceScores
@@ -19,6 +20,7 @@ import me.rerere.rikkahub.service.recall.model.QueryContext
  * finalScore = (0.40*relevance + 0.20*precision + 0.20*novelty + 0.10*needScore + 0.10*recency) * (1-risk) * (1-redundancyPenalty)
  */
 object EvidenceScorer {
+    private const val TAG = "EvidenceScorer"
     /** 最小余弦相似度阈值（A源） */
     private const val MIN_COS_SIM = 0.3f
 
@@ -40,12 +42,31 @@ object EvidenceScorer {
         needScore: Float,
         maxNodeIndex: Int
     ): EvidenceScores {
+        Log.i(TAG, "=== Scoring candidate: ${candidate.id}, kind: ${candidate.kind} ===")
+        Log.i(TAG, "Candidate content length: ${candidate.content.length}")
+        Log.i(TAG, "Candidate content preview:\n${candidate.content.take(500)}")
+
         val relevance = computeRelevance(candidate, queryContext)
+        Log.i(TAG, "Computed relevance: $relevance")
+
         val precision = computePrecision(candidate)
+        Log.i(TAG, "Computed precision: $precision (title hit: ${candidate.anchors.any { it.startsWith("title:") }})")
+
         val novelty = computeNovelty(candidate, queryContext)
+        Log.i(TAG, "Computed novelty: $novelty (windowTexts size: ${queryContext.windowTexts.size})")
+
         val recency = computeRecency(candidate, maxNodeIndex)
+        Log.i(TAG, "Computed recency: $recency (maxNodeIndex: $maxNodeIndex)")
+
         val risk = computeRisk(relevance, precision, queryContext.explicitSignal.explicit)
+        Log.i(TAG, "Computed risk: $risk")
+
         val redundancyPenalty = computeRedundancyPenalty(candidate, queryContext)
+        Log.i(TAG, "Computed redundancyPenalty: $redundancyPenalty")
+        Log.i(TAG, "  - nowTurnIndex: ${queryContext.nowTurnIndex}")
+        Log.i(TAG, "  - evidenceKey: ${candidate.evidenceKey}")
+        Log.i(TAG, "  - canUpgradeOnce: ${queryContext.ledger.canUpgradeOnce(candidate.evidenceKey)}")
+        Log.i(TAG, "  - ledger recent entries: ${queryContext.ledger.recent.size}")
 
         val finalScore = (
             0.40f * relevance +
@@ -54,6 +75,10 @@ object EvidenceScorer {
             0.10f * needScore +
             0.10f * recency
         ) * (1f - risk) * (1f - redundancyPenalty)
+
+        Log.i(TAG, "Final score calculation:")
+        Log.i(TAG, "  base = 0.40*${relevance} + 0.20*${precision} + 0.20*${novelty} + 0.10*${needScore} + 0.10*${recency}")
+        Log.i(TAG, "  adjusted = base * (1-${risk}) * (1-${redundancyPenalty}) = $finalScore")
 
         return EvidenceScores(
             needScore = needScore,

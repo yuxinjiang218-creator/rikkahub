@@ -21,6 +21,9 @@ import me.rerere.rikkahub.service.recall.model.LedgerEntry
 import me.rerere.rikkahub.service.recall.model.ProbeLedgerState
 import me.rerere.rikkahub.service.recall.model.QueryContext
 import me.rerere.rikkahub.service.recall.model.RecallAction
+import me.rerere.rikkahub.service.recall.planner.HeuristicRecallPlanner
+import me.rerere.rikkahub.service.recall.planner.LlmRecallPlanner
+import me.rerere.rikkahub.service.recall.planner.PlannerResult
 import me.rerere.rikkahub.service.recall.scorer.EvidenceScorer
 import me.rerere.rikkahub.service.recall.source.ArchiveSourceCandidateGenerator
 import me.rerere.rikkahub.service.recall.source.TextSourceCandidateGenerator
@@ -31,6 +34,9 @@ import kotlin.system.measureTimeMillis
  *
  * Phase B: 完整实现 NeedGate + P源候选 + 评分 + 决策 + 注入
  * Phase C: 集成 A源候选
+ * Phase L1: 集成 RecallPlanner（支持 LLM 规划 + 多查询生成）
+ * Phase L2: 规划器触发逻辑（灰色区域触发，覆盖 NeedGate）
+ * Phase L3: 多查询检索（P/A 源支持多查询合并去重）
  */
 class RecallCoordinator(
     private val context: Context,
@@ -39,10 +45,17 @@ class RecallCoordinator(
     private val verbatimArtifactDao: VerbatimArtifactDao,
     private val archiveSummaryDao: ArchiveSummaryDao,
     private val vectorIndexDao: VectorIndexDao,
-    private val providerManager: ProviderManager
+    private val providerManager: ProviderManager,
+    // Phase L1: 可选的 LLM 规划器（未配置时仅使用 HeuristicPlanner）
+    private val llmPlanner: LlmRecallPlanner? = null
 ) {
     companion object {
         private const val TAG = "RecallCoordinator"
+
+        // Phase L2: 灰色区域阈值
+        private const val GRAY_ZONE_MIN_SCORE = 0.35f  // NeedGate 分数下限
+        private const val GRAY_ZONE_MAX_SCORE = 0.65f  // NeedGate 分数上限
+        private const val SHORT_TEXT_THRESHOLD = 12    // 短文本阈值（字符数）
     }
 
     /** Phase B 组件 */
@@ -65,7 +78,39 @@ class RecallCoordinator(
         )
     }
 
+    /** Phase L1: 兜底规划器（始终可用） */
+    private val heuristicPlanner by lazy { HeuristicRecallPlanner() }
+
     private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * Phase L2: 判断是否应该使用 LLM 规划器
+     *
+     * 触发条件：
+     * 1. 配置了 LLM 规划器
+     * 2. 不是显式请求（explicit=false）
+     * 3. needScore 在灰色区域 (0.35~0.65) 或文本很短 (<=12 字符)
+     */
+    /**
+     * Phase L2: 判断是否应该使用 LLM 规划器
+     *
+     * 触发条件：
+     * 1. 配置了 LLM 规划器
+     * 2. 不是显式请求（explicit=false）
+     * 3. needScore 在灰色区域 (0.35~0.65) 或文本很短 (<=12 字符)
+     */
+    private fun shouldUseLlmPlanner(
+        needScore: Float,
+        isExplicit: Boolean,
+        lastUserText: String
+    ): Boolean {
+        if (llmPlanner == null) return false
+        if (isExplicit) return false  // 显式请求跳过规划器
+
+        val inGrayZone = needScore in GRAY_ZONE_MIN_SCORE..GRAY_ZONE_MAX_SCORE
+        val isShortText = lastUserText.length <= SHORT_TEXT_THRESHOLD
+        return inGrayZone || isShortText
+    }
 
     /**
      * 协调召回流程（Phase C 完整实现 + 性能监控）
@@ -131,36 +176,91 @@ class RecallCoordinator(
         // P0-1: 统一计算 needScore（用于 NeedGate、A源、EvidenceScorer、RecallDecisionEngine）
         val needScore = NeedGate.computeNeedScoreHeuristic(updatedQueryContext)
 
-        // 阶段2：NeedGate 判断（是否进入候选生成）
+        // Phase L2: 阶段2a - 规划器决策（三层智能策略）
+        val plannerResult: PlannerResult
+        val plannerTime = measureTimeMillis {
+            val useLlmPlanner = shouldUseLlmPlanner(
+                needScore = needScore,
+                isExplicit = updatedQueryContext.explicitSignal.explicit,
+                lastUserText = updatedQueryContext.lastUserText
+            )
+
+            plannerResult = if (useLlmPlanner) {
+                Log.i(TAG, "=== Using LLM Planner ===")
+                debugLogger.log(
+                    LogLevel.INFO,
+                    TAG,
+                    "LLM planner triggered",
+                    mapOf(
+                        "needScore" to needScore,
+                        "grayZone" to "${GRAY_ZONE_MIN_SCORE}..$GRAY_ZONE_MAX_SCORE",
+                        "textLength" to updatedQueryContext.lastUserText.length
+                    )
+                )
+                llmPlanner!!.plan(updatedQueryContext)
+            } else {
+                // 使用兜底规划器（NeedGate 逻辑）
+                Log.i(TAG, "=== Using Heuristic Planner ===")
+                heuristicPlanner.plan(updatedQueryContext)
+            }
+
+            Log.i(TAG, "=== Planner Result ===")
+            Log.i(TAG, "shouldRecall: ${plannerResult.shouldRecall}")
+            Log.i(TAG, "pQueries: ${plannerResult.pQueries}")
+            Log.i(TAG, "aQueries: ${plannerResult.aQueries}")
+            Log.i(TAG, "reason: ${plannerResult.reason}")
+            Log.i(TAG, "confidence: ${plannerResult.confidence}")
+
+            debugLogger.log(
+                LogLevel.INFO,
+                TAG,
+                "Planner result",
+                mapOf(
+                    "shouldRecall" to plannerResult.shouldRecall,
+                    "pQueries" to plannerResult.pQueries.size,
+                    "aQueries" to plannerResult.aQueries.size,
+                    "confidence" to plannerResult.confidence,
+                    "reason" to plannerResult.reason
+                )
+            )
+        }
+
+        // 阶段2b：NeedGate 检查（可能被规划器覆盖）
         val needGateTime = measureTimeMillis {
-            val shouldProceed = NeedGate.shouldProceed(updatedQueryContext)
+            val needGatePass = NeedGate.shouldProceed(updatedQueryContext)
 
             Log.i(TAG, "=== NeedGate CHECK ===")
             Log.i(TAG, "needScore: $needScore")
             Log.i(TAG, "threshold: ${NeedGate.getThreshold()}")
             Log.i(TAG, "explicit: ${updatedQueryContext.explicitSignal.explicit}")
-            Log.i(TAG, "shouldProceed: $shouldProceed")
+            Log.i(TAG, "needGatePass: $needGatePass")
+            Log.i(TAG, "planner.shouldRecall: ${plannerResult.shouldRecall}")
+
+            // Phase L2: 规划器的 shouldRecall 可以覆盖 NeedGate 的 block
+            val shouldProceed = needGatePass || plannerResult.shouldRecall
 
             if (!shouldProceed) {
-                Log.w(TAG, "=== NeedGate BLOCKED recall ===")
+                Log.w(TAG, "=== Recall BLOCKED (NeedGate blocked, planner override=false) ===")
                 debugLogger.log(
                     LogLevel.INFO,
                     TAG,
-                    "NeedGate blocked",
+                    "Recall blocked",
                     mapOf(
                         "needScore" to needScore,
-                        "threshold" to NeedGate.getThreshold()
+                        "threshold" to NeedGate.getThreshold(),
+                        "plannerOverride" to plannerResult.shouldRecall,
+                        "reason" to plannerResult.reason
                     )
                 )
                 // Phase F: 即使 blocked，也要回调更新后的 ledger（outcome/strikes 已更新）
                 val updatedLedgerJson = json.encodeToString(updatedLedger)
                 onRecallLedgerUpdate?.invoke(updatedLedgerJson)
-                return null  // NeedGate 未通过，不调用任何 DAO
+                return null  // 未通过，不调用任何 DAO
             }
         }
 
-        Log.i(TAG, "=== NeedGate PASSED in ${needGateTime}ms ===")
-        debugLogger.log(LogLevel.DEBUG, TAG, "NeedGate passed in ${needGateTime}ms")
+        Log.i(TAG, "=== Recall PASSED in ${needGateTime}ms (planner: ${plannerTime}ms) ===")
+        debugLogger.log(LogLevel.DEBUG, TAG, "Recall passed in ${needGateTime}ms")
 
         // 阶段3：检查静默窗口（Phase E：快速停止）
         if (!updatedQueryContext.explicitSignal.explicit &&
@@ -184,11 +284,16 @@ class RecallCoordinator(
             return null  // 静默窗口内，non-explicit 一律 NONE
         }
 
-        // 阶段4：P源候选生成
+        // 阶段4：P源候选生成（Phase L3: 支持多查询）
         val candidates = mutableListOf<Candidate>()
         val pSourceTime = measureTimeMillis {
             Log.i(TAG, "=== P Source Candidate Generation START ===")
-            val pSourceCandidates = textSourceCandidateGenerator.generate(updatedQueryContext)
+            Log.i(TAG, "=== P Source queries: ${plannerResult.pQueries} ===")
+
+            val pSourceCandidates = textSourceCandidateGenerator.generate(
+                queryContext = updatedQueryContext,
+                queries = plannerResult.pQueries  // Phase L3: 传入多查询
+            )
             candidates.addAll(pSourceCandidates)
 
             Log.i(TAG, "=== P Source generated ${pSourceCandidates.size} candidates ===")
@@ -196,19 +301,25 @@ class RecallCoordinator(
                 LogLevel.INFO,
                 TAG,
                 "P source candidates generated",
-                mapOf("count" to pSourceCandidates.size)
+                mapOf(
+                    "count" to pSourceCandidates.size,
+                    "queries" to plannerResult.pQueries.size
+                )
             )
         }
         debugLogger.log(LogLevel.DEBUG, TAG, "P source generation took ${pSourceTime}ms")
 
-        // 阶段5：A源候选生成（Phase C）
+        // 阶段5：A源候选生成（Phase C + Phase L3: 支持多查询）
         // P0-1: 传入 needScore（统一计算，不得使用 ledger.recent.size 派生）
         val aSourceTime = measureTimeMillis {
+            Log.i(TAG, "=== A Source queries: ${plannerResult.aQueries} ===")
+
             val aSourceCandidates = archiveSourceCandidateGenerator.generate(
                 queryContext = updatedQueryContext,
                 pSourceCandidateCount = candidates.size,
                 needScore = needScore,  // P0-1: 传入统一计算的 needScore
-                settings = settings
+                settings = settings,
+                queries = plannerResult.aQueries  // Phase L3: 传入多查询
             )
             candidates.addAll(aSourceCandidates)
 
@@ -216,7 +327,10 @@ class RecallCoordinator(
                 LogLevel.INFO,
                 TAG,
                 "A source candidates generated",
-                mapOf("count" to aSourceCandidates.size)
+                mapOf(
+                    "count" to aSourceCandidates.size,
+                    "queries" to plannerResult.aQueries.size
+                )
             )
         }
         debugLogger.log(LogLevel.DEBUG, TAG, "A source generation took ${aSourceTime}ms")
@@ -364,7 +478,9 @@ class RecallCoordinator(
                 )
 
                 Log.i(TAG, "=== Injection block built successfully, length: ${injectionBlock.length} ===")
-                Log.i(TAG, "=== First 200 chars of injection block: ${injectionBlock.take(200)} ===")
+                Log.i(TAG, "=== COMPLETE INJECTION BLOCK START ===")
+                Log.i(TAG, injectionBlock)
+                Log.i(TAG, "=== COMPLETE INJECTION BLOCK END ===")
 
                 debugLogger.log(
                     LogLevel.INFO,

@@ -59,6 +59,7 @@ interface MessageNodeTextDao {
 data class FtsSearchResult(
     val node_id: String,
     val node_index: Int,
+    val role: Int,  // MessageRole.ordinal，用于智能排序
     val mi: ByteArray  // matchinfo，用于 Kotlin 侧排序
 )
 

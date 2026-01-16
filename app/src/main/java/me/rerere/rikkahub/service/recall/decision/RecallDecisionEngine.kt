@@ -49,8 +49,11 @@ object RecallDecisionEngine {
     /** 需求阈值（应与 NeedGate.T_NEED 一致） */
     private const val T_NEED = 0.55f
 
-    /** 显式召回的最小相关性阈值（FULL） */
-    private const val EXPLICIT_FULL_MIN_RELEVANCE = 0.75f
+    /** 显式召回的最小相关性阈值（FULL）
+     *
+     * Phase J4: 0.65，平衡召回率和精确度
+     */
+    private const val EXPLICIT_FULL_MIN_RELEVANCE = 0.65f
 
     /** 显式召回的最小相关性阈值（SNIPPET） - Phase J0: 使用 RecallConstants 统一管理 */
     private val EXPLICIT_SNIPPET_MIN_RELEVANCE get() = me.rerere.rikkahub.service.recall.RecallConstants.EXPLICIT_SNIPPET_MIN_RELEVANCE
@@ -107,9 +110,19 @@ object RecallDecisionEngine {
             )
         }
 
+        // 检测是否是"原文召回"意图
+        val isOriginalContentQuery = listOf(
+            "原诗", "原文", "原话", "最初", "完整", "复述", "背诵", "再说一遍"
+        ).any { queryContext.lastUserText.contains(it) }
+
         // 过滤冷却中的候选
-        val validCandidates = scoredCandidates.filter { (candidate, scores) ->
-            scores.redundancyPenalty == 0f  // 不在冷却中
+        // 在"原文召回"意图下，忽略redundancyPenalty（用户明确要求复述，不应该拒绝）
+        val validCandidates = if (isOriginalContentQuery && isExplicit) {
+            scoredCandidates  // 不过滤，允许所有候选
+        } else {
+            scoredCandidates.filter { (candidate, scores) ->
+                scores.redundancyPenalty == 0f  // 不在冷却中
+            }
         }
 
         if (validCandidates.isEmpty()) {
@@ -142,10 +155,39 @@ object RecallDecisionEngine {
             decideNonExplicit(bestCandidate, bestScores)
         }
 
+        // Phase J4: 显式召回时，如果决策是 FULL_VERBATIM，优先选择 FULL 候选
+        val selectedCandidate = if (isExplicit && action == RecallAction.FULL_VERBATIM) {
+            // 查找 relevance 最高的 FULL 候选
+            val fullCandidates = validCandidates.filter { it.first.kind == CandidateKind.FULL }
+
+            if (fullCandidates.isNotEmpty()) {
+                // 在"原文召回"意图下，优先选择单节点候选（内容更精准）
+                val selected = if (isOriginalContentQuery) {
+                    // 按nodeIndices数量升序排序，优先选择单节点
+                    // 从ID中提取nodeIndices部分：格式为 P:xxx:FULL:0 或 P:xxx:FULL:0,1
+                    fullCandidates.sortedBy { (candidate, _) ->
+                        val nodeIndicesPart = candidate.id.substringAfterLast(":")
+                        val nodeCount = nodeIndicesPart.split(",").size
+                        nodeCount
+                    }.first()
+                } else {
+                    fullCandidates.maxByOrNull { (_, scores) -> scores.relevance }!!
+                }
+
+                try { Log.i("RecallDecisionEngine", "=== Selecting FULL candidate: ${selected.first.id} (nodeIndices: ${selected.first.id.substringAfterLast(":")}) ===") } catch (e: Exception) {}
+                selected.first
+            } else {
+                bestCandidate
+            }
+        } else {
+            bestCandidate
+        }
+
         try { Log.i("RecallDecisionEngine", "=== FINAL DECISION: $action ===") } catch (e: Exception) {}
+        try { Log.i("RecallDecisionEngine", "=== SELECTED CANDIDATE: ${selectedCandidate.id}, kind: ${selectedCandidate.kind} ===") } catch (e: Exception) {}
         return DecisionResult(
             action = action,
-            selectedCandidate = bestCandidate,
+            selectedCandidate = selectedCandidate,
             vetoReason = null
         )
     }

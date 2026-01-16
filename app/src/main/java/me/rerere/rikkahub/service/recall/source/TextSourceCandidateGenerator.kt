@@ -60,16 +60,19 @@ class TextSourceCandidateGenerator(
      * 生成 P源候选
      *
      * @param queryContext 查询上下文
+     * @param queries 查询语句列表（Phase L3: 多查询支持，默认为单查询）
      * @return 候选列表（最多3个）
      */
     suspend fun generate(
-        queryContext: QueryContext
+        queryContext: QueryContext,
+        queries: List<String> = listOf(queryContext.lastUserText)  // Phase L3: 默认单查询兼容
     ): List<Candidate> = withContext(Dispatchers.IO) {
         val debugLogger = DebugLogger.getInstance(context)
-        val candidates = mutableListOf<Candidate>()
+        val allCandidates = mutableSetOf<Candidate>()  // Phase L3: 使用 Set 自动去重
 
         Log.i(TAG, "=== TextSourceCandidateGenerator.generate START ===")
         Log.i(TAG, "enableVerbatimRecall: ${queryContext.settingsSnapshot.enableVerbatimRecall}")
+        Log.i(TAG, "queries: $queries (size: ${queries.size})")
 
         // 检查是否启用逐字召回
         if (!queryContext.settingsSnapshot.enableVerbatimRecall) {
@@ -83,61 +86,79 @@ class TextSourceCandidateGenerator(
         }
 
         val conversationId = queryContext.conversationId
-        val lastUserText = queryContext.lastUserText
         val isExplicit = queryContext.explicitSignal.explicit
 
         Log.i(TAG, "conversationId: $conversationId")
-        Log.i(TAG, "lastUserText: $lastUserText")
         Log.i(TAG, "isExplicit: $isExplicit")
 
-        // 策略1：title 匹配
-        val titles = IntentRouter.extractTitles(lastUserText)
-        Log.i(TAG, "extracted titles: $titles")
+        // Phase L3: 对每个查询生成候选，然后合并去重
+        for ((queryIndex, queryText) in queries.withIndex()) {
+            Log.i(TAG, "=== Processing query $queryIndex/$queries.size: '$queryText' ===")
 
-        if (titles.isNotEmpty()) {
-            Log.i(TAG, "=== Title matching strategy ===")
-            debugLogger.log(
-                LogLevel.DEBUG,
-                TAG,
-                "Title matching",
-                mapOf("titles" to titles)
-            )
+            val queryCandidates = mutableListOf<Candidate>()
 
-            val titleCandidates = searchByTitle(conversationId, titles, isExplicit, lastUserText)
-            candidates.addAll(titleCandidates)
-            Log.i(TAG, "titleCandidates count: ${titleCandidates.size}")
+            // 策略1：title 匹配
+            val titles = IntentRouter.extractTitles(queryText)
+            Log.i(TAG, "extracted titles: $titles")
 
-            if (candidates.size >= MAX_PER_SOURCE) {
-                Log.i(TAG, "=== Enough candidates from title matching ===")
+            if (titles.isNotEmpty()) {
+                Log.i(TAG, "=== Title matching strategy ===")
                 debugLogger.log(
                     LogLevel.DEBUG,
                     TAG,
-                    "Title matching produced enough candidates",
-                    mapOf("count" to candidates.size)
+                    "Title matching",
+                    mapOf("titles" to titles, "queryIndex" to queryIndex)
                 )
-                return@withContext candidates.take(MAX_PER_SOURCE)
+
+                val titleCandidates = searchByTitle(conversationId, titles, isExplicit, queryText)
+                queryCandidates.addAll(titleCandidates)
+                Log.i(TAG, "titleCandidates count: ${titleCandidates.size}")
+
+                if (queryCandidates.size >= MAX_PER_SOURCE) {
+                    allCandidates.addAll(queryCandidates.take(MAX_PER_SOURCE))
+                    continue  // 该查询已有足够候选，继续下一个查询
+                }
+            }
+
+            // 策略2：FTS4 兜底检索（仅在 title 未产生足够候选时）
+            if (queryCandidates.size < MAX_PER_SOURCE) {
+                Log.i(TAG, "=== FTS4 fallback strategy ===")
+                debugLogger.log(LogLevel.DEBUG, TAG, "FTS4 fallback", mapOf("queryIndex" to queryIndex))
+
+                val ftsCandidates = searchByFts(conversationId, queryText, isExplicit)
+                queryCandidates.addAll(ftsCandidates)
+                Log.i(TAG, "ftsCandidates count: ${ftsCandidates.size}")
+            }
+
+            allCandidates.addAll(queryCandidates)
+
+            // Early exit: 已有足够候选
+            if (allCandidates.size >= MAX_PER_SOURCE) {
+                Log.i(TAG, "=== Early exit: enough candidates from $queryIndex queries ===")
+                break
             }
         }
 
-        // 策略2：FTS4 兜底检索（仅在 title 未产生足够候选时）
-        if (candidates.size < MAX_PER_SOURCE) {
-            Log.i(TAG, "=== FTS4 fallback strategy ===")
-            debugLogger.log(LogLevel.DEBUG, TAG, "FTS4 fallback")
+        val finalCandidates = allCandidates.take(MAX_PER_SOURCE)
 
-            val ftsCandidates = searchByFts(conversationId, lastUserText, isExplicit)
-            candidates.addAll(ftsCandidates)
-            Log.i(TAG, "ftsCandidates count: ${ftsCandidates.size}")
-        }
+        // Phase L3: 去重后可能少于原始数量，使用实际数量统计
+        val uniqueCount = allCandidates.size
+        val dedupSaved = queries.size * MAX_PER_SOURCE - uniqueCount  // 理论最大值 - 实际唯一值
 
-        Log.i(TAG, "=== Total P source candidates: ${candidates.size} ===")
+        Log.i(TAG, "=== Total P source candidates: ${finalCandidates.size} (from ${queries.size} queries, unique: $uniqueCount) ===")
         debugLogger.log(
             LogLevel.INFO,
             TAG,
             "Generated P source candidates",
-            mapOf("count" to candidates.size)
+            mapOf(
+                "count" to finalCandidates.size,
+                "unique" to uniqueCount,
+                "queries" to queries.size,
+                "dedupBenefit" to dedupSaved
+            )
         )
 
-        return@withContext candidates.take(MAX_PER_SOURCE)
+        return@withContext finalCandidates
     }
 
     /**
@@ -183,24 +204,30 @@ class TextSourceCandidateGenerator(
 
                 if (messageNodes.isNotEmpty()) {
                     val fullText = messageNodes.joinToString("\n\n") { it.rawText }
-                    Log.i(TAG, "fullText length: ${fullText.length}")
+                    Log.i(TAG, "=== fullText generated: length=${fullText.length} ===")
+                    Log.i(TAG, "Full content:\n${fullText}")
+                    Log.i(TAG, "=== End of fullText ===")
 
                     // 显式请求：生成 FULL 候选
                     if (isExplicit && fullText.length <= FULL_MAX_CHARS) {
-                        Log.i(TAG, "Adding FULL candidate")
-                        candidates.add(buildCandidate(
+                        Log.i(TAG, "=== Adding FULL candidate (kind=FULL, length=${fullText.length}) ===")
+                        val candidate = buildCandidate(
                             conversationId = conversationId,
                             nodeIndices = nodeIndices,
                             text = fullText,
                             kind = CandidateKind.FULL,
                             title = title,
                             query = query
-                        ))
+                        )
+                        Log.i(TAG, "Generated candidate ID: ${candidate.id}")
+                        candidates.add(candidate)
                     }
 
                     // 同时生成 SNIPPET 候选（<=800 chars）
                     val snippetText = fullText.take(SNIPPET_MAX_CHARS)
-                    Log.i(TAG, "Adding SNIPPET candidate (length: ${snippetText.length})")
+                    Log.i(TAG, "=== Adding SNIPPET candidate (kind=SNIPPET, length=${snippetText.length}) ===")
+                    Log.i(TAG, "SNIPPET content:\n${snippetText}")
+                    Log.i(TAG, "=== End of SNIPPET ===")
                     candidates.add(buildCandidate(
                         conversationId = conversationId,
                         nodeIndices = nodeIndices,
@@ -238,12 +265,19 @@ class TextSourceCandidateGenerator(
         // Phase J2: 检测回指助手词组
         val hasAssistantAnaphora = ASSISTANT_ANAPHORA_PHRASES.any { lastUserText.contains(it) }
 
+        Log.i(TAG, "=== FTS4 MATCH query ===")
+        Log.i(TAG, "matchQuery: $matchQuery")
+        Log.i(TAG, "tokens: $tokens")
+        Log.i(TAG, "hasAssistantAnaphora: $hasAssistantAnaphora")
+
         // Phase J2: 根据是否有回指助手词，决定搜索的角色范围
         val ftsQuery = if (hasAssistantAnaphora) {
             // 扩展搜索：USER + ASSISTANT
+            Log.i(TAG, "Using USER+ASSISTANT role filter (hasAssistantAnaphora=true)")
+            Log.i(TAG, "Query role filter: role IN (${MessageRole.USER.ordinal}, ${MessageRole.ASSISTANT.ordinal})")
             SimpleSQLiteQuery(
                 """
-                SELECT node_id, node_index, matchinfo(message_node_fts) AS mi
+                SELECT node_id, node_index, role, matchinfo(message_node_fts) AS mi
                 FROM message_node_fts
                 WHERE message_node_fts MATCH ?
                   AND conversation_id = ?
@@ -254,9 +288,11 @@ class TextSourceCandidateGenerator(
             )
         } else {
             // 默认：只搜 USER
+            Log.i(TAG, "Using USER-only role filter (hasAssistantAnaphora=false)")
+            Log.i(TAG, "Query role filter: role = ${MessageRole.USER.ordinal}")
             SimpleSQLiteQuery(
                 """
-                SELECT node_id, node_index, matchinfo(message_node_fts) AS mi
+                SELECT node_id, node_index, role, matchinfo(message_node_fts) AS mi
                 FROM message_node_fts
                 WHERE message_node_fts MATCH ?
                   AND conversation_id = ?
@@ -270,6 +306,13 @@ class TextSourceCandidateGenerator(
         // Phase J1: 获取排序后的 node_index 列表及对应的排名分数
         val rankedIndices = try {
             val ftsResults = messageNodeTextDao.searchByFts(ftsQuery)
+
+            Log.i(TAG, "=== FTS4 raw results ===")
+            Log.i(TAG, "ftsResults count: ${ftsResults.size}")
+            ftsResults.forEach { result ->
+                Log.i(TAG, "  - node_index=${result.node_index}, role=${result.role}, node_id=${result.node_id}")
+            }
+
             if (ftsResults.isEmpty()) {
                 // FTS4 无结果，使用倒排索引兜底
                 DebugLogger.getInstance(context).log(LogLevel.DEBUG, TAG, "FTS4 empty, skipping")
@@ -277,7 +320,7 @@ class TextSourceCandidateGenerator(
             } else {
                 // Phase J1: rankAndTakeTop 返回的是已排序的 node_index 列表
                 // 我们需要保留排名信息：top1=1.0, top2=0.7, top3=0.5
-                val rankedList = FtsRanker.rankAndTakeTop(ftsResults).take(MAX_PER_SOURCE)
+                val rankedList = FtsRanker.rankAndTakeTop(ftsResults, lastUserText).take(MAX_PER_SOURCE)
                 rankedList.mapIndexed { index, nodeIndex ->
                     // 归一化排名分数：top1=1.0, top2=0.7, top3=0.5
                     val rankScore = when (index) {
@@ -306,19 +349,97 @@ class TextSourceCandidateGenerator(
         for ((idx, ftsRankNorm) in rankedIndices) {
             if (candidates.size >= MAX_PER_SOURCE) break
 
+            // 关键修复：优先为单独的匹配节点生成候选（单节点候选）
+            // 这样可以确保即使节点在窗口中，也能有单独的候选被评分和选择
+            val singleNodeResult = messageNodeTextDao.getByConversationIdAndIndices(
+                conversationId = conversationId,
+                indices = listOf(idx)
+            )
+
+            if (singleNodeResult.isNotEmpty()) {
+                val singleNodeText = singleNodeResult.first().rawText
+                Log.i(TAG, "=== Generating single-node candidate for node $idx ===")
+
+                // 显式召回：生成 FULL 候选（如果长度允许）
+                if (isExplicit && singleNodeText.length <= FULL_MAX_CHARS) {
+                    val singleCandidate = buildCandidate(
+                        conversationId = conversationId,
+                        nodeIndices = listOf(idx),
+                        text = singleNodeText,
+                        kind = CandidateKind.FULL,
+                        title = null,
+                        query = lastUserText,
+                        ftsRankNorm = ftsRankNorm
+                    )
+                    candidates.add(singleCandidate)
+                    Log.i(TAG, "=== Added single-node FULL candidate: ${singleCandidate.id} ===")
+                }
+
+                // 同时生成 SNIPPET 候选（<=800 chars）
+                val singleSnippet = buildCandidate(
+                    conversationId = conversationId,
+                    nodeIndices = listOf(idx),
+                    text = singleNodeText.take(SNIPPET_MAX_CHARS),
+                    kind = CandidateKind.SNIPPET,
+                    title = null,
+                    query = lastUserText,
+                    ftsRankNorm = ftsRankNorm
+                )
+                candidates.add(singleSnippet)
+                Log.i(TAG, "=== Added single-node SNIPPET candidate: ${singleSnippet.id} ===")
+            }
+
+            // 检查是否已达到候选上限
+            if (candidates.size >= MAX_PER_SOURCE) break
+
+            // 窗口扩展：{idx-1, idx, idx+1}，生成多节点候选
             val expandedIndices = listOf(
                 max(0, idx - 1),
                 idx,
                 min(maxIndex, idx + 1)
-            )
+            ).distinct()
+
+            // 如果窗口只有一个节点，跳过（已经生成了单节点候选）
+            if (expandedIndices.size == 1) continue
 
             val messageNodes = messageNodeTextDao.getByConversationIdAndIndices(
                 conversationId = conversationId,
                 indices = expandedIndices
             )
 
+            // 调试：记录每个 node 的完整内容
+            messageNodes.forEach { node ->
+                Log.i(TAG, "=== Retrieved node ${node.nodeIndex}: length=${node.rawText.length} ===")
+                Log.i(TAG, "Full content:\n${node.rawText}")
+                Log.i(TAG, "=== End of node ${node.nodeIndex} ===")
+            }
+
             if (messageNodes.isNotEmpty()) {
                 val fullText = messageNodes.joinToString("\n\n") { it.rawText }
+
+                Log.i(TAG, "=== fullText generated ===")
+                Log.i(TAG, "nodeIndices: $expandedIndices")
+                Log.i(TAG, "fullText.length: ${fullText.length}")
+                Log.i(TAG, "fullText preview (first 300): ${fullText.take(300)}")
+                if (fullText.length > 300) {
+                    Log.i(TAG, "fullText preview (last 300): ...${fullText.takeLast(300)}")
+                }
+
+                // 显式召回：生成 FULL 候选（如果长度允许）
+                if (isExplicit && fullText.length <= FULL_MAX_CHARS) {
+                    candidates.add(buildCandidate(
+                        conversationId = conversationId,
+                        nodeIndices = expandedIndices,
+                        text = fullText,
+                        kind = CandidateKind.FULL,
+                        title = null,
+                        query = lastUserText,
+                        ftsRankNorm = ftsRankNorm
+                    ))
+                    Log.i(TAG, "=== Added multi-node FULL candidate for indices $expandedIndices ===")
+                }
+
+                // 同时生成 SNIPPET 候选（<=800 chars）
                 val snippetText = fullText.take(SNIPPET_MAX_CHARS)
 
                 // Phase J1: 传递 ftsRankNorm 参数
@@ -331,6 +452,7 @@ class TextSourceCandidateGenerator(
                     query = lastUserText,
                     ftsRankNorm = ftsRankNorm
                 ))
+                Log.i(TAG, "=== Added multi-node SNIPPET candidate for indices $expandedIndices ===")
             }
         }
 

@@ -47,10 +47,22 @@ class VerbatimVaultService(
     ) {
         val debugLogger = DebugLogger.getInstance(context)
 
-        if (messages.isEmpty()) return
+        android.util.Log.i("VerbatimVault", "=== buildMessageNodeText START ===")
+        android.util.Log.i("VerbatimVault", "nodeId: $nodeId")
+        android.util.Log.i("VerbatimVault", "conversationId: $conversationId")
+        android.util.Log.i("VerbatimVault", "nodeIndex: $nodeIndex")
+        android.util.Log.i("VerbatimVault", "messages count: ${messages.size}")
+
+        if (messages.isEmpty()) {
+            android.util.Log.w("VerbatimVault", "messages.isEmpty(), returning")
+            return
+        }
 
         val firstMessage = messages.first()
         val roleInt = firstMessage.role.ordinal
+        android.util.Log.i("VerbatimVault", "=== Storing message: nodeIndex=$nodeIndex ===")
+        android.util.Log.i("VerbatimVault", "firstMessage role: ${firstMessage.role.name} (ordinal=$roleInt)")
+        android.util.Log.i("VerbatimVault", "firstMessage parts count: ${firstMessage.parts.size}")
 
         // 提取文本和工具调用（从 parts 数组）
         val textBuilder = StringBuilder()
@@ -83,6 +95,9 @@ class VerbatimVaultService(
         }
 
         val rawText = textBuilder.toString()
+        android.util.Log.i("VerbatimVault", "rawText length: ${rawText.length}")
+        android.util.Log.i("VerbatimVault", "rawText preview (first 200): ${rawText.take(200)}")
+
         if (rawText.isNotEmpty()) {
             // 归一化搜索文本
             val searchText = normalizeForSearch(rawText)
@@ -96,7 +111,48 @@ class VerbatimVaultService(
                 rawText = rawText,
                 searchText = searchText
             )
+            android.util.Log.i("VerbatimVault", "Inserting MessageNodeTextEntity: nodeIndex=$nodeIndex, length=${rawText.length}")
             messageNodeTextDao.insertOrReplace(entity)
+            android.util.Log.i("VerbatimVault", "Insertion successful")
+
+            // 手动同步到FTS4表（绕过 INSERT OR REPLACE 与触发器的冲突）
+            // 问题：INSERT OR REPLACE 会先 DELETE 再 INSERT，但 FTS4 触发器只监听 INSERT
+            // 导致更新记录时，FTS4 索引可能不同步
+            try {
+                val db = database.openHelper.writableDatabase
+
+                // 查询 message_node_text 的 rowid（作为 FTS4 的 docid）
+                val cursor = db.query(
+                    "SELECT rowid FROM message_node_text WHERE node_id = ?",
+                    arrayOf(nodeId)
+                )
+                var rowId: Long? = null
+                if (cursor.moveToFirst()) {
+                    rowId = cursor.getLong(0)
+                }
+                cursor.close()
+
+                if (rowId != null) {
+                    // 先删除 FTS4 中所有相同 node_id 的记录（清理可能的孤儿记录）
+                    // 使用 node_id 而不是 docid，因为 INSERT OR REPLACE 可能导致 rowid 变化
+                    db.execSQL(
+                        "DELETE FROM message_node_fts WHERE node_id = ?",
+                        arrayOf(nodeId)
+                    )
+
+                    // 再插入新记录到 FTS4（使用 rowid 作为 docid）
+                    db.execSQL(
+                        """INSERT INTO message_node_fts(docid, search_text, node_id, conversation_id, node_index, role)
+                        VALUES (?, ?, ?, ?, ?, ?)""",
+                        arrayOf(rowId, searchText, nodeId, conversationId, nodeIndex, roleInt)
+                    )
+                    android.util.Log.i("VerbatimVault", "FTS4 manual sync successful for node $nodeIndex (rowid=$rowId, role=$roleInt, roleName=${firstMessage.role.name})")
+                } else {
+                    android.util.Log.w("VerbatimVault", "Failed to get rowid for node $nodeIndex, FTS4 sync skipped")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("VerbatimVault", "FTS4 manual sync failed for node $nodeIndex", e)
+            }
 
             // 写入倒排索引（兜底方案）
             buildInvertedIndex(
@@ -105,6 +161,8 @@ class VerbatimVaultService(
                 nodeIndex = nodeIndex,
                 searchText = searchText
             )
+
+            android.util.Log.i("VerbatimVault", "=== buildMessageNodeText SUCCESS (nodeIndex=$nodeIndex, length=${rawText.length}) ===")
 
             debugLogger.log(
                 LogLevel.DEBUG,

@@ -98,6 +98,10 @@ internal fun collectInjections(
 
 /**
  * 应用注入到消息列表
+ *
+ * 重要：这个方法必须保留原有system message的全部内容，
+ * 只在适当位置添加ModeInjection和Lorebook内容。
+ * 特别是不能丢失RecallCoordinator注入的[RECALL_EVIDENCE]块。
  */
 internal fun applyInjections(
     messages: List<UIMessage>,
@@ -133,8 +137,10 @@ internal fun applyInjections(
                 }
             }
 
+            // 保留原有非Text parts（如reasoning），只替换Text part
+            val nonTextParts = systemMessage.parts.filterNot { it is UIMessagePart.Text }
             result[systemIndex] = systemMessage.copy(
-                parts = listOf(UIMessagePart.Text(newText))
+                parts = listOf(UIMessagePart.Text(newText)) + nonTextParts
             )
         }
     } else {

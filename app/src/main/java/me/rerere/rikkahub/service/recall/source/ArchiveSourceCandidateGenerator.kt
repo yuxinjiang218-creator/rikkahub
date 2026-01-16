@@ -82,16 +82,18 @@ class ArchiveSourceCandidateGenerator(
      * @param pSourceCandidateCount P源候选数量（用于判断是否需要 Q1/Q2）
      * @param needScore 需求分数（来自 RecallCoordinator 统一计算，不得使用 ledger 派生）
      * @param settings 设置（用于获取 providers）
+     * @param queries 查询语句列表（Phase L3: 多查询支持，默认为单查询）
      * @return 候选列表（最多3个）
      */
     suspend fun generate(
         queryContext: QueryContext,
         pSourceCandidateCount: Int,
         needScore: Float,  // P0-1: needScore 必须从外部传入
-        settings: me.rerere.rikkahub.data.datastore.Settings? = null
+        settings: me.rerere.rikkahub.data.datastore.Settings? = null,
+        queries: List<String> = listOf(queryContext.lastUserText)  // Phase L3: 默认单查询兼容
     ): List<Candidate> = withContext(Dispatchers.IO) {
         val debugLogger = DebugLogger.getInstance(context)
-        val candidates = mutableListOf<Candidate>()
+        val allCandidates = mutableSetOf<Candidate>()  // Phase L3: 使用 Set 自动去重
 
         // 1. Gating 检查：enableArchiveRecall
         if (!queryContext.settingsSnapshot.enableArchiveRecall) {
@@ -157,7 +159,7 @@ class ArchiveSourceCandidateGenerator(
         }
 
         val conversationId = queryContext.conversationId
-        val lastUserText = queryContext.lastUserText
+        val lastUserText = queryContext.lastUserText  // 保留用于 anchors
 
         // Phase J4: 判断是否是"非硬逐字的显式请求"（如《title》触发）
         // 这种情况下允许 SNIPPET，但禁止 HINT fallback
@@ -165,20 +167,17 @@ class ArchiveSourceCandidateGenerator(
             (queryContext.explicitSignal.keyword == null ||
              queryContext.explicitSignal.keyword !in HARD_VERBATIM_KEYWORDS)
 
-        // 4. 决定执行多少次 embedding（Q0、Q1、Q2）
-        // P0-1: needScore 来自入参
-        val embeddingCalls = decideEmbeddingCalls(needScore, pSourceCandidateCount)
+        // Phase L3: 实际使用的查询数量（受 EMBEDDING_MAX_CALLS 限制）
+        val actualQueryCount = queries.size.coerceAtMost(EMBEDDING_MAX_CALLS)
 
-        // P0-1: 日志必须包含 needScore（入参）、pSourceCandidateCount、explicit、embeddingCalls
         debugLogger.log(
             LogLevel.DEBUG,
             TAG,
-            "MultiQuery scheduling",
+            "Phase L3: Multi-query planning",
             mapOf(
-                "needScore" to needScore,  // P0-1: 入参 needScore
-                "pSourceCandidateCount" to pSourceCandidateCount,
-                "explicit" to queryContext.explicitSignal.explicit,  // P0-1: 来自 explicitSignal
-                "embeddingCalls" to embeddingCalls
+                "inputQueries" to queries.size,
+                "actualQueries" to actualQueryCount,
+                "maxCalls" to EMBEDDING_MAX_CALLS
             )
         )
 
@@ -209,37 +208,70 @@ class ArchiveSourceCandidateGenerator(
 
         val (providerSetting, embeddingModel) = providerAndModel
 
-        // 8. 生成查询的 embedding（只执行 Q0，简化实现）
+        // Phase L3: 8. 多查询 embedding + 相似度计算
         var embeddingCallCount = 0
-        val queryEmbedding = try {
-            embeddingCallCount++
-            val provider = providerManager.getProviderByType(providerSetting)
-            @Suppress("UNCHECKED_CAST")
-            (provider as me.rerere.ai.provider.Provider<me.rerere.ai.provider.ProviderSetting>).generateEmbedding(
-                providerSetting = providerSetting,
-                text = lastUserText,
-                params = me.rerere.ai.provider.EmbeddingGenerationParams(model = embeddingModel)
-            )
-        } catch (e: Exception) {
+        val allArchiveSimilarities = mutableListOf<Pair<me.rerere.rikkahub.data.db.entity.ArchiveSummaryEntity, Float>>()
+
+        for ((queryIndex, queryText) in queries.take(actualQueryCount).withIndex()) {
+            if (allCandidates.size >= MAX_PER_SOURCE) break  // Early exit
+
+            val queryEmbedding = try {
+                embeddingCallCount++
+                val provider = providerManager.getProviderByType(providerSetting)
+                @Suppress("UNCHECKED_CAST")
+                (provider as me.rerere.ai.provider.Provider<me.rerere.ai.provider.ProviderSetting>).generateEmbedding(
+                    providerSetting = providerSetting,
+                    text = queryText,
+                    params = me.rerere.ai.provider.EmbeddingGenerationParams(model = embeddingModel)
+                )
+            } catch (e: Exception) {
+                debugLogger.log(
+                    LogLevel.WARN,
+                    TAG,
+                    "Failed to generate query embedding",
+                    mapOf(
+                        "queryIndex" to queryIndex,
+                        "error" to (e.message ?: "unknown")
+                    )
+                )
+                continue  // 继续下一个查询
+            }
+
+            // 9. 计算相似度并过滤（针对当前查询）
+            val archiveSimilarities = allArchives.mapNotNull { archive ->
+                val vectorIndex = vectorIndexDao.getByArchiveId(archive.id)
+                if (vectorIndex != null && vectorIndex.embeddingModelId == embeddingModelId) {
+                    val similarity = cosineSimilarity(queryEmbedding, vectorIndex.embeddingVector)
+                    if (similarity >= MIN_COS_SIM) archive to similarity else null
+                } else {
+                    null
+                }
+            }
+
+            // Phase L3: 使用最佳相似度（如果同一 archive 被多个查询命中）
+            for ((archive, similarity) in archiveSimilarities) {
+                val existing = allArchiveSimilarities.find { it.first.id == archive.id }
+                if (existing == null || similarity > existing.second) {
+                    // 移除旧的（如果存在）
+                    if (existing != null) allArchiveSimilarities.remove(existing)
+                    // 添加新的
+                    allArchiveSimilarities.add(archive to similarity)
+                }
+            }
+
             debugLogger.log(
-                LogLevel.WARN,
+                LogLevel.DEBUG,
                 TAG,
-                "Failed to generate query embedding",
-                mapOf("error" to (e.message ?: "unknown"))
+                "Query $queryIndex processed",
+                mapOf(
+                    "queryText" to queryText.take(50),
+                    "archiveHits" to archiveSimilarities.size
+                )
             )
-            return@withContext emptyList()
         }
 
-        // 9. 计算相似度并过滤
-        val archiveWithSimilarity = allArchives.mapNotNull { archive ->
-            val vectorIndex = vectorIndexDao.getByArchiveId(archive.id)
-            if (vectorIndex != null && vectorIndex.embeddingModelId == embeddingModelId) {
-                val similarity = cosineSimilarity(queryEmbedding, vectorIndex.embeddingVector)
-                archive to similarity
-            } else {
-                null
-            }
-        }.filter { it.second >= MIN_COS_SIM }
+        // 10. 排序并取 Top
+        val sortedArchives = allArchiveSimilarities
             .sortedByDescending { it.second }
             .take(MAX_PER_SOURCE)
 
@@ -249,14 +281,15 @@ class ArchiveSourceCandidateGenerator(
             "A source candidate generation completed",
             mapOf(
                 "embeddingCalls" to embeddingCallCount,
-                "archivesFound" to archiveWithSimilarity.size,
-                "cosSimThreshold" to MIN_COS_SIM
+                "uniqueArchives" to sortedArchives.size,
+                "cosSimThreshold" to MIN_COS_SIM,
+                "queriesProcessed" to actualQueryCount
             )
         )
 
-        // 10. 生成候选：优先 SNIPPET（Phase G3：添加质量护栏），回退 HINT
-        for ((archive, similarity) in archiveWithSimilarity) {
-            if (candidates.size >= MAX_PER_SOURCE) break
+        // 11. 生成候选：优先 SNIPPET（Phase G3：添加质量护栏），回退 HINT
+        for ((archive, similarity) in sortedArchives) {
+            if (allCandidates.size >= MAX_PER_SOURCE) break
 
             // Phase G3.2 质量护栏1：边缘相似度区间 [0.30, 0.35) 只生成 HINT
             // Phase J4: 但显式非硬逐字请求时禁止 HINT fallback
@@ -309,7 +342,7 @@ class ArchiveSourceCandidateGenerator(
                         "created_at" to archive.createdAt.toString()
                     )
                 )
-                candidates.add(candidate)
+                allCandidates.add(candidate)
                 continue  // 跳过后续逻辑
             }
 
@@ -411,10 +444,24 @@ class ArchiveSourceCandidateGenerator(
                     "created_at" to archive.createdAt.toString()
                 )
             )
-            candidates.add(candidate)
+            allCandidates.add(candidate)
         }
 
-        return@withContext candidates
+        // Phase L3: 返回去重后的候选列表
+        val finalCandidates = allCandidates.take(MAX_PER_SOURCE)
+
+        debugLogger.log(
+            LogLevel.INFO,
+            TAG,
+            "A source final candidates",
+            mapOf(
+                "finalCount" to finalCandidates.size,
+                "uniqueCount" to allCandidates.size,
+                "queriesProcessed" to actualQueryCount
+            )
+        )
+
+        return@withContext finalCandidates
     }
 
     /**

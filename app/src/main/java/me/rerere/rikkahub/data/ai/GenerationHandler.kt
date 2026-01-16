@@ -306,11 +306,23 @@ class GenerationHandler(
                         jsonStr = recallLedgerJson,
                         context = context
                     )
+                    // windowTexts 应该只包含历史上下文，排除当前用户查询
+                    // 否则会导致 novelty 误判：当用户查询包含召回内容时，系统错误地认为"已在上下文中"
+                    val lastIndex = messages.indexOf(lastUserMessage)
+                    val historyMessages = if (lastIndex >= 0) {
+                        messages.filterIndexed { index, _ -> index != lastIndex }
+                    } else {
+                        messages
+                    }
+
+                    // 计算当前回合索引：每条 USER 消息代表一个回合
+                    val currentTurnIndex = messages.count { it.role == me.rerere.ai.core.MessageRole.USER }
+
                     val queryContext = me.rerere.rikkahub.service.recall.model.QueryContext(
                         conversationId = conversationId.toString(),
                         lastUserText = lastUserText,
                         runningSummary = conversationSummary.ifBlank { null },
-                        windowTexts = messages.takeLast(8).map { it.toText() },
+                        windowTexts = historyMessages.takeLast(8).map { it.toText() },
                         settingsSnapshot = me.rerere.rikkahub.service.recall.model.SettingsSnapshot(
                             enableVerbatimRecall = assistant.enableVerbatimRecall,
                             enableArchiveRecall = assistant.enableArchiveRecall,
@@ -321,7 +333,7 @@ class GenerationHandler(
                             name = assistant.name
                         ),
                         ledger = ledger,  // 从 conversation.recallLedgerJson 解析
-                        nowTurnIndex = 0,
+                        nowTurnIndex = currentTurnIndex,
                         explicitSignal = explicitSignal
                     )
 
@@ -331,10 +343,13 @@ class GenerationHandler(
                         settings = settings  // 传递 settings 用于 A源 embedding 调用
                     )
 
+                    Log.i(TAG, "=== Recall block received: ${if (recallBlock != null) "YES (${recallBlock.length} chars)" else "NO"} ===")
                     if (recallBlock != null) {
+                        Log.i(TAG, "=== Recall block preview (first 300 chars): ${recallBlock.take(300)} ===")
                         appendLine()
                         appendLine()
                         append(recallBlock)
+                        Log.i(TAG, "=== Recall block appended to system prompt ===")
                     }
                 }
 
@@ -356,13 +371,25 @@ class GenerationHandler(
             }
             if (system.isNotBlank()) add(UIMessage.system(prompt = system))
             addAll(messages.truncate(truncateIndex).limitContext(assistant.contextMessageSize))
-        }.transforms(
-            transformers = transformers,
-            context = context,
-            model = model,
-            assistant = assistant,
-            settings = settings
-        )
+        }.let { transformedMessages ->
+            // 调试日志：检查transforms后的system prompt
+            val systemMsg = transformedMessages.firstOrNull { it.role == MessageRole.SYSTEM }
+            val systemText = systemMsg?.parts?.filterIsInstance<UIMessagePart.Text>()?.joinToString("") { it.text } ?: ""
+            Log.i(TAG, "=== After transforms - System prompt length: ${systemText.length} ===")
+            Log.i(TAG, "=== After transforms - System contains [RECALL_EVIDENCE]: ${systemText.contains("[RECALL_EVIDENCE]")} ===")
+            if (systemText.contains("[RECALL_EVIDENCE]")) {
+                val recallIndex = systemText.indexOf("[RECALL_EVIDENCE]")
+                Log.i(TAG, "=== After transforms - Recall evidence preview: ${systemText.substring(recallIndex, (recallIndex + 300).coerceAtMost(systemText.length))} ===")
+            }
+
+            transformedMessages.transforms(
+                transformers = transformers,
+                context = context,
+                model = model,
+                assistant = assistant,
+                settings = settings
+            )
+        }
 
         var messages: List<UIMessage> = messages
         val params = TextGenerationParams(
