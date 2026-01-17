@@ -59,7 +59,7 @@ class KnowledgeBaseSearchTool(
     fun getTool(assistantId: String): Tool {
         return Tool(
             name = "knowledge_base_search",
-            description = "Search in the current assistant's knowledge base using keywords. Returns relevant document chunks with similarity scores.",
+            description = "Search in the current assistant's knowledge base using keywords. Returns relevant document chunks with similarity scores. Only use when explicitly requested by user.",
             parameters = {
                 InputSchema.Obj(
                     properties = buildJsonObject {

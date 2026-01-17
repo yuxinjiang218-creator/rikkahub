@@ -666,38 +666,41 @@ class ChatService(
         val contextSize = assistant.contextMessageSize
         val messageCount = conversation.messageNodes.size
 
-        // 如果消息数未超过上下文窗口，无需压缩
-        if (messageCount <= contextSize) return conversation
-
-        // 计算需要压缩的消息范围
+        // 计算已压缩位置和待压缩消息数量
         val lastCompressedIndex = conversation.conversationSummaryUntil
-        val targetIndex = messageCount - contextSize
+        val pendingCount = messageCount - (lastCompressedIndex + 1)
 
-        // 幂等性检查：如果目标压缩位置小于等于已压缩位置，无需再次压缩
-        if (targetIndex <= lastCompressedIndex) {
-            debugLogger.log(LogLevel.INFO, "ChatService", "Compression skipped (idempotent)")
+        // 批量压缩条件：积攒的消息数 >= 阈值
+        if (pendingCount < contextSize) {
+            debugLogger.log(LogLevel.DEBUG, "ChatService", "Compression skipped (pending: $pendingCount < threshold: $contextSize)")
             return conversation
         }
 
-        // 1. 提取压缩窗口 Wₖ
-        val startIndex = if (lastCompressedIndex < 0) 0 else lastCompressedIndex + 1
-        val endIndex = targetIndex
+        // 计算固定大小的滑动窗口
+        val startIndex = lastCompressedIndex + 1
+        val endIndex = startIndex + contextSize - 1
 
-        if (startIndex >= endIndex) return conversation
+        // 边界保护：不超过当前消息数
+        val actualEndIndex = minOf(endIndex, messageCount - 1)
+        if (startIndex >= actualEndIndex) {
+            debugLogger.log(LogLevel.INFO, "ChatService", "Compression skipped (start index out of bounds)")
+            return conversation
+        }
 
-        val windowMessages = conversation.messageNodes.slice(startIndex until endIndex)
+        val windowMessages = conversation.messageNodes.slice(startIndex..actualEndIndex)
         if (windowMessages.isEmpty()) return conversation
 
         debugLogger.log(
             LogLevel.INFO,
             "ChatService",
-            "Compression triggered",
+            "Batch compression triggered",
             mapOf(
                 "messageCount" to messageCount,
                 "contextSize" to contextSize,
-                "windowSize" to (endIndex - startIndex),
+                "pendingCount" to pendingCount,
+                "windowSize" to (actualEndIndex - startIndex + 1),
                 "startIndex" to startIndex,
-                "endIndex" to endIndex
+                "endIndex" to actualEndIndex
             )
         )
 
@@ -742,10 +745,19 @@ class ChatService(
                 promptTemplate = settings.archiveSummaryPrompt
             )
 
-            // 3. 更新运行摘要 Sₖ = update(Sₖ₋₁, Wₖ)
-            val newRunningSummary = updateRunningSummary(
-                previousSummary = conversation.conversationSummary,
+            // 2.5. 查询上一窗口的归档摘要 Aₖ₋₁
+            val previousArchiveSummary = if (lastCompressedIndex >= 0) {
+                // 查询 windowEndIndex = lastCompressedIndex 的归档摘要
+                val allArchives = archiveSummaryDao.getListByConversationId(conversation.id.toString())
+                allArchives.find { it.windowEndIndex == lastCompressedIndex }?.content ?: ""
+            } else {
+                "" // 第一轮压缩，没有上一窗口
+            }
+
+            // 3. 生成运行摘要 Sₖ = compress(Wₖ, Aₖ₋₁)
+            val newRunningSummary = generateRunningSummary(
                 windowMessages = windowMessages,
+                previousArchiveSummary = previousArchiveSummary,
                 provider = contextCompressionProviderHandler,
                 model = contextCompressionModel,
                 providerSetting = contextCompressionProvider,
@@ -761,7 +773,7 @@ class ChatService(
                 id = archiveId.toString(),
                 conversationId = conversation.id.toString(),
                 windowStartIndex = startIndex,
-                windowEndIndex = endIndex,
+                windowEndIndex = actualEndIndex,
                 content = archiveContent,
                 createdAt = now,
                 embeddingModelId = null // 稍后生成
@@ -776,7 +788,7 @@ class ChatService(
             // 更新会话的运行摘要和游标
             val updatedConversation = conversation.copy(
                 conversationSummary = newRunningSummary,  // 覆盖而非追加
-                conversationSummaryUntil = endIndex
+                conversationSummaryUntil = actualEndIndex
             )
 
             // 保存到数据库
@@ -789,13 +801,13 @@ class ChatService(
                 mapOf(
                     "archiveId" to archiveId.toString(),
                     "startIndex" to startIndex,
-                    "endIndex" to endIndex,
+                    "endIndex" to actualEndIndex,
                     "archiveLength" to archiveContent.length,
                     "summaryLength" to newRunningSummary.length
                 )
             )
 
-            Log.i(TAG, "Context compression completed: compressed messages $startIndex to $endIndex")
+            Log.i(TAG, "Context compression completed: compressed messages $startIndex to $actualEndIndex")
             Log.i(TAG, "Archive summary created: A#$archiveId")
 
             updatedConversation
@@ -880,11 +892,12 @@ class ChatService(
         }
     }
 
-    // 更新运行摘要 Sₖ = update(Sₖ₋₁, Wₖ)
+    // 生成运行摘要 Sₖ = compress(Wₖ, Aₖ₋₁)
+    // 使用当前滑动窗口和上一窗口的归档摘要生成压缩内容
     @Suppress("UNCHECKED_CAST")
-    private suspend fun updateRunningSummary(
-        previousSummary: String,
+    private suspend fun generateRunningSummary(
         windowMessages: List<me.rerere.rikkahub.data.model.MessageNode>,
+        previousArchiveSummary: String,
         provider: me.rerere.ai.provider.Provider<*>,
         model: me.rerere.ai.provider.Model,
         providerSetting: me.rerere.ai.provider.ProviderSetting,
@@ -906,11 +919,11 @@ class ChatService(
             }
         }
 
-        // 使用配置的 prompt template，替换变量
+        // 使用配置的 prompt template，传递当前窗口消息和上一窗口归档摘要
         val prompt = renderPrompt(
             promptTemplate,
             mapOf(
-                "previous_summary" to (if (previousSummary.isNotBlank()) previousSummary else "(无)"),
+                "previous_archive_summary" to (if (previousArchiveSummary.isNotBlank()) previousArchiveSummary else "(无)"),
                 "messages" to formattedMessages
             )
         )
@@ -925,27 +938,28 @@ class ChatService(
                 params = TextGenerationParams(
                     model = model,
                     temperature = 0.3f,
-                    maxTokens = 10000,  // 上下文压缩改为 10000
+                    maxTokens = 10000,
                     thinkingBudget = 0,
                 ),
             )
 
-            val newSummary = result.choices.firstOrNull()?.message?.toText()?.trim() ?: previousSummary
+            val newSummary = result.choices.firstOrNull()?.message?.toText()?.trim() ?: ""
 
             debugLogger.log(
                 LogLevel.DEBUG,
                 "RunningSummary",
-                "Summary updated",
+                "Summary generated",
                 mapOf(
-                    "previousLength" to previousSummary.length,
-                    "newLength" to newSummary.length
+                    "windowSize" to windowMessages.size,
+                    "previousArchiveLength" to previousArchiveSummary.length,
+                    "summaryLength" to newSummary.length
                 )
             )
 
             newSummary
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to update running summary", e)
-            previousSummary // 失败时保留旧摘要
+            Log.e(TAG, "Failed to generate running summary", e)
+            "" // 失败时返回空字符串，不保留旧摘要
         }
     }
 

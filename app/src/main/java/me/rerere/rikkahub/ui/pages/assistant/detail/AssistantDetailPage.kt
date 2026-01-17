@@ -32,6 +32,7 @@ import com.composables.icons.lucide.Brain
 import com.composables.icons.lucide.ChevronRight
 import com.composables.icons.lucide.Code
 import com.composables.icons.lucide.Database
+import com.composables.icons.lucide.Layers
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.MessageSquare
 import com.composables.icons.lucide.Settings
@@ -114,6 +115,13 @@ fun AssistantDetailPage(id: String) {
                     title = stringResource(R.string.assistant_page_tab_injections),
                     description = stringResource(R.string.assistant_detail_injections_desc),
                     onClick = { navController.navigate(Screen.AssistantInjections(id)) }
+                )
+
+                SettingCard(
+                    icon = Lucide.Layers,
+                    title = stringResource(R.string.assistant_page_context_management),
+                    description = stringResource(R.string.assistant_detail_context_desc),
+                    onClick = { navController.navigate(Screen.AssistantContext(id)) }
                 )
 
                 SettingCard(

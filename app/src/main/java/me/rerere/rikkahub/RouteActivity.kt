@@ -66,6 +66,7 @@ import me.rerere.rikkahub.ui.hooks.readStringPreference
 import me.rerere.rikkahub.ui.hooks.rememberCustomTtsState
 import me.rerere.rikkahub.ui.pages.assistant.AssistantPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantBasicPage
+import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantContextPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantDetailPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantInjectionsPage
 import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantKnowledgeBasePage
@@ -330,6 +331,11 @@ class RouteActivity : ComponentActivity() {
                         AssistantInjectionsPage(route.id)
                     }
 
+                    composable<Screen.AssistantContext> { backStackEntry ->
+                        val route = backStackEntry.toRoute<Screen.AssistantContext>()
+                        AssistantContextPage(route.id)
+                    }
+
                     composable<Screen.Menu> {
                         MenuPage()
                     }
@@ -495,6 +501,9 @@ sealed interface Screen {
 
     @Serializable
     data class AssistantInjections(val id: String) : Screen
+
+    @Serializable
+    data class AssistantContext(val id: String) : Screen
 
     @Serializable
     data object Menu : Screen

@@ -7,8 +7,8 @@ package me.rerere.rikkahub.data.ai.prompts
  * 可靠地继续后续工作。
  *
  * 变量说明：
- * - {previous_summary}: 上一轮 running summary（可能为空）
- * - {messages}: 本轮新增对话内容（已格式化的 User/Assistant 列表）
+ * - {previous_archive_summary}: 上一窗口的归档摘要（可能为空）
+ * - {messages}: 当前滑动窗口的对话内容（已格式化的 User/Assistant 列表）
  */
 internal val DEFAULT_CONTEXT_COMPRESSION_PROMPT = """
 你的任务是对当前对话进行"高保真压缩总结（compaction summary）"，用于在不重新阅读完整对话的前提下，可靠地继续后续工作。
@@ -114,7 +114,7 @@ internal val DEFAULT_CONTEXT_COMPRESSION_PROMPT = """
 
 如果对话上下文中存在额外的总结指令（例如"聚焦某类内容""必须逐字保留某部分"），你必须在不删除任何上述结构的前提下，严格执行这些指令。
 
-{previous_summary}
+{previous_archive_summary}
 
 本轮新增对话内容：
 {messages}
