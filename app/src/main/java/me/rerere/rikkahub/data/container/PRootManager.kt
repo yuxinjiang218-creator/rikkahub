@@ -716,6 +716,108 @@ class PRootManager(private val context: Context) {
         }
     }
 
+    /**
+     * 清理 upper 层的临时文件，但保留已安装的开发工具
+     * 用于释放空间而不影响开发环境
+     */
+    suspend fun cleanupUpperLayer(): Result<CleanupResult> = withContext(Dispatchers.IO) {
+        try {
+            val upperDir = File(containerDir, "upper")
+            if (!upperDir.exists()) {
+                return@withContext Result.success(CleanupResult(0, 0, emptyList()))
+            }
+
+            var totalFreedBytes = 0L
+            var totalFilesCleaned = 0
+            val cleanedPaths = mutableListOf<String>()
+
+            // 1. 清理 /tmp 目录（临时文件）
+            val tmpDir = File(upperDir, "tmp")
+            if (tmpDir.exists()) {
+                val size = calculateDirectorySize(tmpDir)
+                tmpDir.listFiles()?.forEach { it.deleteRecursively() }
+                totalFreedBytes += size
+                totalFilesCleaned++
+                cleanedPaths.add("/tmp")
+            }
+
+            // 2. 清理 /var/cache 目录
+            val cacheDir = File(upperDir, "var/cache")
+            if (cacheDir.exists()) {
+                val size = calculateDirectorySize(cacheDir)
+                cacheDir.listFiles()?.forEach { it.deleteRecursively() }
+                totalFreedBytes += size
+                totalFilesCleaned++
+                cleanedPaths.add("/var/cache")
+            }
+
+            // 3. 清理 pip 缓存
+            val pipCacheDir = File(upperDir, "root/.cache/pip")
+            if (pipCacheDir.exists()) {
+                val size = calculateDirectorySize(pipCacheDir)
+                pipCacheDir.deleteRecursively()
+                totalFreedBytes += size
+                totalFilesCleaned++
+                cleanedPaths.add("/root/.cache/pip")
+            }
+
+            // 4. 清理 npm 缓存（如果安装了 Node.js）
+            val npmCacheDir = File(upperDir, "root/.npm")
+            if (npmCacheDir.exists()) {
+                val size = calculateDirectorySize(npmCacheDir)
+                npmCacheDir.deleteRecursively()
+                totalFreedBytes += size
+                totalFilesCleaned++
+                cleanedPaths.add("/root/.npm")
+            }
+
+            // 5. 清理 /workspace 中的临时构建文件（但保留源代码）
+            val workspaceDir = File(upperDir, "workspace")
+            if (workspaceDir.exists()) {
+                val buildPatterns = listOf("build", "dist", "target", "node_modules", ".gradle", "__pycache__", "*.pyc", ".pytest_cache")
+                workspaceDir.walkTopDown()
+                    .filter { it.isDirectory }
+                    .filter { dir -> buildPatterns.any { pattern -> dir.name == pattern || dir.name.endsWith(pattern.removePrefix("*.")) } }
+                    .forEach { dirToClean ->
+                        val size = calculateDirectorySize(dirToClean)
+                        dirToClean.deleteRecursively()
+                        totalFreedBytes += size
+                        totalFilesCleaned++
+                        cleanedPaths.add("/workspace/${dirToClean.relativeTo(workspaceDir).path}")
+                    }
+            }
+
+            Log.d(TAG, "[CleanupUpperLayer] Freed ${totalFreedBytes / 1024 / 1024}MB in $totalFilesCleaned directories")
+
+            Result.success(CleanupResult(
+                freedBytes = totalFreedBytes,
+                cleanedCount = totalFilesCleaned,
+                cleanedPaths = cleanedPaths
+            ))
+        } catch (e: Exception) {
+            Log.e(TAG, "[CleanupUpperLayer] Cleanup failed", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 清理结果数据类
+     */
+    data class CleanupResult(
+        val freedBytes: Long,
+        val cleanedCount: Int,
+        val cleanedPaths: List<String>
+    ) {
+        fun formatFreedSize(): String {
+            return when {
+                freedBytes < 1024 -> "$freedBytes B"
+                freedBytes < 1024 * 1024 -> String.format("%.2f KB", freedBytes / 1024.0)
+                freedBytes < 1024 * 1024 * 1024 -> String.format("%.2f MB", freedBytes / (1024.0 * 1024.0))
+                else -> String.format("%.2f GB", freedBytes / (1024.0 * 1024.0 * 1024.0))
+            }
+        }
+    }
+
     private suspend fun extractPRootBinary() = withContext(Dispatchers.IO) {
         val prootBinary = File(prootDir, "proot")
         if (!prootBinary.exists()) {

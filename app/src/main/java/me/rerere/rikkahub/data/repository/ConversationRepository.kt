@@ -19,6 +19,7 @@ import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.rikkahub.sandbox.SandboxEngine
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.deleteChatFiles
 import java.time.Instant
@@ -163,6 +164,8 @@ class ConversationRepository(
             )
         }
         context.deleteChatFiles(fullConversation.files)
+        // 清理沙箱目录
+        SandboxEngine.deleteSandbox(context, fullConversation.id.toString())
     }
 
     suspend fun deleteConversationOfAssistant(assistantId: Uuid) {
