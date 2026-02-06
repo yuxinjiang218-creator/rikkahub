@@ -61,6 +61,10 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("clipboard")
     data object Clipboard : LocalToolOption()
+
+    @Serializable
+    @SerialName("sandbox_file")
+    data object SandboxFile : LocalToolOption()
 }
 
 class LocalTools(
@@ -249,7 +253,7 @@ class LocalTools(
         description = "执行 Python 3.11 代码。预装：numpy、pandas、matplotlib、requests。解压Windows ZIP文件：将反斜杠(\\)转换为正斜杠(/)，解压到指定目录，避免根目录污染。",
         operations = listOf(
             "python_exec" to "执行代码：{code}。定义 'result' 变量返回数据",
-            "matplotlib_plot" to "生成图表：{code}。返回 image_url（格式 file:///path/to/img.png）可直接显示",
+            "matplotlib_plot" to "生成图表：{code}。无需指定保存路径，Matplotlib 自动处理；中文注释时不要指定字体，使用系统默认字体。返回 image_url（格式 file:///path/to/img.png）可直接显示",
             "analyze_code" to "代码分析：{file_path, language, operation}",
             "compile_check" to "语法检查：{file_path, language}"
         ),
@@ -404,65 +408,15 @@ class LocalTools(
     )
     
     /**
-     * 容器运行时 Python 执行工具（PRoot）
-     * 仅当容器运行时启用且就绪时暴露
-     */
-    fun createContainerPythonTool(sandboxId: Uuid): Tool {
-        return Tool(
-            name = "container_python",
-            description = "完整 Linux Python 环境（Alpine），支持 pip install。超时 5 分钟。如 apk 安装失败，先配置 DNS：echo 'nameserver 8.8.8.8' > /etc/resolv.conf",
-            parameters = {
-                InputSchema.Obj(
-                    properties = buildJsonObject {
-                        put("code", buildJsonObject {
-                            put("type", "string")
-                            put("description", "Python 代码")
-                        })
-                        put("packages", buildJsonObject {
-                            put("type", "array")
-                            put("description", "需 pip 安装的包，如 ['requests', 'numpy==1.24.0']")
-                            put("items", buildJsonObject {
-                                put("type", "string")
-                                put("description", "包名，可指定版本如 'numpy==1.24.0'")
-                            })
-                        })
-                    },
-                    required = listOf("code")
-                )
-            },
-            execute = { args ->
-                val code = args.jsonObject["code"]?.jsonPrimitive?.contentOrNull
-                    ?: return@Tool listOf(UIMessagePart.Text(buildJsonObject {
-                        put("success", JsonPrimitive(false))
-                        put("error", JsonPrimitive("Missing required parameter: code"))
-                        put("exitCode", -1)
-                        put("stdout", "")
-                        put("stderr", "")
-                    }.toString()))
-                
-                val packages = args.jsonObject["packages"]?.jsonArray?.mapNotNull { 
-                    it.jsonPrimitive.contentOrNull 
-                } ?: emptyList()
-                
-                // 调用 PRootManager 执行（全局单例，无需创建容器）
-                val result = prootManager.executePython(
-                    sandboxId = sandboxId.toString(),
-                    code = code,
-                    packages = packages
-                )
-                listOf(UIMessagePart.Text(result.toString()))
-            }
-        )
-    }
-    
-    /**
      * 容器运行时 Shell 执行工具（PRoot）
      * 仅当容器运行时启用且就绪时暴露
      */
     fun createContainerShellTool(sandboxId: Uuid): Tool {
         return Tool(
             name = "container_shell",
-            description = "完整 Linux Shell（Alpine），支持 apk、git、wget。超时 5 分钟。如 apk 安装失败，先配置 DNS：echo 'nameserver 8.8.8.8' > /etc/resolv.conf",
+            description = """完整 Linux Shell（Alpine），支持 apk、git、wget。超时 5 分钟。
+如需 Python：apk add python3 py3-pip && python3 -c 'code'
+如 apk 安装失败，先配置 DNS：echo 'nameserver 8.8.8.8' > /etc/resolv.conf""".trimIndent(),
             parameters = {
                 InputSchema.Obj(
                     properties = buildJsonObject {
@@ -620,8 +574,8 @@ class LocalTools(
             tools.add(clipboardTool)
         }
 
-        // ✅ 文件管理工具 - 总是可用（不需要开关）
-        if (sandboxId != null) {
+        // ✅ 文件管理工具 - 需要开关
+        if (sandboxId != null && options.contains(LocalToolOption.SandboxFile)) {
             tools.add(createSandboxFileTool(sandboxId))
         }
 
@@ -635,7 +589,6 @@ class LocalTools(
 
         // ✅ 容器工具（独立开关）
         if (sandboxId != null && options.contains(LocalToolOption.Container) && prootManager.isRunning) {
-            tools.add(createContainerPythonTool(sandboxId))
             tools.add(createContainerShellTool(sandboxId))
         }
 
@@ -688,7 +641,7 @@ class LocalTools(
                 }
                 LocalToolOption.Container -> {
                     if (prootManager.isRunning) {
-                        "Container Tools (2): container_python, container_shell"
+                        "Container Tools (1): container_shell"
                     } else {
                         null // 容器未运行时不显示
                     }
@@ -698,6 +651,7 @@ class LocalTools(
                 LocalToolOption.Clipboard -> "Clipboard Tool"
                 LocalToolOption.WorkflowTodo -> "Workflow TODO"
                 LocalToolOption.SubAgent -> "SubAgent"
+                LocalToolOption.SandboxFile -> "Sandbox File"
             }
         }.joinToString(", ")
     }

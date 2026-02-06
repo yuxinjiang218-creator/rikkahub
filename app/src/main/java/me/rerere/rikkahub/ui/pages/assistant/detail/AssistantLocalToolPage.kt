@@ -131,6 +131,53 @@ fun AssistantLocalToolPage(id: String) {
     }
 }
 
+/**
+ * 文件管理卡片 - 始终可见，无开关
+ * 仅供用户管理沙箱文件，不控制工具是否暴露给AI模型
+ */
+@Composable
+private fun FileManagerCard(
+    assistantId: kotlin.uuid.Uuid
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // 标题和图标
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Lucide.Folder,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "文件管理",
+                    style = MaterialTheme.typography.titleSmall
+                )
+            }
+
+            // 描述
+            Text(
+                text = "管理该助手的所有对话沙箱中的文件。此功能仅供用户管理文件，不影响AI模型对文件工具的访问权限。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // 文件管理界面
+            ConversationSandboxList(assistantId = assistantId)
+        }
+    }
+}
+
 @Composable
 private fun AssistantLocalToolContent(
     modifier: Modifier = Modifier,
@@ -193,6 +240,27 @@ private fun AssistantLocalToolContent(
             }
         )
 
+        // ✅ 文件管理卡片 - 始终可见，无开关，仅供用户管理沙箱文件
+        FileManagerCard(
+            assistantId = assistant.id
+        )
+
+        // ✅ 文件管理工具开关（控制是否暴露给AI模型）
+        LocalToolCard(
+            title = "文件管理工具",
+            description = "允许 AI 访问沙箱文件系统（仅暴露给模型，非文件管理器UI）",
+            icon = Lucide.Folder,
+            isEnabled = assistant.localTools.contains(LocalToolOption.SandboxFile),
+            onToggle = { enabled ->
+                val newLocalTools = if (enabled) {
+                    assistant.localTools + LocalToolOption.SandboxFile
+                } else {
+                    assistant.localTools - LocalToolOption.SandboxFile
+                }
+                onUpdate(assistant.copy(localTools = newLocalTools))
+            }
+        )
+
         // ✅ ChaquoPy工具卡片
         val isChaquoPyEnabled = assistant.localTools.contains(LocalToolOption.ChaquoPy)
         LocalToolCard(
@@ -207,12 +275,7 @@ private fun AssistantLocalToolContent(
                     assistant.localTools - LocalToolOption.ChaquoPy
                 }
                 onUpdate(assistant.copy(localTools = newLocalTools))
-            },
-            content = if (isChaquoPyEnabled) {
-                {
-                    ConversationSandboxList(assistantId = assistant.id)
-                }
-            } else null
+            }
         )
 
         // ✅ 容器工具卡片
@@ -232,11 +295,7 @@ private fun AssistantLocalToolContent(
             },
             content = if (isContainerEnabled) {
                 {
-                    Column {
-                        ContainerStatusCard()
-                        Spacer(modifier = Modifier.height(8.dp))
-                        ConversationSandboxList(assistantId = assistant.id)
-                    }
+                    ContainerStatusCard()
                 }
             } else null
         )
