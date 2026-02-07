@@ -468,9 +468,7 @@ class ChatService(
 
             // 如果启用了沙箱功能，将用户上传的文档文件导入当前对话的沙箱
             val assistant = settings.getCurrentAssistant()
-            val hasSandbox = assistant.localTools.contains(LocalToolOption.SandboxFs) ||
-                             assistant.localTools.contains(LocalToolOption.ChaquoPy) ||
-                             assistant.localTools.contains(LocalToolOption.Container)
+            val hasSandbox = assistant.localTools.contains(LocalToolOption.Container)
             if (hasSandbox) {
                 importDocumentsToSandbox(conversation, conversationId.toString())
             }
@@ -498,10 +496,32 @@ class ChatService(
                 },
                 outputTransformers = outputTransformers,
                 tools = buildList {
+                    // 网络搜索工具（主代理）
                     if (settings.enableWebSearch) {
                         addAll(createSearchTools(settings))
                     }
-                    // 使用 conversationId 作为沙箱 ID，每个对话独立沙箱
+
+                    // 准备MCP工具列表（主代理和子代理共享）
+                    val mcpToolsList = mcpManager.getAllAvailableTools().map { tool ->
+                        Tool(
+                            name = "mcp__" + tool.name,
+                            description = tool.description ?: "",
+                            parameters = { tool.inputSchema },
+                            needsApproval = tool.needsApproval,
+                            execute = {
+                                listOf(
+                                    UIMessagePart.Text(
+                                        mcpManager.callTool(tool.name, it.jsonObject).toString()
+                                    )
+                                )
+                            },
+                        )
+                    }
+
+                    // 添加MCP工具到主代理
+                    addAll(mcpToolsList)
+
+                    // 沙箱工具（主代理和子代理）
                     addAll(localTools.getTools(
                         options = settings.getCurrentAssistant().localTools,
                         sandboxId = conversationId,
@@ -534,25 +554,8 @@ class ChatService(
                         settings = settings,
                         parentModel = model,
                         parentWorkflowPhase = conversation.workflowState?.phase,
-                        mcpTools = emptyList()
+                        mcpTools = mcpToolsList  // ✅ 传递MCP工具给子代理
                     ))
-                    mcpManager.getAllAvailableTools().forEach { tool ->
-                        add(
-                            Tool(
-                                name = "mcp__" + tool.name,
-                                description = tool.description ?: "",
-                                parameters = { tool.inputSchema },
-                                needsApproval = tool.needsApproval,
-                                execute = {
-                                    listOf(
-                                        UIMessagePart.Text(
-                                            mcpManager.callTool(tool.name, it.jsonObject).toString()
-                                        )
-                                    )
-                                },
-                            )
-                        )
-                    }
                 },
                 truncateIndex = conversation.truncateIndex,
                 workflowPhase = conversation.workflowState?.phase,

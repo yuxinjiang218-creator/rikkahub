@@ -13,6 +13,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.tools.LocalTools
+import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.model.Assistant
@@ -82,7 +83,8 @@ class SubAgentExecutor(
                 sandboxId = sandboxId,
                 containerEnabled = containerEnabled,
                 localTools = localTools,
-                mcpTools = mcpTools
+                mcpTools = mcpTools,
+                settings = settings
             )
 
             // 5. 创建临时Assistant配置
@@ -259,9 +261,15 @@ class SubAgentExecutor(
         sandboxId: Uuid,
         containerEnabled: Boolean,
         localTools: LocalTools,
-        mcpTools: List<Tool>
+        mcpTools: List<Tool>,
+        settings: Settings
     ): List<Tool> {
         val tools = mutableListOf<Tool>()
+
+        // 网络搜索工具
+        if (toolSet.enableWebSearch) {
+            tools.addAll(createSearchTools(settings))
+        }
 
         // 沙箱文件操作（所有子代理默认都有）
         if (toolSet.enableSandboxFile) {
@@ -295,15 +303,26 @@ class SubAgentExecutor(
 
         // 容器运行时工具（仅当容器启用且正在运行）
         if (toolSet.enableContainer && containerEnabled) {
-            tools.add(localTools.createContainerPythonTool(sandboxId))
+            // TODO: createContainerPythonTool 方法暂未实现，已通过 shell 工具支持 Python（apk add python3）
+            // tools.add(localTools.createContainerPythonTool(sandboxId))
             tools.add(localTools.createContainerShellTool(sandboxId))
         }
 
-        // MCP工具（过滤允许的）
+        // MCP工具（根据allowedMcpServers过滤）
         if (toolSet.allowedMcpServers.isNotEmpty()) {
-            mcpTools.filter { tool ->
-                true // 简化：允许所有MCP工具
-            }.let { tools.addAll(it) }
+            // 构建允许的服务器ID集合
+            val allowedServerIds = toolSet.allowedMcpServers
+
+            // 从settings中获取每个服务器对应的工具名称
+            val serverToolNames = settings.mcpServers
+                .filter { serverConfig -> serverConfig.id in allowedServerIds }
+                .flatMap { serverConfig -> serverConfig.commonOptions.tools }
+                .map { tool -> "mcp__${tool.name}" }
+                .toSet()
+
+            // 只添加来自允许服务器的工具
+            mcpTools.filter { tool -> tool.name in serverToolNames }
+                .let { tools.addAll(it) }
         }
 
         return tools

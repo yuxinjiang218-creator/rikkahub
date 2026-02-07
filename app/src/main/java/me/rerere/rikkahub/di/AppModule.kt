@@ -10,6 +10,7 @@ import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.AILoggingManager
 import me.rerere.rikkahub.data.ai.subagent.SubAgentExecutor
 import me.rerere.rikkahub.data.ai.tools.LocalTools
+import me.rerere.rikkahub.data.container.BackgroundProcessManager
 import me.rerere.rikkahub.data.container.PRootManager
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.utils.EmojiData
@@ -63,6 +64,10 @@ val appModule = module {
     }
 
     single {
+        BackgroundProcessManager(get(), get())
+    }
+
+    single {
         SubAgentExecutor(get())
     }
 
@@ -70,6 +75,7 @@ val appModule = module {
         LocalTools(
             context = get(),
             prootManager = get(),
+            backgroundProcessManager = get(),
             subAgentExecutor = get()
         )
     }
