@@ -1,0 +1,70 @@
+name: Release Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # 确保 pip 安装完成
+          pip --version
+
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Prepare build files
+        run: |
+          # 解码base64编码的keystore文件
+          echo "${{ secrets.KEY_BASE64 }}" | base64 -d > app/app.key
+
+          # 写入签名配置到local.properties
+          echo "${{ secrets.SIGNING_CONFIG }}" > local.properties
+
+          # 写入Google Services配置
+          echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
+
+      - name: Gradle Build
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: artifacts
+          path: app/build/outputs/apk/release/*.apk
