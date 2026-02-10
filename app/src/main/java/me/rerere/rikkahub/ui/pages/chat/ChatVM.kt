@@ -1,4 +1,4 @@
- package me.rerere.rikkahub.ui.pages.chat
+package me.rerere.rikkahub.ui.pages.chat
 
 import android.app.Application
 import android.content.Context
@@ -30,7 +30,6 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
@@ -432,7 +431,7 @@ class ChatVM(
         )
         chatService.saveConversation(newConversation.id, newConversation)
 
-        // 克隆沙箱环境到新的分支对话
+        // 异步克隆沙箱环境到新的分支对话（fire-and-forget，不阻塞导航）
         // 沙箱目录同时作为 Chaquopy 沙箱和 Linux 容器（PRoot）的 /workspace，
         // 因此克隆一次即可同时覆盖两者。
         val currentAssistant = settings.value.getCurrentAssistant()
@@ -443,7 +442,8 @@ class ChatVM(
             it is LocalToolOption.SandboxFile
         }
         if (hasSandboxTools && SandboxEngine.hasSandboxContent(context, _conversationId.toString())) {
-            withContext(Dispatchers.IO) {
+            // 在后台异步克隆，用户可以立即跳转到新分支对话
+            viewModelScope.launch(Dispatchers.IO) {
                 SandboxEngine.cloneSandbox(
                     context = context,
                     sourceSandboxId = _conversationId.toString(),
