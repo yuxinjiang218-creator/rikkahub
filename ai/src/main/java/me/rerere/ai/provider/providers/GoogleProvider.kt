@@ -71,15 +71,17 @@ import kotlin.uuid.Uuid
 
 private const val TAG = "GoogleProvider"
 
-class GoogleProvider(private val client: OkHttpClient) : Provider<ProviderSetting.Google> {
-    private val keyRoulette = KeyRoulette.default()
+class GoogleProvider(
+    private val client: OkHttpClient,
+    private val keyRoulette: KeyRoulette = KeyRoulette.default()
+) : Provider<ProviderSetting.Google> {
     private val serviceAccountTokenProvider by lazy {
         ServiceAccountTokenProvider(client)
     }
 
     private fun buildUrl(providerSetting: ProviderSetting.Google, path: String): HttpUrl {
         return if (!providerSetting.vertexAI) {
-            val key = keyRoulette.next(providerSetting.apiKey)
+            val key = keyRoulette.next(providerSetting.id.toString(), providerSetting.apiKey)
             "${providerSetting.baseUrl}/$path".toHttpUrl()
                 .newBuilder()
                 .addQueryParameter("key", key)
