@@ -28,12 +28,14 @@ interface SearchService<T : SearchServiceOptions> {
     fun Description()
 
     suspend fun search(
+        context: android.content.Context,
         params: JsonObject,
         commonOptions: SearchCommonOptions,
         serviceOptions: T
     ): Result<SearchResult>
 
     suspend fun scrape(
+        context: android.content.Context,
         params: JsonObject,
         commonOptions: SearchCommonOptions,
         serviceOptions: T
@@ -57,6 +59,7 @@ interface SearchService<T : SearchServiceOptions> {
                 is SearchServiceOptions.JinaOptions -> JinaSearchService
                 is SearchServiceOptions.BochaOptions -> BochaSearchService
                 is SearchServiceOptions.RikkaHubOptions -> RikkaHubSearchService
+                is SearchServiceOptions.RikkaLocalOptions -> RikkaLocalSearchService
             } as SearchService<T>
         }
 
@@ -137,6 +140,7 @@ sealed class SearchServiceOptions {
             FirecrawlOptions::class to "Firecrawl",
             JinaOptions::class to "Jina",
             BochaOptions::class to "博查",
+            RikkaLocalOptions::class to "Rikka内置",
         )
     }
 
@@ -221,6 +225,7 @@ sealed class SearchServiceOptions {
     data class FirecrawlOptions(
         override val id: Uuid = Uuid.random(),
         val apiKey: String = "",
+        val baseUrl: String = "https://api.firecrawl.dev",
     ) : SearchServiceOptions()
 
     @Serializable
@@ -244,6 +249,12 @@ sealed class SearchServiceOptions {
         override val id: Uuid = Uuid.random(),
         val apiKey: String = "",
         val depth: String = "standard",
+    ) : SearchServiceOptions()
+
+    @Serializable
+    @SerialName("rikka_local")
+    data class RikkaLocalOptions(
+        override val id: Uuid = Uuid.random(),
     ) : SearchServiceOptions()
 }
 
