@@ -1,7 +1,8 @@
-package me.rerere.rikkahub.sandbox
+ package me.rerere.rikkahub.sandbox
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.core.content.FileProvider
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
@@ -9,7 +10,13 @@ import com.chaquo.python.android.AndroidPlatform
 import kotlinx.serialization.json.*
 import me.rerere.rikkahub.utils.JsonInstant
 import java.io.File
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.StandardCopyOption
 import java.util.UUID
+
+private const val TAG = "SandboxEngine"
 
 /**
  * RikkaHub 沙箱引擎
@@ -264,6 +271,118 @@ object SandboxEngine {
         } catch (e: Exception) {
             e.printStackTrace()
             false
+        }
+    }
+
+    /**
+     * 克隆沙箱环境到新的沙箱
+     *
+     * 将源沙箱（sourceSandboxId）的所有文件和目录递归复制到目标沙箱（targetSandboxId）。
+     * 这同时覆盖了 Chaquopy 沙箱和 Linux 容器（PRoot）的工作区，因为两者共用
+     * 同一个 per-conversation 目录（sandboxes/$conversationId）。
+     *
+     * 复制时会保留符号链接（作为符号链接复制，而非跟随链接复制内容），
+     * 并保留文件权限。如果目标沙箱已存在，会先清空再复制。
+     *
+     * @param context Android 上下文
+     * @param sourceSandboxId 源沙箱 ID（通常是当前对话的 conversationId）
+     * @param targetSandboxId 目标沙箱 ID（通常是新分支对话的 conversationId）
+     * @return 是否克隆成功
+     */
+    fun cloneSandbox(
+        context: Context,
+        sourceSandboxId: String,
+        targetSandboxId: String
+    ): Boolean {
+        return try {
+            val sourceDir = File(context.filesDir, "sandboxes/$sourceSandboxId")
+            if (!sourceDir.exists() || !sourceDir.isDirectory) {
+                Log.d(TAG, "cloneSandbox: source sandbox does not exist or is empty, skipping clone")
+                return true // 源沙箱不存在不算失败，只是没有内容需要克隆
+            }
+
+            // 检查源沙箱是否有内容
+            val sourceFiles = sourceDir.listFiles()
+            if (sourceFiles == null || sourceFiles.isEmpty()) {
+                Log.d(TAG, "cloneSandbox: source sandbox is empty, skipping clone")
+                return true
+            }
+
+            val targetDir = File(context.filesDir, "sandboxes/$targetSandboxId")
+
+            // 如果目标沙箱已存在，先清空
+            if (targetDir.exists()) {
+                targetDir.deleteRecursively()
+            }
+            targetDir.mkdirs()
+
+            // 递归复制目录，保留符号链接
+            copyDirectoryRecursively(sourceDir, targetDir)
+
+            val sourceSize = calculateDirectorySize(sourceDir)
+            val targetSize = calculateDirectorySize(targetDir)
+            val sourceCount = countFiles(sourceDir)
+            val targetCount = countFiles(targetDir)
+            Log.i(TAG, "cloneSandbox: cloned $sourceSandboxId -> $targetSandboxId " +
+                    "(files: $sourceCount->$targetCount, size: $sourceSize->$targetSize)")
+
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "cloneSandbox: failed to clone $sourceSandboxId -> $targetSandboxId", e)
+            false
+        }
+    }
+
+    /**
+     * 检查指定沙箱是否存在且有内容
+     *
+     * @param context Android 上下文
+     * @param sandboxId 沙箱 ID
+     * @return 沙箱是否存在且非空
+     */
+    fun hasSandboxContent(context: Context, sandboxId: String): Boolean {
+        val sandboxDir = File(context.filesDir, "sandboxes/$sandboxId")
+        if (!sandboxDir.exists() || !sandboxDir.isDirectory) return false
+        val files = sandboxDir.listFiles()
+        return files != null && files.isNotEmpty()
+    }
+
+    /**
+     * 递归复制目录，保留符号链接和文件权限
+     */
+    private fun copyDirectoryRecursively(source: File, target: File) {
+        val sourcePath = source.toPath()
+        val targetPath = target.toPath()
+
+        // 使用 Files.walk 遍历所有文件和目录（不跟随符号链接）
+        Files.walk(sourcePath).use { stream ->
+            stream.forEach { src ->
+                val dst = targetPath.resolve(sourcePath.relativize(src))
+                try {
+                    if (Files.isSymbolicLink(src)) {
+                        // 保留符号链接：读取链接目标并在目标位置创建相同的符号链接
+                        val linkTarget = Files.readSymbolicLink(src)
+                        Files.createDirectories(dst.parent)
+                        try {
+                            Files.createSymbolicLink(dst, linkTarget)
+                        } catch (e: IOException) {
+                            // 如果创建符号链接失败（权限问题等），创建空文件占位
+                            Log.w(TAG, "Failed to create symlink: $dst -> $linkTarget, creating placeholder", e)
+                            Files.createFile(dst)
+                        }
+                    } else if (Files.isDirectory(src, LinkOption.NOFOLLOW_LINKS)) {
+                        // 创建目录
+                        Files.createDirectories(dst)
+                    } else {
+                        // 复制普通文件，保留属性
+                        Files.createDirectories(dst.parent)
+                        Files.copy(src, dst, StandardCopyOption.COPY_ATTRIBUTES)
+                    }
+                } catch (e: Exception) {
+                    // 单个文件复制失败不中断整个克隆过程
+                    Log.w(TAG, "Failed to copy: $src -> $dst", e)
+                }
+            }
         }
     }
     

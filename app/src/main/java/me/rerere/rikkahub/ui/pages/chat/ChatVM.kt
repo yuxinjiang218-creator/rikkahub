@@ -16,6 +16,7 @@ import androidx.paging.cachedIn
 import androidx.paging.insertSeparators
 import androidx.paging.map
 // import com.google.firebase.analytics.FirebaseAnalytics
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,8 +35,10 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.isEmptyInputMessage
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
@@ -43,6 +46,7 @@ import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.sandbox.SandboxEngine
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.ui.hooks.writeStringPreference
@@ -426,6 +430,28 @@ class ChatVM(
             messageNodes = nodes
         )
         chatService.saveConversation(newConversation.id, newConversation)
+
+        // 异步克隆沙箱环境到新的分支对话（fire-and-forget，不阻塞导航）
+        // 沙箱目录同时作为 Chaquopy 沙箱和 Linux 容器（PRoot）的 /workspace，
+        // 因此克隆一次即可同时覆盖两者。
+        val currentAssistant = settings.value.getCurrentAssistant()
+        val hasSandboxTools = currentAssistant.localTools.any {
+            it is LocalToolOption.ChaquoPy ||
+            it is LocalToolOption.Container ||
+            @Suppress("DEPRECATION") it is LocalToolOption.SandboxFs ||
+            it is LocalToolOption.SandboxFile
+        }
+        if (hasSandboxTools && SandboxEngine.hasSandboxContent(context, _conversationId.toString())) {
+            // 在后台异步克隆，用户可以立即跳转到新分支对话
+            viewModelScope.launch(Dispatchers.IO) {
+                SandboxEngine.cloneSandbox(
+                    context = context,
+                    sourceSandboxId = _conversationId.toString(),
+                    targetSandboxId = newConversation.id.toString()
+                )
+            }
+        }
+
         return newConversation
     }
 
