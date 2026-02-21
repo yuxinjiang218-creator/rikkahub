@@ -5,8 +5,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -68,6 +71,7 @@ import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.ui.components.richtext.HighlightCodeBlock
 import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
+import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
 import me.rerere.rikkahub.ui.components.ui.ChainOfThoughtScope
 import me.rerere.rikkahub.ui.components.ui.DotLoading
 import me.rerere.rikkahub.ui.components.ui.Favicon
@@ -115,6 +119,7 @@ private fun getToolIcon(toolName: String, action: String?) = when (toolName) {
         ClipboardActions.WRITE -> Lucide.ClipboardPaste
         else -> Lucide.Clipboard
     }
+
     else -> Lucide.Wrench
 }
 
@@ -143,6 +148,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
     } else {
         null
     }
+    val images = tool.output.filterIsInstance<UIMessagePart.Image>()
 
     val title = when (tool.toolName) {
         ToolNames.MEMORY -> when (memoryAction) {
@@ -164,6 +170,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             ClipboardActions.WRITE -> stringResource(R.string.chat_message_tool_clipboard_write)
             else -> stringResource(R.string.chat_message_tool_call_generic, tool.toolName)
         }
+
         else -> stringResource(R.string.chat_message_tool_call_generic, tool.toolName)
     }
 
@@ -171,11 +178,13 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
     val hasExtraContent = when (tool.toolName) {
         ToolNames.MEMORY -> memoryAction in listOf(MemoryActions.CREATE, MemoryActions.EDIT) &&
             content.getStringContent("content") != null
+
         ToolNames.SEARCH_WEB -> content.getStringContent("answer") != null ||
             (content?.jsonObject?.get("items")?.jsonArray?.isNotEmpty() == true)
+
         ToolNames.SCRAPE_WEB -> arguments.getStringContent("url") != null
         else -> false
-    } || isDenied
+    } || isDenied || images.isNotEmpty()
 
     ControlledChainOfThoughtStep(
         expanded = expanded,
@@ -234,7 +243,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         } else {
             null
         },
-        onClick = if (content != null || isPending) {
+        onClick = if (content != null || isPending || images.isNotEmpty()) {
             { showResult = true }
         } else {
             null
@@ -293,6 +302,22 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
                         )
                     }
+                    if (images.isNotEmpty()) {
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.wrapContentWidth(),
+                        ) {
+                            items(images) { image ->
+                                ZoomableAsyncImage(
+                                    model = image.url,
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .height(64.dp)
+                                        .wrapContentWidth(),
+                                )
+                            }
+                        }
+                    }
                     if (isDenied) {
                         val reason = (tool.approvalState as ToolApprovalState.Denied).reason
                         Text(
@@ -324,6 +349,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             toolName = tool.toolName,
             arguments = arguments,
             content = content,
+            output = tool.output,
             onDismissRequest = { showResult = false }
         )
     }
@@ -334,6 +360,7 @@ private fun ToolCallPreviewSheet(
     toolName: String,
     arguments: JsonElement,
     content: JsonElement?,
+    output: List<UIMessagePart>,
     onDismissRequest: () -> Unit = {}
 ) {
     val navController = LocalNavController.current
@@ -349,38 +376,35 @@ private fun ToolCallPreviewSheet(
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         onDismissRequest = onDismissRequest,
         content = {
-            if (content == null) {
-                // 工具未执行,只显示参数
-                GenericToolPreview(
+            when {
+                content == null -> GenericToolPreview(
                     toolName = toolName,
                     arguments = arguments,
-                    content = null,
+                    output = emptyList(),
                     isMemoryOperation = false,
                     memoryId = null,
                     memoryRepo = memoryRepo,
                     scope = scope,
                     onDismissRequest = onDismissRequest
                 )
-            } else {
-                when (toolName) {
-                    ToolNames.SEARCH_WEB -> SearchWebPreview(
-                        arguments = arguments,
-                        content = content,
-                        navController = navController
-                    )
 
-                    ToolNames.SCRAPE_WEB -> ScrapeWebPreview(content = content)
-                    else -> GenericToolPreview(
-                        toolName = toolName,
-                        arguments = arguments,
-                        content = content,
-                        isMemoryOperation = isMemoryOperation,
-                        memoryId = memoryId,
-                        memoryRepo = memoryRepo,
-                        scope = scope,
-                        onDismissRequest = onDismissRequest
-                    )
-                }
+                toolName == ToolNames.SEARCH_WEB -> SearchWebPreview(
+                    arguments = arguments,
+                    content = content,
+                    navController = navController
+                )
+
+                toolName == ToolNames.SCRAPE_WEB -> ScrapeWebPreview(content = content)
+                else -> GenericToolPreview(
+                    toolName = toolName,
+                    arguments = arguments,
+                    output = output,
+                    isMemoryOperation = isMemoryOperation,
+                    memoryId = memoryId,
+                    memoryRepo = memoryRepo,
+                    scope = scope,
+                    onDismissRequest = onDismissRequest
+                )
             }
         },
     )
@@ -525,7 +549,7 @@ private fun ScrapeWebPreview(content: JsonElement) {
 private fun GenericToolPreview(
     toolName: String,
     arguments: JsonElement,
-    content: JsonElement?,
+    output: List<UIMessagePart>,
     isMemoryOperation: Boolean,
     memoryId: Int?,
     memoryRepo: MemoryRepository,
@@ -577,17 +601,35 @@ private fun GenericToolPreview(
                 style = TextStyle(fontSize = 10.sp, lineHeight = 12.sp)
             )
         }
-        if (content != null) {
+        if (output.isNotEmpty()) {
             FormItem(
                 label = {
                     Text(stringResource(R.string.chat_message_tool_call_result))
                 }
             ) {
-                HighlightCodeBlock(
-                    code = JsonInstantPretty.encodeToString(content),
-                    language = "json",
-                    style = TextStyle(fontSize = 10.sp, lineHeight = 12.sp)
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    output.forEach { part ->
+                        when (part) {
+                            is UIMessagePart.Text -> HighlightCodeBlock(
+                                code = runCatching {
+                                    JsonInstantPretty.encodeToString(
+                                        JsonInstant.parseToJsonElement(part.text)
+                                    )
+                                }.getOrElse { part.text },
+                                language = "json",
+                                style = TextStyle(fontSize = 10.sp, lineHeight = 12.sp)
+                            )
+
+                            is UIMessagePart.Image -> ZoomableAsyncImage(
+                                model = part.url,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+
+                            else -> {}
+                        }
+                    }
+                }
             }
         }
     }
