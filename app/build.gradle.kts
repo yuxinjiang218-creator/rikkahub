@@ -1,4 +1,5 @@
 import com.android.build.api.dsl.Packaging
+import org.gradle.api.GradleException
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import java.io.FileInputStream
@@ -105,7 +106,7 @@ android {
         buildConfig = true
     }
     sourceSets {
-        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+        getByName("androidTest").assets.directories.add("$projectDir/schemas")
     }
     androidResources {
         generateLocaleConfig = true
@@ -139,6 +140,52 @@ composeCompiler {
 tasks.register("buildAll") {
     dependsOn("assembleRelease", "bundleRelease")
     description = "Build both APK and AAB"
+}
+
+val webUiDir = rootProject.file("web-ui")
+val webStaticDir = rootProject.file("web/src/main/resources/static")
+val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+val npmCommand = if (isWindows) "npm.cmd" else "npm"
+val npxCommand = if (isWindows) "npx.cmd" else "npx"
+
+val prepareWebUiDependencies by tasks.registering(Exec::class) {
+    group = "web"
+    description = "Install web-ui dependencies when node_modules is missing."
+    if (!webUiDir.exists()) {
+        throw GradleException("web-ui directory not found: $webUiDir")
+    }
+    workingDir = webUiDir
+    commandLine(npmCommand, "install")
+    onlyIf { !webUiDir.resolve("node_modules").exists() }
+}
+
+val buildWebUiClient by tasks.registering(Exec::class) {
+    group = "web"
+    description = "Build web-ui client assets."
+    dependsOn(prepareWebUiDependencies)
+    workingDir = webUiDir
+    commandLine(npxCommand, "react-router", "build")
+}
+
+val syncWebUiStatic by tasks.registering {
+    group = "web"
+    description = "Copy web-ui build/client into web static resources for Android packaging."
+    dependsOn(buildWebUiClient)
+    doLast {
+        val sourceDir = webUiDir.resolve("build/client")
+        if (!sourceDir.exists()) {
+            throw GradleException("web-ui build output not found: $sourceDir")
+        }
+        if (webStaticDir.exists()) {
+            webStaticDir.deleteRecursively()
+        }
+        sourceDir.copyRecursively(webStaticDir, overwrite = true)
+        println("Synced web static assets: $sourceDir -> $webStaticDir")
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn(syncWebUiStatic)
 }
 
 ksp {

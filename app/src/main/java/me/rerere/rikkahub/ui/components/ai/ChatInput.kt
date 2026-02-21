@@ -1237,7 +1237,16 @@ fun FilePickButton(onAddFiles: (List<UIMessagePart.Document>) -> Unit = {}) {
                     "application/vnd.ms-excel",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     "application/vnd.ms-powerpoint",
-                    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    "application/zip",
+                    "application/x-zip-compressed",
+                    "application/x-tar",
+                    "application/gzip",
+                    "application/x-gzip",
+                    "application/x-7z-compressed",
+                    "application/x-rar-compressed",
+                    "application/x-bzip2",
+                    "application/x-xz"
                 )
 
                 val documents = uris.mapNotNull { uri ->
@@ -1249,6 +1258,14 @@ fun FilePickButton(onAddFiles: (List<UIMessagePart.Document>) -> Unit = {}) {
                         mime.startsWith("text/") ||
                         mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
                         mime == "application/pdf" ||
+                        fileName.endsWith(".zip", ignoreCase = true) ||
+                        fileName.endsWith(".tar", ignoreCase = true) ||
+                        fileName.endsWith(".gz", ignoreCase = true) ||
+                        fileName.endsWith(".tgz", ignoreCase = true) ||
+                        fileName.endsWith(".bz2", ignoreCase = true) ||
+                        fileName.endsWith(".7z", ignoreCase = true) ||
+                        fileName.endsWith(".rar", ignoreCase = true) ||
+                        fileName.endsWith(".xz", ignoreCase = true) ||
                         fileName.endsWith(".txt", ignoreCase = true) ||
                         fileName.endsWith(".md", ignoreCase = true) ||
                         fileName.endsWith(".csv", ignoreCase = true) ||

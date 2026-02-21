@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.jsonObject
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.Tool
@@ -52,6 +53,7 @@ import me.rerere.rikkahub.RouteActivity
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
+import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
@@ -75,6 +77,7 @@ import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
+import me.rerere.rikkahub.sandbox.SandboxEngine
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
 import me.rerere.rikkahub.utils.applyPlaceholders
@@ -449,6 +452,13 @@ class ChatService(
 
             // check invalid messages
             checkInvalidMessages(conversationId)
+
+            // If container tool is enabled, import current user documents into sandbox first.
+            val assistant = settings.getCurrentAssistant()
+            if (assistant.localTools.contains(LocalToolOption.Container)) {
+                importDocumentsToSandbox(conversation, conversationId.toString())
+            }
+
             val availableMcpTools = mcpManager.getAllAvailableTools()
             val mcpWrappedTools = availableMcpTools.map { tool ->
                 Tool(
@@ -589,6 +599,33 @@ class ChatService(
     }
 
     // ---- 检查无效消息 ----
+
+    private suspend fun importDocumentsToSandbox(
+        conversation: Conversation,
+        sandboxId: String
+    ) = withContext(Dispatchers.IO) {
+        val lastUserMessage = conversation.messageNodes
+            .flatMap { it.messages }
+            .filter { it.role == MessageRole.USER }
+            .lastOrNull()
+
+        lastUserMessage?.parts?.filterIsInstance<UIMessagePart.Document>()?.forEach { document ->
+            try {
+                val fileUri = android.net.Uri.parse(document.url)
+                val targetPath = SandboxEngine.importFileToSandbox(
+                    context,
+                    sandboxId,
+                    fileUri,
+                    document.fileName
+                )
+                if (targetPath != null) {
+                    Log.i(TAG, "Imported file to sandbox [$sandboxId]: $targetPath")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to import file to sandbox: ${document.fileName}", e)
+            }
+        }
+    }
 
     private fun checkInvalidMessages(conversationId: Uuid) {
         val conversation = getConversationFlow(conversationId).value
