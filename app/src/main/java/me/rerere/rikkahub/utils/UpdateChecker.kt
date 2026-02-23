@@ -21,7 +21,7 @@ import okhttp3.Request
 private const val GITHUB_OWNER = "yuxinjiang218-creator"
 private const val GITHUB_REPO = "rikkahub"
 private const val API_URL = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
-private val VERSION_REGEX = Regex("""(\d+\.\d+\.\d+)(?:[-_.]?(\d{8,14}))?""")
+private val VERSION_REGEX = Regex("""\d+\.\d+\.\d+""")
 
 class UpdateChecker(private val client: OkHttpClient) {
     private val json = Json { ignoreUnknownKeys = true }
@@ -105,7 +105,7 @@ private data class GithubAsset(
 )
 
 private fun GithubRelease.toUpdateInfo(): UpdateInfo {
-    val version = normalizeVersion(tagName, name)
+    val version = normalizeVersion(tagName, name, BuildConfig.VERSION_NAME)
     val downloads = assets
         .filter { it.name.endsWith(".apk", ignoreCase = true) }
         .map {
@@ -124,17 +124,14 @@ private fun GithubRelease.toUpdateInfo(): UpdateInfo {
     )
 }
 
-private fun normalizeVersion(tagName: String, releaseName: String): String {
-    fun parseVersion(raw: String): String? {
-        val match = VERSION_REGEX.find(raw) ?: return null
-        val core = match.groupValues[1]
-        val build = match.groupValues.getOrNull(2).orEmpty()
-        return if (build.isNotBlank()) "$core.$build" else core
-    }
+internal fun extractSemverCore(raw: String): String? {
+    return VERSION_REGEX.find(raw)?.value
+}
 
-    return parseVersion(tagName)
-        ?: parseVersion(releaseName)
-        ?: BuildConfig.VERSION_NAME
+internal fun normalizeVersion(tagName: String, releaseName: String, fallbackVersion: String): String {
+    return extractSemverCore(tagName)
+        ?: extractSemverCore(releaseName)
+        ?: fallbackVersion
 }
 
 private fun formatSize(bytes: Long): String {

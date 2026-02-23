@@ -2,6 +2,7 @@ package me.rerere.rikkahub.utils
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class VersionTest {
@@ -85,5 +86,29 @@ class VersionTest {
     fun `string extension operators`() {
         assertTrue("1.0.0" < Version("2.0.0"))
         assertTrue(Version("2.0.0") > "1.0.0")
+    }
+
+    @Test
+    fun `extract semver core from prefixed and suffixed tags`() {
+        assertEquals("2.0.2", extractSemverCore("mod-2.0.2-20260223"))
+        assertEquals("2.0.2", extractSemverCore("v2.0.2"))
+        assertEquals("2.0.3", extractSemverCore("release/2.0.3-hotfix1"))
+        assertNull(extractSemverCore("no-version-here"))
+    }
+
+    @Test
+    fun `normalize release version uses semver core only`() {
+        assertEquals(
+            "2.0.2",
+            normalizeVersion("mod-2.0.2-20260223", "RikkaHub Mod 2.0.2 (2026-02-23)", "0.0.0")
+        )
+        assertEquals(
+            "2.0.3",
+            normalizeVersion("invalid", "Release 2.0.3 build 5", "0.0.0")
+        )
+        assertEquals(
+            "2.0.2",
+            normalizeVersion("invalid", "invalid", "2.0.2")
+        )
     }
 }
