@@ -9,6 +9,7 @@ import rehypeRaw from "rehype-raw";
 import { cn } from "~/lib/utils";
 import { getCodePreviewLanguage } from "~/components/workbench/code-preview-language";
 import { useOptionalWorkbench } from "~/components/workbench/workbench-context";
+import { useSettingsStore } from "~/stores";
 import { CodeBlock } from "./code-block";
 import "katex/dist/katex.min.css";
 import "./markdown.css";
@@ -17,7 +18,6 @@ import "streamdown/styles.css";
 // Regex patterns for preprocessing
 const INLINE_LATEX_REGEX = /\\\((.+?)\\\)/g;
 const BLOCK_LATEX_REGEX = /\\\[(.+?)\\\]/gs;
-const THINKING_REGEX = /<think>([\s\S]*?)(?:<\/think>|$)/g;
 const CODE_BLOCK_REGEX = /```[\s\S]*?```|`[^`\n]*`/g;
 
 // Preprocess markdown content
@@ -54,15 +54,6 @@ function preProcess(content: string): string {
     return `$$${group1}$$`;
   });
 
-  // Replace thinking tags with blockquote format
-  result = result.replace(THINKING_REGEX, (_, thinkContent) => {
-    return thinkContent
-      .split("\n")
-      .filter((line: string) => line.trim() !== "")
-      .map((line: string) => `>${line}`)
-      .join("\n");
-  });
-
   return result;
 }
 
@@ -74,6 +65,16 @@ type MarkdownProps = {
   isAnimating?: boolean;
 };
 
+function getNodeText(node: React.ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(getNodeText).join("");
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) {
+    return getNodeText(node.props.children);
+  }
+  return "";
+}
+
 export default function Markdown({
   content,
   className,
@@ -83,6 +84,7 @@ export default function Markdown({
 }: MarkdownProps) {
   const { t } = useTranslation("markdown");
   const workbench = useOptionalWorkbench();
+  const displaySetting = useSettingsStore((state) => state.settings?.displaySetting);
   const processedContent = React.useMemo(() => preProcess(content), [content]);
   const handlePreviewCode = React.useCallback(
     (language: string, code: string) => {
@@ -111,7 +113,7 @@ export default function Markdown({
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex, rehypeRaw]}
         plugins={{ cjk: cjk }}
-        animated={{ animation: "blurIn", sep: 'word', duration: 300 }}
+        animated={{ animation: "fadeIn", sep: 'word', duration: 150 }}
         isAnimating={isAnimating}
         controls={{code: false, mermaid: false}}
         components={{
@@ -127,6 +129,8 @@ export default function Markdown({
                 <CodeBlock
                   language={language}
                   code={code}
+                  showLineNumbers={displaySetting?.showLineNumbers ?? false}
+                  wrapLines={displaySetting?.codeBlockAutoWrap ?? false}
                   onPreview={
                     allowCodePreview && workbench
                       ? () => {
@@ -145,12 +149,12 @@ export default function Markdown({
             );
           },
           a: ({ href, children, ...props }) => {
-            const childText = typeof children === "string" ? children : "";
+            const childText = getNodeText(children).trim();
 
             // Citation format: [citation,domain](id)
             if (childText.startsWith("citation,")) {
               const domain = childText.substring("citation,".length);
-              const id = href || "";
+              const id = (href || "").trim();
 
               if (id.length === 6) {
                 return (
@@ -161,6 +165,21 @@ export default function Markdown({
                   >
                     {domain}
                   </span>
+                );
+              }
+
+              if (href) {
+                return (
+                  <a
+                    className="citation-badge"
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={domain}
+                    {...props}
+                  >
+                    {domain}
+                  </a>
                 );
               }
             }

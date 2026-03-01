@@ -107,7 +107,7 @@ class ClaudeProvider(
         messages: List<UIMessage>,
         params: TextGenerationParams
     ): MessageChunk = withContext(Dispatchers.IO) {
-        val requestBody = buildMessageRequest(messages, params)
+        val requestBody = buildMessageRequest(providerSetting, messages, params)
         val request = Request.Builder()
             .url("${providerSetting.baseUrl}/messages")
             .headers(params.customHeaders.toHeaders())
@@ -135,7 +135,7 @@ class ClaudeProvider(
         val model = bodyJson["model"]?.jsonPrimitive?.contentOrNull ?: ""
         val content = bodyJson["content"]?.jsonArray ?: JsonArray(emptyList())
         val stopReason = bodyJson["stop_reason"]?.jsonPrimitive?.contentOrNull ?: "unknown"
-        val usage = parseTokenUsage(bodyJson["usage"] as? JsonObject)
+        val usage = parseTokenUsage(bodyJson)
 
         MessageChunk(
             id = id,
@@ -157,7 +157,7 @@ class ClaudeProvider(
         messages: List<UIMessage>,
         params: TextGenerationParams
     ): Flow<MessageChunk> = callbackFlow {
-        val requestBody = buildMessageRequest(messages, params, stream = true)
+        val requestBody = buildMessageRequest(providerSetting, messages, params, stream = true)
         val request = Request.Builder()
             .url("${providerSetting.baseUrl}/messages")
             .headers(params.customHeaders.toHeaders())
@@ -185,6 +185,9 @@ class ClaudeProvider(
                 data: String
             ) {
                 Log.d(TAG, "onEvent: type=$type, data=$data")
+                if (data == "[DONE]") {
+                    return
+                }
 
                 val dataJson = json.parseToJsonElement(data).jsonObject
                 val deltaMessage = parseMessage(buildJsonArray {
@@ -197,9 +200,7 @@ class ClaudeProvider(
                         add(deltaObj)
                     }
                 })
-                val tokenUsage = parseTokenUsage(
-                    dataJson["usage"]?.jsonObject ?: dataJson["message"]?.jsonObject?.get("usage")?.jsonObject
-                )
+                val tokenUsage = parseTokenUsage(dataJson)
                 val messageChunk = MessageChunk(
                     id = id ?: "",
                     model = "",
@@ -257,7 +258,7 @@ class ClaudeProvider(
         }
 
         val eventSource = EventSources.createFactory(client)
-                .newEventSource(request, listener)
+            .newEventSource(request, listener)
 
         awaitClose {
             Log.d(TAG, "Closing eventSource")
@@ -266,13 +267,16 @@ class ClaudeProvider(
     }
 
     private fun buildMessageRequest(
+        providerSetting: ProviderSetting.Claude,
         messages: List<UIMessage>,
         params: TextGenerationParams,
         stream: Boolean = false
     ): JsonObject {
+        fun cacheControlEphemeral() = buildJsonObject { put("type", "ephemeral") }
+
         return buildJsonObject {
             put("model", params.model.modelId)
-            put("messages", buildMessages(messages))
+            put("messages", buildMessages(messages, providerSetting.promptCaching))
             put("max_tokens", params.maxTokens ?: 64_000)
 
             if (params.temperature != null && (params.thinkingBudget ?: 0) == 0) put(
@@ -285,12 +289,16 @@ class ClaudeProvider(
 
             // system prompt
             val systemMessage = messages.firstOrNull { it.role == MessageRole.SYSTEM }
-            if (systemMessage != null) {
+            val systemTextParts = systemMessage?.parts?.filterIsInstance<UIMessagePart.Text>().orEmpty()
+            if (systemTextParts.isNotEmpty()) {
                 put("system", buildJsonArray {
-                    systemMessage.parts.filterIsInstance<UIMessagePart.Text>().forEach { part ->
+                    systemTextParts.forEachIndexed { index, part ->
                         add(buildJsonObject {
                             put("type", "text")
                             put("text", part.text)
+                            if (providerSetting.promptCaching && index == systemTextParts.lastIndex) {
+                                put("cache_control", cacheControlEphemeral())
+                            }
                         })
                     }
                 })
@@ -300,11 +308,19 @@ class ClaudeProvider(
             if (params.model.abilities.contains(ModelAbility.REASONING)) {
                 val level = ReasoningLevel.fromBudgetTokens(params.thinkingBudget ?: 0)
                 put("thinking", buildJsonObject {
-                    if (level == ReasoningLevel.OFF) {
-                        put("type", "disabled")
-                    } else {
-                        put("type", "enabled")
-                        if (level != ReasoningLevel.AUTO) put("budget_tokens", params.thinkingBudget ?: 0)
+                    when (level) {
+                        ReasoningLevel.OFF -> {
+                            put("type", "disabled")
+                        }
+
+                        ReasoningLevel.AUTO -> {
+                            put("type", "adaptive")
+                        }
+
+                        else -> {
+                            put("type", "enabled")
+                            put("budget_tokens", params.thinkingBudget ?: 1024)
+                        }
                     }
                 })
             }
@@ -312,11 +328,14 @@ class ClaudeProvider(
             // 处理工具
             if (params.model.abilities.contains(ModelAbility.TOOL) && params.tools.isNotEmpty()) {
                 putJsonArray("tools") {
-                    params.tools.forEach { tool ->
+                    params.tools.forEachIndexed { index, tool ->
                         add(buildJsonObject {
                             put("name", tool.name)
                             put("description", tool.description)
                             put("input_schema", json.encodeToJsonElement(tool.parameters()))
+                            if (providerSetting.promptCaching && index == params.tools.lastIndex) {
+                                put("cache_control", cacheControlEphemeral())
+                            }
                         })
                     }
                 }
@@ -324,7 +343,7 @@ class ClaudeProvider(
         }.mergeCustomBody(params.customBody)
     }
 
-    private fun buildMessages(messages: List<UIMessage>) = buildJsonArray {
+    private fun buildMessages(messages: List<UIMessage>, promptCaching: Boolean) = buildJsonArray {
         messages
             .filter { it.isValidToUpload() && it.role != MessageRole.SYSTEM }
             .forEach { message ->
@@ -334,6 +353,50 @@ class ClaudeProvider(
                     addUserMessage(message)
                 }
             }
+    }.let { messagesArray ->
+        if (!promptCaching) return@let messagesArray
+        insertMessagesCacheControl(messagesArray)
+    }
+
+    /**
+     * 在倒数第二条非 tool_result 的 user message 的最后一个 content block 上插入 cache_control
+     */
+    private fun insertMessagesCacheControl(messages: JsonArray): JsonArray {
+        // 找出所有非 tool_result 的 user message 的索引
+        val realUserIndices = messages.mapIndexedNotNull { index, msg ->
+            val obj = msg.jsonObject
+            if (obj["role"]?.jsonPrimitive?.contentOrNull == "user") {
+                val content = obj["content"]?.jsonArray
+                val isToolResult = content?.any {
+                    it.jsonObject["type"]?.jsonPrimitive?.contentOrNull == "tool_result"
+                } == true
+                if (!isToolResult) index else null
+            } else null
+        }
+
+        // 取倒数第二条
+        val targetIndex = if (realUserIndices.size >= 2) {
+            realUserIndices[realUserIndices.size - 2]
+        } else return messages
+
+        // 在目标 message 的最后一个 content block 上添加 cache_control
+        return JsonArray(messages.mapIndexed { index, msg ->
+            if (index == targetIndex) {
+                val obj = msg.jsonObject
+                val content = obj["content"]?.jsonArray ?: return@mapIndexed msg
+                val newContent = JsonArray(content.mapIndexed { contentIndex, block ->
+                    if (contentIndex == content.lastIndex) {
+                        JsonObject(block.jsonObject + mapOf("cache_control" to buildJsonObject {
+                            put(
+                                "type",
+                                "ephemeral"
+                            )
+                        }))
+                    } else block
+                })
+                JsonObject(obj + mapOf("content" to newContent))
+            } else msg
+        })
     }
 
     private fun JsonArrayBuilder.addAssistantMessage(message: UIMessage) {
@@ -463,7 +526,8 @@ class ClaudeProvider(
                 }
 
                 "redacted_thinking" -> {
-                    error("redacted_thinking detected, not support yet!")
+                    val data = block["data"]?.jsonPrimitiveOrNull?.contentOrNull
+                    println(data)
                 }
 
                 "tool_use" -> {
@@ -500,14 +564,23 @@ class ClaudeProvider(
         )
     }
 
-    private fun parseTokenUsage(jsonObject: JsonObject?): TokenUsage? {
-        if (jsonObject == null) return null
+    private fun parseTokenUsage(bodyJson: JsonObject?): TokenUsage? {
+        if (bodyJson == null) return null
+
+        // 回退到标准 usage 字段
+        val usageJson = bodyJson["usage"]?.jsonObject
+            ?: bodyJson["message"]?.jsonObject?.get("usage")?.jsonObject
+            ?: return null
+        val inputTokens = usageJson["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+        val cachedInputTokens = usageJson["cache_read_input_tokens"]?.jsonPrimitiveOrNull?.intOrNull ?: 0
+        val cachedCreationTokens = usageJson["cache_creation_input_tokens"]?.jsonPrimitiveOrNull?.intOrNull ?: 0
+        val completionTokens = usageJson["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+        val promptTokens = inputTokens + cachedInputTokens + cachedCreationTokens
         return TokenUsage(
-            promptTokens = jsonObject["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
-            completionTokens = jsonObject["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
-            totalTokens = (jsonObject["input_tokens"]?.jsonPrimitive?.intOrNull ?: 0) +
-                (jsonObject["output_tokens"]?.jsonPrimitive?.intOrNull ?: 0),
-            cachedTokens = jsonObject["cache_read_input_tokens"]?.jsonPrimitiveOrNull?.intOrNull ?: 0,
+            promptTokens = promptTokens,
+            completionTokens = completionTokens,
+            totalTokens = promptTokens + completionTokens,
+            cachedTokens = cachedInputTokens,
         )
     }
 }

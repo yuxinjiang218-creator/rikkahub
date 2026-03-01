@@ -7,7 +7,7 @@
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
   <uses-permission android:name="android.permission.WAKE_LOCK" />
   <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
   <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -53,25 +53,28 @@
         <category android:name="android.intent.category.DEFAULT" />
         <data android:mimeType="text/plain" />
       </intent-filter>
+
       <meta-data
-          android:name="android.app.shortcuts"
-          android:resource="@xml/shortcuts" />
+        android:name="android.app.shortcuts"
+        android:resource="@xml/shortcuts" />
     </activity>
 
     <activity
-        android:name=".ui.activity.ShortcutHandlerActivity"
-        android:exported="true"
-        android:theme="@android:style/Theme.Translucent.NoTitleBar">
-        <intent-filter>
-            <action android:name="android.intent.action.VIEW" />
-            <category android:name="android.intent.category.DEFAULT" />
-            <data android:scheme="rikkahub" android:host="shortcut" />
-        </intent-filter>
+      android:name=".ui.activity.ShortcutHandlerActivity"
+      android:exported="true"
+      android:theme="@android:style/Theme.Translucent.NoTitleBar">
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data
+          android:host="shortcut"
+          android:scheme="rikkahub" />
+      </intent-filter>
     </activity>
 
     <activity
       android:name="com.yalantis.ucrop.UCropActivity"
-      android:theme="@style/Theme.AppCompat.Light.NoActionBar"/>
+      android:theme="@style/Theme.AppCompat.Light.NoActionBar" />
 
     <service
       android:name=".service.RikkaHubForegroundService"
@@ -82,7 +85,11 @@
     <service
       android:name=".service.WebServerService"
       android:exported="false"
-      android:foregroundServiceType="dataSync" />
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="local web server for LLM chat UI" />
+    </service>
 
     <provider
       android:name="androidx.core.content.FileProvider"

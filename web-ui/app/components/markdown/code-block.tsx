@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
+import { copyTextToClipboard } from "~/lib/clipboard";
 import { cn } from "~/lib/utils";
 
 const MAX_SHIKI_CODE_LENGTH = 12000;
@@ -49,6 +50,7 @@ type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
   language: string;
   onPreview?: () => void;
   showLineNumbers?: boolean;
+  wrapLines?: boolean;
 };
 
 interface CodeBlockContextType {
@@ -341,10 +343,12 @@ const CodeBlockBody = React.memo(
     className,
     showLineNumbers,
     tokenized,
+    wrapLines,
   }: {
     className?: string;
     showLineNumbers: boolean;
     tokenized: TokenizedCode;
+    wrapLines: boolean;
   }) => {
     const preStyle = React.useMemo(
       () => ({
@@ -357,7 +361,10 @@ const CodeBlockBody = React.memo(
     const keyedLines = React.useMemo(() => addKeysToTokens(tokenized.tokens), [tokenized.tokens]);
 
     return (
-      <pre className={cn("m-0 p-3 text-sm", className)} style={preStyle}>
+      <pre
+        className={cn("m-0 p-3 text-sm", wrapLines ? "whitespace-pre-wrap" : "whitespace-pre", className)}
+        style={preStyle}
+      >
         <code
           className={cn(
             "font-mono leading-relaxed",
@@ -374,6 +381,7 @@ const CodeBlockBody = React.memo(
   (prevProps, nextProps) =>
     prevProps.className === nextProps.className &&
     prevProps.showLineNumbers === nextProps.showLineNumbers &&
+    prevProps.wrapLines === nextProps.wrapLines &&
     prevProps.tokenized === nextProps.tokenized,
 );
 
@@ -418,10 +426,12 @@ export function CodeBlockContent({
   code,
   language,
   showLineNumbers = false,
+  wrapLines = false,
 }: {
   code: string;
   language: BundledLanguage | null;
   showLineNumbers?: boolean;
+  wrapLines?: boolean;
 }) {
   const rawTokens = React.useMemo(() => createRawTokens(code), [code]);
   const shouldHighlight = Boolean(language) && code.length <= MAX_SHIKI_CODE_LENGTH;
@@ -465,11 +475,12 @@ export function CodeBlockContent({
   }, [code, language, rawTokens, shouldHighlight]);
 
   return (
-    <div className="code-block-content relative overflow-auto">
+    <div className={cn("code-block-content relative", wrapLines ? "overflow-y-auto overflow-x-hidden" : "overflow-auto")}>
       <CodeBlockBody
         className="dark:!bg-[var(--shiki-dark-bg)] dark:!text-[var(--shiki-dark)]"
         showLineNumbers={showLineNumbers}
         tokenized={tokenized}
+        wrapLines={wrapLines}
       />
     </div>
   );
@@ -495,17 +506,12 @@ export function CodeBlockCopyButton({
   const { code } = React.useContext(CodeBlockContext);
 
   const copyToClipboard = React.useCallback(async () => {
-    if (typeof window === "undefined" || !navigator?.clipboard?.writeText) {
-      onError?.(new Error(t("code_block.clipboard_not_available")));
-      return;
-    }
-
     if (isCopied) {
       return;
     }
 
     try {
-      await navigator.clipboard.writeText(code);
+      await copyTextToClipboard(code);
       setIsCopied(true);
       onCopy?.();
       timeoutRef.current = window.setTimeout(() => {
@@ -514,7 +520,7 @@ export function CodeBlockCopyButton({
     } catch (error) {
       onError?.(error as Error);
     }
-  }, [code, isCopied, onCopy, onError, t, timeout]);
+  }, [code, isCopied, onCopy, onError, timeout]);
 
   React.useEffect(
     () => () => {
@@ -680,6 +686,7 @@ export function CodeBlock({
   language,
   onPreview,
   showLineNumbers = false,
+  wrapLines = false,
   ...props
 }: CodeBlockProps) {
   const displayLanguage = language || "text";
@@ -704,7 +711,7 @@ export function CodeBlock({
             <CodeBlockCopyButton />
           </CodeBlockActions>
         </CodeBlockHeader>
-        <CodeBlockContent code={code} language={shikiLanguage} showLineNumbers={showLineNumbers} />
+        <CodeBlockContent code={code} language={shikiLanguage} showLineNumbers={showLineNumbers} wrapLines={wrapLines} />
       </CodeBlockContainer>
     </CodeBlockContext.Provider>
   );

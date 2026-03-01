@@ -27,6 +27,7 @@ import type {
   UIMessagePart,
 } from "~/types";
 
+import { copyTextToClipboard } from "~/lib/clipboard";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import {
@@ -178,6 +179,52 @@ function getNerdStats(
   return stats;
 }
 
+function parseToolOutputJson(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // Some models wrap JSON in fenced blocks.
+    const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    if (!fenced) return null;
+    try {
+      return JSON.parse(fenced[1]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function buildCitationUrlMap(parts: UIMessagePart[]): Map<string, string> {
+  const map = new Map<string, string>();
+
+  parts.forEach((part) => {
+    if (part.type !== "tool" || part.toolName !== "search_web") return;
+    const outputText = part.output
+      .filter((outputPart): outputPart is { type: "text"; text: string } => outputPart.type === "text")
+      .map((outputPart) => outputPart.text)
+      .join("\n");
+    const parsed = parseToolOutputJson(outputText);
+    if (!parsed || typeof parsed !== "object") return;
+    const items = (parsed as { items?: unknown }).items;
+    if (!Array.isArray(items)) return;
+
+    items.forEach((item) => {
+      if (!item || typeof item !== "object") return;
+      const id = String((item as { id?: unknown }).id ?? "").trim();
+      const url = String((item as { url?: unknown }).url ?? "").trim();
+      if (!id || !url) return;
+      if (!map.has(id)) {
+        map.set(id, url);
+      }
+    });
+  });
+
+  return map;
+}
+
 const ChatMessageActionsRow = React.memo(({
   node,
   message,
@@ -207,8 +254,13 @@ const ChatMessageActionsRow = React.memo(({
 
   const handleCopy = React.useCallback(async () => {
     const text = buildCopyText(message.parts, t);
-    if (!text || typeof navigator === "undefined" || !navigator.clipboard) return;
-    await navigator.clipboard.writeText(text);
+    if (!text) return;
+
+    try {
+      await copyTextToClipboard(text);
+    } catch {
+      // Ignore copy failures to keep action row interaction uninterrupted.
+    }
   }, [message.parts, t]);
 
   const handleRegenerate = React.useCallback(async () => {
@@ -456,9 +508,22 @@ export const ChatMessage = React.memo(({
   const isUser = message.role === "USER";
   const hasMessageContent = message.parts.some(hasRenderablePart);
   const showActions = isLastMessage ? !loading : hasMessageContent;
+  const citationUrlMap = React.useMemo(() => buildCitationUrlMap(message.parts), [message.parts]);
+  const handleClickCitation = React.useCallback(
+    (citationId: string) => {
+      const url = citationUrlMap.get(citationId.trim());
+      if (!url || typeof window === "undefined") return;
+      window.open(url, "_blank", "noopener,noreferrer");
+    },
+    [citationUrlMap],
+  );
 
   return (
-    <div className={cn("flex flex-col gap-4", isUser ? "items-end" : "items-start")}>
+    <div
+      className={cn("flex flex-col gap-4", isUser ? "items-end" : "items-start")}
+      data-message-role={message.role.toLowerCase()}
+      data-message-loading={loading || undefined}
+    >
       <div className="flex w-full flex-col gap-2">
         <ChatMessageAvatarRow
           message={message}
@@ -470,28 +535,36 @@ export const ChatMessage = React.memo(({
 
         <div className={cn("flex w-full", isUser ? "justify-end" : "justify-start")}>
           <div
+            data-message-bubble
             className={cn(
               "flex flex-col gap-2 text-sm",
               isUser ? "max-w-[85%] rounded-lg bg-muted px-4 py-3" : "w-full",
             )}
           >
-            <MessageParts parts={message.parts} loading={loading} onToolApproval={onToolApproval} />
+            <MessageParts
+              parts={message.parts}
+              loading={loading}
+              onToolApproval={onToolApproval}
+              onClickCitation={handleClickCitation}
+            />
           </div>
         </div>
       </div>
 
       {showActions && (
-        <ChatMessageActionsRow
-          node={node}
-          message={message}
-          loading={loading}
-          alignRight={isUser}
-          onEdit={onEdit}
-          onRegenerate={onRegenerate}
-          onSelectBranch={onSelectBranch}
-          onDelete={onDelete}
-          onFork={onFork}
-        />
+        <div data-message-actions>
+          <ChatMessageActionsRow
+            node={node}
+            message={message}
+            loading={loading}
+            alignRight={isUser}
+            onEdit={onEdit}
+            onRegenerate={onRegenerate}
+            onSelectBranch={onSelectBranch}
+            onDelete={onDelete}
+            onFork={onFork}
+          />
+        </div>
       )}
 
       <ChatMessageAnnotationsRow annotations={message.annotations} alignRight={isUser} />

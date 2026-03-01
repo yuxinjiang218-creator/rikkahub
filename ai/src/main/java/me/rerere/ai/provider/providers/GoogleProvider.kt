@@ -242,9 +242,9 @@ class GoogleProvider(
 
                 try {
                     val jsonData = json.parseToJsonElement(data).jsonObject
-                    if (jsonData["promptFeedback"] != null) {
-                        val reason =
-                            jsonData["promptFeedback"]?.jsonObject?.get("blockReason")?.jsonPrimitiveOrNull?.contentOrNull
+                    val reason = 
+                        jsonData["promptFeedback"]?.jsonObject?.get("blockReason")?.jsonPrimitiveOrNull?.contentOrNull
+                    if (reason != null) {
                         close(RuntimeException("Prompt feedback: $reason"))
                     }
                     val candidates = jsonData["candidates"]?.jsonArray ?: return

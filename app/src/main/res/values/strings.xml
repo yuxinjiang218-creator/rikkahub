@@ -30,6 +30,9 @@
   <string name="assistant_page_add_body">Add Body</string>
   <string name="assistant_page_add_header">Add Header</string>
   <string name="assistant_page_available_variables">"Available variables: "</string>
+  <string name="assistant_page_background_opacity">Background Opacity</string>
+  <string name="assistant_page_background_opacity_desc">Adjust chat background image visibility</string>
+  <string name="assistant_page_background_opacity_value">Opacity: %1$d%%</string>
   <string name="assistant_page_background_set">Background image set</string>
   <string name="assistant_page_balanced">Balanced</string>
   <string name="assistant_page_body_key">Body Key</string>
@@ -518,6 +521,7 @@
   <string name="setting_provider_page_advanced_settings">Advanced Settings</string>
   <string name="setting_provider_page_api_base_url">API Base Url</string>
   <string name="setting_provider_page_api_key">API Key</string>
+  <string name="setting_provider_page_claude_prompt_caching">Prompt caching (cache_control)</string>
   <string name="setting_provider_page_api_path">API Path</string>
   <string name="setting_provider_page_avaliable_models">Avaliable Models</string>
   <string name="setting_provider_page_balance_api_path">Balance API Path</string>
@@ -882,6 +886,20 @@
   <string name="assistant_page_local_tools_tts_desc">Let the AI speak text aloud to you using the device TTS engine</string>
   <string name="setting_display_page_show_thinking_content_title">Show Thinking Content</string>
   <string name="setting_display_page_show_thinking_content_desc">Whether to expand and show the thinking process by default during generation</string>
+  <string name="error_title_send_message">Message send failed</string>
+  <string name="error_title_regenerate_message">Message regeneration failed</string>
+  <string name="error_title_tool_approval">Tool call processing failed</string>
+  <string name="error_title_tool_unavailable">Tool unavailable</string>
+  <string name="error_title_generation">Message generation failed</string>
+  <string name="error_title_generate_title">Auto title generation failed</string>
+  <string name="error_title_translate_message">Message translation failed</string>
+  <string name="error_title_compress_conversation">Conversation compression failed</string>
+  <string name="error_title_operation">Operation failed</string>
+  <string name="setting_mcp_page_import_title">Import MCP Server</string>
+  <string name="setting_mcp_page_import_desc">Paste MCP Server JSON config, supports standard mcpServers format</string>
+  <string name="setting_mcp_page_import_no_valid_config">No valid MCP Server configuration found</string>
+  <string name="setting_mcp_page_import_parse_error">JSON parse failed: %1$s</string>
+  <string name="setting_mcp_page_import_confirm">Import</string>
 </resources>
 
 

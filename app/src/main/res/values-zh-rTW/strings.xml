@@ -30,6 +30,9 @@
   <string name="assistant_page_add_body">添加 Body</string>
   <string name="assistant_page_add_header">添加 Header</string>
   <string name="assistant_page_available_variables">"可用變數: "</string>
+  <string name="assistant_page_background_opacity">背景透明度</string>
+  <string name="assistant_page_background_opacity_desc">調整聊天背景圖片顯示透明度</string>
+  <string name="assistant_page_background_opacity_value">透明度：%1$d%%</string>
   <string name="assistant_page_background_set">已設定背景圖片</string>
   <string name="assistant_page_balanced">平衡</string>
   <string name="assistant_page_body_key">Body Key</string>
@@ -873,5 +876,20 @@
   <string name="assistant_page_local_tools_tts_desc">讓 AI 使用裝置的 TTS 引擎為您朗讀文字</string>
   <string name="setting_display_page_show_thinking_content_title">顯示思考內容</string>
   <string name="setting_display_page_show_thinking_content_desc">是否在生成時預設展開並顯示思考過程</string>
+  <string name="error_title_send_message">訊息傳送失敗</string>
+  <string name="error_title_regenerate_message">訊息重新產生失敗</string>
+  <string name="error_title_tool_approval">工具呼叫處理失敗</string>
+  <string name="error_title_tool_unavailable">工具無法使用</string>
+  <string name="error_title_generation">訊息產生失敗</string>
+  <string name="error_title_generate_title">自動產生標題失敗</string>
+  <string name="error_title_translate_message">訊息翻譯失敗</string>
+  <string name="error_title_compress_conversation">對話壓縮失敗</string>
+  <string name="error_title_operation">操作失敗</string>
+  <string name="setting_provider_page_claude_prompt_caching">提示快取 (cache_control)</string>
+  <string name="setting_mcp_page_import_title">匯入 MCP Server</string>
+  <string name="setting_mcp_page_import_desc">貼上 MCP Server JSON 設定，支援標準 mcpServers 格式</string>
+  <string name="setting_mcp_page_import_no_valid_config">未找到有效的 MCP Server 配置</string>
+  <string name="setting_mcp_page_import_parse_error">JSON 解析失敗：%1$s</string>
+  <string name="setting_mcp_page_import_confirm">匯入</string>
 </resources>
 

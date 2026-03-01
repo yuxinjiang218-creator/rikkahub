@@ -433,6 +433,21 @@ private fun ColumnScope.ProviderConfigureClaude(
         label = { Text(stringResource(id = R.string.setting_provider_page_api_base_url)) },
         modifier = Modifier.fillMaxWidth()
     )
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            stringResource(id = R.string.setting_provider_page_claude_prompt_caching),
+            modifier = Modifier.weight(1f)
+        )
+        Checkbox(
+            checked = provider.promptCaching,
+            onCheckedChange = {
+                onEdit(provider.copy(promptCaching = it))
+            }
+        )
+    }
 }
 
 @Composable
