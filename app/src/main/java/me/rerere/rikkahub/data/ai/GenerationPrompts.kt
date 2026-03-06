@@ -4,6 +4,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.rikkahub.data.model.AssistantMemory
+import me.rerere.rikkahub.data.model.parseRollingSummaryDocument
 import me.rerere.rikkahub.utils.JsonInstantPretty
 
 internal fun buildMemoryPrompt(memories: List<AssistantMemory>) =
@@ -29,25 +30,27 @@ internal fun buildMemoryPrompt(memories: List<AssistantMemory>) =
 
 internal fun buildRollingSummaryPrompt(rollingSummaryJson: String): String {
     if (rollingSummaryJson.isBlank()) return ""
+    val summaryProjection = parseRollingSummaryDocument(rollingSummaryJson).toCurrentViewProjection()
+    if (summaryProjection.isBlank()) return ""
     return buildString {
         appendLine()
         append("**Rolling Summary (Compressed Context)**")
         appendLine()
         append(
-            "This is maintained summary context. Treat it as high-priority background facts, " +
-                "but allow newer user messages to override stale details."
+            "This is maintained compressed context projected from the structured rolling summary. " +
+                "Treat it as high-priority background state, but let newer messages override stale details."
         )
         appendLine()
-        append(rollingSummaryJson)
+        append(summaryProjection)
         appendLine()
     }
 }
 
 internal fun buildRecallMemoryGuidancePrompt(): String = """
     **Historical Memory Retrieval**
-    A tool named `recall_memory(query)` is available for retrieving manually indexed history.
-    Use it sparingly and only when:
-    1) the user explicitly asks to recall prior chats, or
-    2) missing historical context blocks a correct answer.
-    If relevance is uncertain, do not call it.
+    `recall_memory(query, channel, role)` retrieves structured historical memory for this assistant.
+    - Use `channel=current` for still-effective facts, preferences, constraints, tasks, artifacts, and recent compressed context.
+    - Use `channel=history` for old versions, change history, and decision evolution.
+    - Use `role=user|assistant|any` to focus on user-originated, assistant-originated, or all history.
+    If you need the exact original wording after finding relevant history, call `search_source(query, role, candidate_conversation_ids)` and then `read_source(source_ref)`.
 """.trimIndent()

@@ -7,6 +7,7 @@ import me.rerere.rikkahub.data.repository.FilesRepository
 import me.rerere.rikkahub.data.repository.GenMediaRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.repository.MemoryIndexRepository
+import me.rerere.rikkahub.data.repository.SourcePreviewRepository
 import org.koin.dsl.module
 
 val repositoryModule = module {
@@ -19,7 +20,11 @@ val repositoryModule = module {
     }
 
     single {
-        MemoryIndexRepository(get(), get())
+        MemoryIndexRepository(get(), get(), get())
+    }
+
+    single {
+        SourcePreviewRepository(get(), get())
     }
 
     single {

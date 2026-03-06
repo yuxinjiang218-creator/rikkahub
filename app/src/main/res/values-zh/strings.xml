@@ -85,7 +85,7 @@
   <string name="assistant_page_quick_messages">快捷消息</string>
   <string name="assistant_page_quick_messages_desc">配置快捷消息快捷方式</string>
   <string name="assistant_page_recent_chats">参考历史聊天记录</string>
-  <string name="assistant_page_recent_chats_desc">启用后，助手将参考最近的聊天历史记录来提供更有上下文的回应</string>
+  <string name="assistant_page_recent_chats_desc">启用历史记忆检索工具。可检索结构化历史记忆，并在需要时进一步定位和读取原始消息。</string>
   <string name="assistant_page_regex_affecting_scopes">影响范围：</string>
   <string name="assistant_page_regex_desc">定义正则表达式模式，在发送/接收消息前对其进行转换</string>
   <string name="assistant_page_regex_find_regex">查找正则表达式</string>
@@ -749,6 +749,13 @@
   <string name="setting_model_page_compress_model_desc">用于压缩对话历史的模型</string>
   <string name="setting_model_page_compress_prompt_vars">变量：{content}、{target_tokens}、{additional_context}</string>
   <string name="chat_page_compressing">正在压缩...</string>
+  <string name="chat_page_memory_index_updating">正在更新记忆索引...</string>
+  <string name="chat_page_regenerate_compression_title">重新生成压缩内容</string>
+  <string name="chat_page_regenerate_compression_desc">将使用这轮压缩原本的边界重新生成摘要，并同步重建记忆索引。</string>
+  <string name="chat_page_regenerate_compression_action">重新生成</string>
+  <string name="chat_page_compress_no_latest_summary">当前还没有可重新生成的压缩摘要。</string>
+  <string name="memory_index_updated_title">记忆索引已更新</string>
+  <string name="memory_index_updated">自动索引已完成。</string>
   <string name="chat_page_compress_warning">⚠️ 压缩上下文将重置当前对话中的所有消息</string>
   <string name="setting_page_tts_settings">TTS设置</string>
   <string name="setting_display_page_paste_long_text_as_file_title">粘贴长文本为文件</string>

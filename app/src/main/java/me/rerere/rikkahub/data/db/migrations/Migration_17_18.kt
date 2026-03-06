@@ -5,10 +5,39 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 val Migration_17_18 = object : Migration(17, 18) {
     override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("ALTER TABLE conversationentity ADD COLUMN rolling_summary_json TEXT NOT NULL DEFAULT ''")
-        db.execSQL("ALTER TABLE conversationentity ADD COLUMN rolling_summary_token_estimate INTEGER NOT NULL DEFAULT 0")
-        db.execSQL("ALTER TABLE conversationentity ADD COLUMN last_compressed_message_index INTEGER NOT NULL DEFAULT -1")
-        db.execSQL("ALTER TABLE conversationentity ADD COLUMN last_compressed_at INTEGER NOT NULL DEFAULT 0")
+        val conversationColumns = db.getColumnNames("ConversationEntity").toMutableSet()
+
+        // Upstream v17 databases can be missing workflow_state even though they share the same user_version.
+        ensureConversationColumn(
+            db = db,
+            knownColumns = conversationColumns,
+            name = "workflow_state",
+            definition = "TEXT NOT NULL DEFAULT ''"
+        )
+        ensureConversationColumn(
+            db = db,
+            knownColumns = conversationColumns,
+            name = "rolling_summary_json",
+            definition = "TEXT NOT NULL DEFAULT ''"
+        )
+        ensureConversationColumn(
+            db = db,
+            knownColumns = conversationColumns,
+            name = "rolling_summary_token_estimate",
+            definition = "INTEGER NOT NULL DEFAULT 0"
+        )
+        ensureConversationColumn(
+            db = db,
+            knownColumns = conversationColumns,
+            name = "last_compressed_message_index",
+            definition = "INTEGER NOT NULL DEFAULT -1"
+        )
+        ensureConversationColumn(
+            db = db,
+            knownColumns = conversationColumns,
+            name = "last_compressed_at",
+            definition = "INTEGER NOT NULL DEFAULT 0"
+        )
 
         db.execSQL(
             """
@@ -48,5 +77,27 @@ val Migration_17_18 = object : Migration(17, 18) {
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS index_memory_index_chunk_assistant_id_conversation_id ON memory_index_chunk(assistant_id, conversation_id)"
         )
+    }
+}
+
+private fun ensureConversationColumn(
+    db: SupportSQLiteDatabase,
+    knownColumns: MutableSet<String>,
+    name: String,
+    definition: String,
+) {
+    if (knownColumns.contains(name)) return
+    db.execSQL("ALTER TABLE ConversationEntity ADD COLUMN $name $definition")
+    knownColumns += name
+}
+
+private fun SupportSQLiteDatabase.getColumnNames(tableName: String): Set<String> {
+    return query("PRAGMA table_info(`$tableName`)").use { cursor ->
+        val nameIndex = cursor.getColumnIndex("name")
+        buildSet {
+            while (cursor.moveToNext()) {
+                add(cursor.getString(nameIndex))
+            }
+        }
     }
 }

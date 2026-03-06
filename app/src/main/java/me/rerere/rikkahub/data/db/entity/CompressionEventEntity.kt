@@ -30,6 +30,18 @@ data class CompressionEventEntity(
     val boundaryIndex: Int,
     @ColumnInfo("summary_snapshot", defaultValue = "")
     val summarySnapshot: String = "",
+    @ColumnInfo("compress_start_index", defaultValue = "0")
+    val compressStartIndex: Int = 0,
+    @ColumnInfo("compress_end_index", defaultValue = "-1")
+    val compressEndIndex: Int = -1,
+    @ColumnInfo("keep_recent_messages", defaultValue = "0")
+    val keepRecentMessages: Int = 0,
+    @ColumnInfo("trigger", defaultValue = "")
+    val trigger: String = "",
+    @ColumnInfo("additional_prompt", defaultValue = "")
+    val additionalPrompt: String = "",
+    @ColumnInfo("base_summary_json", defaultValue = "")
+    val baseSummaryJson: String = "",
     @ColumnInfo("created_at")
     val createdAt: Long,
 )

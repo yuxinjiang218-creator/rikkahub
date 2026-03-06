@@ -173,6 +173,7 @@ fun ChatInput(
         autoCompressEnabled: Boolean,
         autoCompressTriggerTokens: Int
     ) -> Job,
+    autoCompressionUiState: me.rerere.rikkahub.service.CompressionUiState? = null,
     onCancelClick: () -> Unit,
     onSendClick: () -> Unit,
     onLongSendClick: () -> Unit,
@@ -440,6 +441,19 @@ fun ChatInput(
                 }
             }
         }
+    }
+
+    if (autoCompressionUiState != null) {
+        val progressMessage = when (autoCompressionUiState.phase) {
+            me.rerere.rikkahub.service.CompressionUiPhase.Compressing -> stringResource(R.string.chat_page_compressing)
+            me.rerere.rikkahub.service.CompressionUiPhase.Indexing -> stringResource(R.string.chat_page_memory_index_updating)
+        }
+        CompressContextDialog(
+            mode = CompressContextDialogMode.AutoProgress,
+            onDismiss = {},
+            progressMessage = progressMessage,
+            onCancelProgress = onCancelClick,
+        )
     }
 }
 
@@ -976,13 +990,14 @@ private fun FilesPicker(
     // Compress Context Dialog
     if (showCompressDialog) {
         CompressContextDialog(
+            mode = CompressContextDialogMode.Manual,
             onDismiss = {
                 onShowCompressDialogChange(false)
                 onDismiss()
             },
             initialAutoCompressEnabled = settings.autoCompressEnabled,
             initialAutoCompressTriggerTokens = settings.autoCompressTriggerTokens,
-            onConfirm = { additionalPrompt, keepRecentMessages, autoCompressEnabled, autoCompressTriggerTokens ->
+            onConfirmManual = { additionalPrompt, keepRecentMessages, autoCompressEnabled, autoCompressTriggerTokens ->
                 onCompressContext(
                     additionalPrompt,
                     keepRecentMessages,
@@ -992,6 +1007,7 @@ private fun FilesPicker(
             }
         )
     }
+
 }
 
 @Composable

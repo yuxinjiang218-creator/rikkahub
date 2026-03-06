@@ -32,4 +32,10 @@ data class ConversationEntity(
     val lastCompressedMessageIndex: Int = -1,
     @ColumnInfo("last_compressed_at", defaultValue = "0")
     val lastCompressedAt: Long = 0L,
+    @ColumnInfo("last_index_status", defaultValue = "idle")
+    val lastIndexStatus: String = "idle",
+    @ColumnInfo("last_indexed_at", defaultValue = "0")
+    val lastIndexedAt: Long = 0L,
+    @ColumnInfo("last_index_error", defaultValue = "")
+    val lastIndexError: String = "",
 )

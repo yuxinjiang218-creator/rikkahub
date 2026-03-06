@@ -43,6 +43,7 @@ import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FavoriteRepository
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.service.ChatService
+import me.rerere.rikkahub.service.CompressionUiState
 import me.rerere.rikkahub.ui.hooks.writeStringPreference
 import me.rerere.rikkahub.ui.hooks.ChatInputState
 import me.rerere.rikkahub.utils.UiState
@@ -183,6 +184,10 @@ class ChatVM(
 
     // 错误状�?
     val errors: StateFlow<List<ChatError>> = chatService.errors
+    val compressionUiState: StateFlow<CompressionUiState?> =
+        chatService.getCompressionUiStateFlow(_conversationId)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val compressionScrollEvents: SharedFlow<Pair<Uuid, Long>> = chatService.compressionScrollEvents
 
     fun dismissError(id: Uuid) = chatService.dismissError(id)
 
@@ -366,6 +371,18 @@ class ChatVM(
                     it,
                     conversationId = conversation.id,
                     title = context.getString(R.string.error_title_generate_memory_index)
+                )
+            }
+        }
+    }
+
+    fun regenerateLatestCompression() {
+        viewModelScope.launch {
+            chatService.regenerateLatestCompression(_conversationId).onFailure {
+                chatService.addError(
+                    it,
+                    conversationId = _conversationId,
+                    title = context.getString(R.string.error_title_compress_conversation)
                 )
             }
         }

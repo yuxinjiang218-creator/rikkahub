@@ -94,6 +94,7 @@ val appModule = module {
             conversationRepo = get(),
             memoryRepository = get(),
             memoryIndexRepository = get(),
+            sourcePreviewRepository = get(),
             generationHandler = get(),
             templateTransformer = get(),
             providerManager = get(),

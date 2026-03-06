@@ -7,7 +7,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(
-    tableName = "memory_index_chunk",
+    tableName = "source_preview_chunk",
     foreignKeys = [
         ForeignKey(
             entity = ConversationEntity::class,
@@ -19,28 +19,29 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["assistant_id"]),
         Index(value = ["conversation_id"]),
-        Index(value = ["assistant_id", "conversation_id"])
+        Index(value = ["message_id"]),
+        Index(value = ["assistant_id", "conversation_id"]),
     ]
 )
-data class MemoryIndexChunkEntity(
+data class SourcePreviewChunkEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0L,
     @ColumnInfo("assistant_id")
     val assistantId: String,
     @ColumnInfo("conversation_id")
     val conversationId: String,
-    @ColumnInfo("section_key")
-    val sectionKey: String,
+    @ColumnInfo("message_id")
+    val messageId: String,
+    @ColumnInfo("role")
+    val role: String,
     @ColumnInfo("chunk_order")
     val chunkOrder: Int,
-    @ColumnInfo("content")
-    val content: String,
-    @ColumnInfo("token_estimate")
-    val tokenEstimate: Int,
-    @ColumnInfo("embedding_json")
-    val embeddingJson: String,
-    @ColumnInfo("metadata_json", defaultValue = "{}")
-    val metadataJson: String = "{}",
+    @ColumnInfo("prefix_text")
+    val prefixText: String,
+    @ColumnInfo("search_text")
+    val searchText: String,
+    @ColumnInfo("block_type")
+    val blockType: String,
     @ColumnInfo("updated_at")
     val updatedAt: Long,
 )

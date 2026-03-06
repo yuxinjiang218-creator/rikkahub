@@ -23,6 +23,7 @@ data class Conversation(
     val workflowState: WorkflowState? = null,
     val todoState: TodoState? = null,
     val compressionState: ConversationCompressionState = ConversationCompressionState(),
+    val memoryIndexState: ConversationMemoryIndexState = ConversationMemoryIndexState(),
     val compressionEvents: List<CompressionEvent> = emptyList(),
     @Serializable(with = InstantSerializer::class)
     val createAt: Instant = Instant.now(),
@@ -121,10 +122,24 @@ data class ConversationCompressionState(
 }
 
 @Serializable
+data class ConversationMemoryIndexState(
+    val lastIndexStatus: String = "idle",
+    @Serializable(with = InstantSerializer::class)
+    val lastIndexedAt: Instant = Instant.EPOCH,
+    val lastIndexError: String = "",
+)
+
+@Serializable
 data class CompressionEvent(
     val id: Long = 0L,
     val boundaryIndex: Int,
     val summarySnapshot: String = "",
+    val compressStartIndex: Int = 0,
+    val compressEndIndex: Int = -1,
+    val keepRecentMessages: Int = 0,
+    val trigger: String = "",
+    val additionalPrompt: String = "",
+    val baseSummaryJson: String = "",
     @Serializable(with = InstantSerializer::class)
     val createdAt: Instant = Instant.now()
 )

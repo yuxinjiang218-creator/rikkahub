@@ -33,6 +33,8 @@ import me.rerere.rikkahub.data.db.migrations.Migration_13_14
 import me.rerere.rikkahub.data.db.migrations.Migration_14_15
 import me.rerere.rikkahub.data.db.migrations.Migration_15_16
 import me.rerere.rikkahub.data.db.migrations.Migration_17_18
+import me.rerere.rikkahub.data.db.migrations.Migration_18_19
+import me.rerere.rikkahub.data.db.migrations.Migration_19_20
 import me.rerere.rikkahub.data.db.migrations.Migration_6_7
 import me.rerere.search.SearchService
 import me.rerere.rikkahub.data.sync.S3Sync
@@ -60,7 +62,9 @@ val dataSourceModule = module {
                 Migration_13_14,
                 Migration_14_15,
                 Migration_15_16,
-                Migration_17_18
+                Migration_17_18,
+                Migration_18_19,
+                Migration_19_20
             )
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {
@@ -155,6 +159,10 @@ val dataSourceModule = module {
 
     single {
         get<AppDatabase>().memoryIndexChunkDao()
+    }
+
+    single {
+        get<AppDatabase>().sourcePreviewChunkDao()
     }
 
     single {

@@ -25,6 +25,7 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.CompressionEvent
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.ConversationCompressionState
+import me.rerere.rikkahub.data.model.ConversationMemoryIndexState
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.sandbox.SandboxEngine
 import me.rerere.rikkahub.utils.JsonInstant
@@ -290,6 +291,9 @@ class ConversationRepository(
             rollingSummaryTokenEstimate = conversation.compressionState.rollingSummaryTokenEstimate,
             lastCompressedMessageIndex = conversation.compressionState.lastCompressedMessageIndex,
             lastCompressedAt = conversation.compressionState.updatedAt.toEpochMilli(),
+            lastIndexStatus = conversation.memoryIndexState.lastIndexStatus,
+            lastIndexedAt = conversation.memoryIndexState.lastIndexedAt.toEpochMilli(),
+            lastIndexError = conversation.memoryIndexState.lastIndexError,
         )
     }
 
@@ -316,6 +320,11 @@ class ConversationRepository(
                 lastCompressedMessageIndex = conversationEntity.lastCompressedMessageIndex,
                 updatedAt = Instant.ofEpochMilli(conversationEntity.lastCompressedAt)
             ),
+            memoryIndexState = ConversationMemoryIndexState(
+                lastIndexStatus = conversationEntity.lastIndexStatus,
+                lastIndexedAt = Instant.ofEpochMilli(conversationEntity.lastIndexedAt),
+                lastIndexError = conversationEntity.lastIndexError
+            ),
             compressionEvents = compressionEvents,
         )
     }
@@ -341,6 +350,12 @@ class ConversationRepository(
         conversationId: Uuid,
         boundaryIndex: Int,
         summarySnapshot: String,
+        compressStartIndex: Int,
+        compressEndIndex: Int,
+        keepRecentMessages: Int,
+        trigger: String,
+        additionalPrompt: String,
+        baseSummaryJson: String,
         createdAt: Instant = Instant.now(),
     ): CompressionEvent {
         val id = compressionEventDAO.insert(
@@ -348,6 +363,12 @@ class ConversationRepository(
                 conversationId = conversationId.toString(),
                 boundaryIndex = boundaryIndex,
                 summarySnapshot = summarySnapshot,
+                compressStartIndex = compressStartIndex,
+                compressEndIndex = compressEndIndex,
+                keepRecentMessages = keepRecentMessages,
+                trigger = trigger,
+                additionalPrompt = additionalPrompt,
+                baseSummaryJson = baseSummaryJson,
                 createdAt = createdAt.toEpochMilli()
             )
         )
@@ -355,6 +376,12 @@ class ConversationRepository(
             id = id,
             boundaryIndex = boundaryIndex,
             summarySnapshot = summarySnapshot,
+            compressStartIndex = compressStartIndex,
+            compressEndIndex = compressEndIndex,
+            keepRecentMessages = keepRecentMessages,
+            trigger = trigger,
+            additionalPrompt = additionalPrompt,
+            baseSummaryJson = baseSummaryJson,
             createdAt = createdAt
         )
     }
@@ -421,6 +448,12 @@ class ConversationRepository(
                 id = entity.id,
                 boundaryIndex = entity.boundaryIndex,
                 summarySnapshot = entity.summarySnapshot,
+                compressStartIndex = entity.compressStartIndex,
+                compressEndIndex = entity.compressEndIndex,
+                keepRecentMessages = entity.keepRecentMessages,
+                trigger = entity.trigger,
+                additionalPrompt = entity.additionalPrompt,
+                baseSummaryJson = entity.baseSummaryJson,
                 createdAt = Instant.ofEpochMilli(entity.createdAt)
             )
         }
