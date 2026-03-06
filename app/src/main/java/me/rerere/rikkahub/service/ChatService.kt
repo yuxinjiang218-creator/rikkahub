@@ -13,9 +13,6 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,15 +29,27 @@ import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.EmbeddingGenerationParams
 import me.rerere.ai.provider.ModelAbility
+import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.ai.ui.findKeepStartIndexForVisibleMessages
 import me.rerere.ai.ui.finishReasoning
 import me.rerere.ai.ui.isEmptyInputMessage
 import me.rerere.common.android.Logging
@@ -54,6 +63,7 @@ import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.ai.tools.LocalTools
+import me.rerere.rikkahub.data.ai.tools.buildRecallMemoryTool
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
@@ -67,27 +77,42 @@ import me.rerere.rikkahub.data.ai.transformers.TimeReminderTransformer
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.datastore.getEmbeddingModel
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.memory.buildMemoryIndexChunks
+import me.rerere.rikkahub.data.memory.rankMemoryChunks
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.AssistantAffectScope
+import me.rerere.rikkahub.data.model.MemoryIndexChunk
+import me.rerere.rikkahub.data.model.RecallMemoryChunk
+import me.rerere.rikkahub.data.model.RecallMemoryResult
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.data.repository.MemoryIndexRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.sandbox.SandboxEngine
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
+import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.applyPlaceholders
-import me.rerere.rikkahub.utils.sendNotification
 import me.rerere.rikkahub.utils.cancelNotification
+import me.rerere.rikkahub.utils.sendNotification
 import java.time.Instant
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.max
 import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
+private const val ROLLING_SUMMARY_TARGET_TOKENS = 20_000
+private const val ROLLING_SUMMARY_MAX_TOKENS = 26_000
+private const val RECALL_BM25_TOP_K = 50
+private const val RECALL_VECTOR_RERANK_K = 30
+private const val RECALL_MAX_RETURN_CHUNKS = 5
+private const val RECALL_MAX_INJECT_TOKENS = 2_500
 
 data class ChatError(
     val id: Uuid = Uuid.random(),
@@ -121,6 +146,7 @@ class ChatService(
     private val settingsStore: SettingsStore,
     private val conversationRepo: ConversationRepository,
     private val memoryRepository: MemoryRepository,
+    private val memoryIndexRepository: MemoryIndexRepository,
     private val generationHandler: GenerationHandler,
     private val templateTransformer: TemplateTransformer,
     private val providerManager: ProviderManager,
@@ -445,16 +471,23 @@ class ChatService(
     ) {
         val settings = settingsStore.settingsFlow.first()
         val model = settings.getCurrentChatModel() ?: return
+        var promptCharsForCalibration = 0
 
         runCatching {
-            val conversation = getConversationFlow(conversationId).value
+            var conversation = getConversationFlow(conversationId).value
+            val assistant = settings.getCurrentAssistant()
 
             // reset suggestions
             updateConversation(conversationId, conversation.copy(chatSuggestions = emptyList()))
 
             // memory tool
             if (!model.abilities.contains(ModelAbility.TOOL)) {
-                if (settings.enableWebSearch || mcpManager.getAllAvailableTools().isNotEmpty()) {
+                val toolRequired = settings.enableWebSearch ||
+                    assistant.enableMemory ||
+                    assistant.enableRecentChatsReference ||
+                    assistant.localTools.isNotEmpty() ||
+                    mcpManager.getAllAvailableTools().isNotEmpty()
+                if (toolRequired) {
                     addError(
                         IllegalStateException(context.getString(R.string.tools_warning)),
                         conversationId,
@@ -465,12 +498,69 @@ class ChatService(
 
             // check invalid messages
             checkInvalidMessages(conversationId)
+            conversation = getConversationFlow(conversationId).value
 
             // If container tool is enabled, import current user documents into sandbox first.
-            val assistant = settings.getCurrentAssistant()
             if (assistant.localTools.contains(LocalToolOption.Container)) {
                 importDocumentsToSandbox(conversation, conversationId.toString())
             }
+
+            if (messageRange == null && settings.autoCompressEnabled) {
+                val estimatedPromptTokens = estimatePromptTokenUsage(
+                    conversation = conversation,
+                    charsPerToken = settings.tokenEstimatorCharsPerToken
+                )
+                if (estimatedPromptTokens >= settings.autoCompressTriggerTokens) {
+                    runCatching {
+                        compressConversationInternal(
+                            conversationId = conversationId,
+                            conversation = conversation,
+                            additionalPrompt = "",
+                            keepRecentMessages = 6,
+                            truncateToolOutputs = true,
+                            trigger = "auto-threshold"
+                        )
+                    }.onFailure { error ->
+                        addError(
+                            error,
+                            conversationId = conversationId,
+                            title = context.getString(R.string.error_title_compress_conversation)
+                        )
+                    }
+                    conversation = getConversationFlow(conversationId).value
+                }
+            }
+
+            val messagesForGeneration: List<UIMessage>
+            val generationWriteBackStartIndex: Int
+            val rollingSummaryJsonForGeneration: String
+            if (messageRange != null) {
+                generationWriteBackStartIndex = messageRange.start
+                messagesForGeneration = conversation.currentMessages
+                    .subList(messageRange.start, messageRange.endInclusive + 1)
+                rollingSummaryJsonForGeneration = ""
+            } else {
+                val compressedUntil = conversation.compressionState.lastCompressedMessageIndex
+                    .coerceAtMost(conversation.currentMessages.lastIndex)
+                val hasRollingSummary = conversation.compressionState.hasSummary && compressedUntil >= 0
+                messagesForGeneration = if (hasRollingSummary) {
+                    conversation.currentMessages.drop(compressedUntil + 1).ifEmpty {
+                        conversation.currentMessages.takeLast(1)
+                    }
+                } else {
+                    conversation.currentMessages
+                }
+                generationWriteBackStartIndex = if (hasRollingSummary) {
+                    (conversation.currentMessages.lastIndex - messagesForGeneration.lastIndex).coerceAtLeast(0)
+                } else {
+                    0
+                }
+                rollingSummaryJsonForGeneration = conversation.compressionState.rollingSummaryJson
+            }
+            promptCharsForCalibration = estimatePromptCharCount(
+                messages = messagesForGeneration,
+                rollingSummaryJson = rollingSummaryJsonForGeneration
+            )
 
             val availableMcpTools = mcpManager.getAllAvailableTools()
             val mcpWrappedTools = availableMcpTools.map { tool ->
@@ -493,19 +583,14 @@ class ChatService(
             generationHandler.generateText(
                 settings = settings,
                 model = model,
-                messages = conversation.currentMessages.let {
-                    if (messageRange != null) {
-                        it.subList(messageRange.start, messageRange.endInclusive + 1)
-                    } else {
-                        it
-                    }
-                },
-                assistant = settings.getCurrentAssistant(),
-                memories = if (settings.getCurrentAssistant().useGlobalMemory) {
+                messages = messagesForGeneration,
+                assistant = assistant,
+                memories = if (assistant.useGlobalMemory) {
                     memoryRepository.getGlobalMemories()
                 } else {
-                    memoryRepository.getMemoriesOfAssistant(settings.assistantId.toString())
+                    memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
                 },
+                rollingSummaryJson = rollingSummaryJsonForGeneration,
                 inputTransformers = buildList {
                     addAll(inputTransformers)
                     add(templateTransformer)
@@ -515,9 +600,16 @@ class ChatService(
                     if (settings.enableWebSearch) {
                         addAll(createSearchTools(context, settings))
                     }
+                    if (assistant.enableRecentChatsReference) {
+                        add(
+                            buildRecallMemoryTool(json = JsonInstant) { query ->
+                                recallMemory(assistantId = assistant.id, query = query)
+                            }
+                        )
+                    }
                     addAll(
                         localTools.getTools(
-                            options = settings.getCurrentAssistant().localTools,
+                            options = assistant.localTools,
                             sandboxId = conversationId,
                             workflowStateProvider = {
                                 getConversationFlow(conversationId).value.workflowState
@@ -532,7 +624,7 @@ class ChatService(
                             todoStateProvider = {
                                 val currentConversation = getConversationFlow(conversationId).value
                                 currentConversation.todoState ?: if (
-                                    settings.getCurrentAssistant().localTools.contains(
+                                    assistant.localTools.contains(
                                         me.rerere.rikkahub.data.ai.tools.LocalToolOption.WorkflowTodo
                                     )
                                 ) {
@@ -583,7 +675,10 @@ class ChatService(
                 when (chunk) {
                     is GenerationChunk.Messages -> {
                         val updatedConversation = getConversationFlow(conversationId).value
-                            .updateCurrentMessages(chunk.messages)
+                            .updateCurrentMessages(
+                                messages = chunk.messages,
+                                startIndex = generationWriteBackStartIndex
+                            )
                         updateConversation(conversationId, updatedConversation)
 
                         // 如果应用不在前台，发送 Live Update 通知
@@ -604,6 +699,10 @@ class ChatService(
         }.onSuccess {
             val finalConversation = getConversationFlow(conversationId).value
             saveConversation(conversationId, finalConversation)
+            calibrateTokenEstimator(
+                promptChars = promptCharsForCalibration,
+                actualPromptTokens = finalConversation.currentMessages.lastOrNull()?.usage?.promptTokens ?: 0
+            )
 
             launchWithConversationReference(conversationId) {
                 generateTitle(conversationId, finalConversation)
@@ -688,7 +787,10 @@ class ChatService(
         // 移除无效消息
         messagesNodes = messagesNodes.filter { it.messages.isNotEmpty() }
 
-        updateConversation(conversationId, conversation.copy(messageNodes = messagesNodes))
+        updateConversation(
+            conversationId,
+            normalizeCompressionState(conversation.copy(messageNodes = messagesNodes))
+        )
     }
 
     // ---- 生成标题 ----
@@ -791,103 +893,433 @@ class ChatService(
         }
     }
 
-    // ---- 压缩对话历史 ----
+    // ---- 压缩与记忆索引 ----
 
     suspend fun compressConversation(
         conversationId: Uuid,
         conversation: Conversation,
         additionalPrompt: String,
-        targetTokens: Int,
-        keepRecentMessages: Int = 32,
-        compressType: me.rerere.rikkahub.ui.components.ai.CompressType = me.rerere.rikkahub.ui.components.ai.CompressType.NORMAL
+        keepRecentMessages: Int = 6,
     ): Result<Unit> = runCatching {
+        compressConversationInternal(
+            conversationId = conversationId,
+            conversation = conversation,
+            additionalPrompt = additionalPrompt,
+            keepRecentMessages = keepRecentMessages,
+            truncateToolOutputs = false,
+            trigger = "manual"
+        )
+    }
+
+    suspend fun generateMemoryIndex(conversationId: Uuid): Result<Int> = runCatching {
         val settings = settingsStore.settingsFlow.first()
-
-        val modelId = when (compressType) {
-            me.rerere.rikkahub.ui.components.ai.CompressType.NORMAL -> settings.compressModelId
-            me.rerere.rikkahub.ui.components.ai.CompressType.CODE -> settings.codeCompressModelId
+        val embeddingModel = settings.getEmbeddingModel()
+            ?: throw IllegalStateException(context.getString(R.string.memory_index_embedding_required))
+        if (embeddingModel.type != ModelType.EMBEDDING) {
+            throw IllegalStateException(context.getString(R.string.memory_index_embedding_required))
         }
-        val promptTemplate = when (compressType) {
-            me.rerere.rikkahub.ui.components.ai.CompressType.NORMAL -> settings.compressPrompt
-            me.rerere.rikkahub.ui.components.ai.CompressType.CODE -> settings.codeCompressPrompt
+        val provider = embeddingModel.findProvider(settings.providers)
+            ?: throw IllegalStateException("Embedding provider not found")
+        val providerHandler = providerManager.getProviderByType(provider)
+
+        val conversation = conversationRepo.getConversationById(conversationId)
+            ?: throw IllegalStateException("Conversation not found")
+        val rollingSummaryJson = conversation.compressionState.rollingSummaryJson
+            .takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException(context.getString(R.string.memory_index_missing_summary))
+
+        val chunks = buildMemoryIndexChunks(
+            rollingSummaryJson = rollingSummaryJson,
+            charsPerToken = settings.tokenEstimatorCharsPerToken
+        )
+        if (chunks.isEmpty()) {
+            throw IllegalStateException(context.getString(R.string.memory_index_empty))
         }
 
-        val model = settings.findModelById(modelId)
+        val chunkEmbeddings = mutableListOf<List<Float>>()
+        chunks.chunked(32).forEach { batch ->
+            val embeddingResult = providerHandler.generateEmbedding(
+                providerSetting = provider,
+                params = EmbeddingGenerationParams(
+                    model = embeddingModel,
+                    input = batch.map { it.content },
+                )
+            )
+            chunkEmbeddings += embeddingResult.embeddings
+        }
+        if (chunkEmbeddings.size != chunks.size) {
+            throw IllegalStateException("Embedding result size mismatch")
+        }
+
+        val now = Instant.now()
+        val records = chunks.mapIndexed { index, chunk ->
+            MemoryIndexChunk(
+                assistantId = conversation.assistantId,
+                conversationId = conversation.id,
+                sectionKey = chunk.sectionKey,
+                chunkOrder = chunk.chunkOrder,
+                content = chunk.content,
+                tokenEstimate = chunk.tokenEstimate,
+                embedding = chunkEmbeddings[index],
+                updatedAt = now,
+            )
+        }
+        memoryIndexRepository.replaceConversationChunks(
+            assistantId = conversation.assistantId,
+            conversationId = conversation.id,
+            chunks = records
+        )
+        records.size
+    }
+
+    private suspend fun compressConversationInternal(
+        conversationId: Uuid,
+        conversation: Conversation,
+        additionalPrompt: String,
+        keepRecentMessages: Int,
+        truncateToolOutputs: Boolean,
+        trigger: String,
+    ): Conversation {
+        val settings = settingsStore.settingsFlow.first()
+        val model = settings.findModelById(settings.compressModelId)
             ?: settings.getCurrentChatModel()
             ?: throw IllegalStateException("No model available for compression")
         val provider = model.findProvider(settings.providers)
-            ?: throw IllegalStateException("Provider not found")
-
+            ?: throw IllegalStateException("Compression provider not found")
         val providerHandler = providerManager.getProviderByType(provider)
 
-        val maxMessagesPerChunk = 256
-        val allMessages = conversation.currentMessages
-
-        // Split messages into those to compress and those to keep
-        val messagesToCompress: List<UIMessage>
-        val messagesToKeep: List<UIMessage>
-
-        if (keepRecentMessages > 0 && allMessages.size > keepRecentMessages) {
-            messagesToCompress = allMessages.dropLast(keepRecentMessages)
-            messagesToKeep = allMessages.takeLast(keepRecentMessages)
-        } else if (keepRecentMessages > 0) {
-            // Not enough messages to compress while keeping recent ones
+        val normalizedKeepRecent = keepRecentMessages.coerceAtLeast(0)
+        val keepStartIndex = conversation.currentMessages.findKeepStartIndexForVisibleMessages(normalizedKeepRecent)
+            ?: throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
+        val compressEndIndex = keepStartIndex - 1
+        if (compressEndIndex < 0) {
             throw IllegalStateException(context.getString(R.string.chat_page_compress_not_enough_messages))
-        } else {
-            messagesToCompress = allMessages
-            messagesToKeep = emptyList()
         }
 
-        fun splitMessages(messages: List<UIMessage>): List<List<UIMessage>> {
-            if (messages.size <= maxMessagesPerChunk) return listOf(messages)
-            val mid = messages.size / 2
-            val left = splitMessages(messages.subList(0, mid))
-            val right = splitMessages(messages.subList(mid, messages.size))
-            return left + right
+        val startIndex = (conversation.compressionState.lastCompressedMessageIndex + 1).coerceAtLeast(0)
+        if (startIndex > compressEndIndex) {
+            throw IllegalStateException(context.getString(R.string.chat_page_compress_no_new_messages))
         }
 
-        suspend fun compressMessages(messages: List<UIMessage>): String {
-            val contentToCompress = messages.joinToString("\n\n") { it.summaryAsText() }
-            val prompt = promptTemplate.applyPlaceholders(
-                "content" to contentToCompress,
-                "target_tokens" to targetTokens.toString(),
-                "additional_context" to if (additionalPrompt.isNotBlank()) {
-                    "Additional instructions from user: $additionalPrompt"
-                } else "",
+        val incrementalMessages = conversation.currentMessages
+            .subList(startIndex, compressEndIndex + 1)
+            .joinToString("\n\n") { message ->
+                message.toCompressionText(truncateToolOutputs = truncateToolOutputs)
+            }
+
+        val currentRollingSummary = conversation.compressionState.rollingSummaryJson
+            .ifBlank { "{}" }
+        val additionalContext = buildString {
+            if (additionalPrompt.isNotBlank()) {
+                append("Additional instructions from user: ")
+                append(additionalPrompt)
+                appendLine()
+            }
+            append("Compression trigger: ")
+            append(trigger)
+        }
+
+        fun buildPrompt(extraContext: String = additionalContext): String {
+            return settings.compressPrompt.applyPlaceholders(
+                "rolling_summary_json" to currentRollingSummary,
+                "incremental_messages" to incrementalMessages,
+                "summary_budget_tokens" to ROLLING_SUMMARY_TARGET_TOKENS.toString(),
+                "summary_budget_max_tokens" to ROLLING_SUMMARY_MAX_TOKENS.toString(),
+                "additional_context" to extraContext,
                 "locale" to Locale.getDefault().displayName
             )
+        }
 
+        suspend fun runCompress(prompt: String): String {
             val result = providerHandler.generateText(
                 providerSetting = provider,
                 messages = listOf(UIMessage.user(prompt)),
-                params = TextGenerationParams(
-                    model = model,
-                ),
+                params = TextGenerationParams(model = model),
             )
-
-            return result.choices[0].message?.toText()?.trim()
-                ?: throw IllegalStateException("Failed to generate compressed summary")
-        }
-
-        val compressedSummaries = coroutineScope {
-            splitMessages(messagesToCompress)
-                .map { chunk -> async { compressMessages(chunk) } }
-                .awaitAll()
-        }
-
-        // Create new conversation with compressed history as multiple user messages + kept messages
-        val newMessageNodes = buildList {
-            compressedSummaries.forEach { summary ->
-                add(UIMessage.user(summary).toMessageNode())
+            val summary = result.choices[0].message?.toText()?.trim().orEmpty()
+            if (summary.isBlank()) {
+                throw IllegalStateException("Failed to generate compressed summary")
             }
-            addAll(messagesToKeep.map { it.toMessageNode() })
+            return normalizeRollingSummaryJson(summary)
         }
-        val newConversation = conversation.copy(
-            messageNodes = newMessageNodes,
-            chatSuggestions = emptyList(),
+
+        var nextRollingSummaryJson = runCompress(buildPrompt())
+        var summaryTokenEstimate = estimateTokenCount(
+            text = nextRollingSummaryJson,
+            charsPerToken = settings.tokenEstimatorCharsPerToken
         )
 
-        saveConversation(conversationId, newConversation)
+        if (summaryTokenEstimate > ROLLING_SUMMARY_MAX_TOKENS) {
+            nextRollingSummaryJson = runCompress(
+                buildPrompt(
+                    extraContext = additionalContext +
+                        "\nForce convergence: keep only critical details and stay within token budget."
+                )
+            )
+            summaryTokenEstimate = estimateTokenCount(
+                text = nextRollingSummaryJson,
+                charsPerToken = settings.tokenEstimatorCharsPerToken
+            )
+        }
+
+        val boundaryIndex = (compressEndIndex + 1).coerceIn(0, conversation.messageNodes.size)
+        val event = conversationRepo.addCompressionEvent(
+            conversationId = conversationId,
+            boundaryIndex = boundaryIndex,
+            summarySnapshot = buildSummarySnapshot(nextRollingSummaryJson),
+        )
+
+        val updatedConversation = conversation.copy(
+            compressionState = conversation.compressionState.copy(
+                rollingSummaryJson = nextRollingSummaryJson,
+                rollingSummaryTokenEstimate = summaryTokenEstimate,
+                lastCompressedMessageIndex = compressEndIndex,
+                updatedAt = Instant.now()
+            ),
+            compressionEvents = (conversation.compressionEvents + event).sortedBy { it.createdAt },
+            chatSuggestions = emptyList(),
+        )
+        saveConversation(conversationId, updatedConversation)
+        return updatedConversation
+    }
+
+    private fun normalizeRollingSummaryJson(rawSummary: String): String {
+        val parsed = runCatching {
+            JsonInstant.parseToJsonElement(rawSummary).jsonObject
+        }.getOrElse { JsonObject(emptyMap()) }
+
+        fun normalizeList(element: JsonElement?): List<String> {
+            return when (element) {
+                is JsonArray -> element.mapNotNull { item -> item.jsonPrimitive.contentOrNull }
+                is JsonPrimitive -> listOfNotNull(element.contentOrNull)
+                else -> emptyList()
+            }.map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+        }
+
+        val keys = listOf(
+            "facts",
+            "preferences",
+            "tasks",
+            "decisions",
+            "constraints",
+            "open_questions",
+            "artifacts",
+            "timeline",
+        )
+
+        val normalized = buildJsonObject {
+            keys.forEach { key ->
+                val values = normalizeList(parsed[key])
+                put(
+                    key,
+                    buildJsonArray {
+                        values.forEach { add(JsonPrimitive(it)) }
+                    }
+                )
+            }
+        }
+        return JsonInstant.encodeToString(normalized)
+    }
+
+    private fun buildSummarySnapshot(summaryJson: String): String {
+        val parsed = runCatching {
+            JsonInstant.parseToJsonElement(summaryJson).jsonObject
+        }.getOrNull()
+        if (parsed == null) return summaryJson.take(800)
+
+        val lines = buildList {
+            parsed.forEach { (key, value) ->
+                val items = when (value) {
+                    is JsonArray -> value.mapNotNull { it.jsonPrimitive.contentOrNull }
+                    is JsonPrimitive -> listOfNotNull(value.contentOrNull)
+                    else -> emptyList()
+                }.filter { it.isNotBlank() }
+                if (items.isNotEmpty()) {
+                    add("[$key]")
+                    addAll(items.take(3))
+                }
+            }
+        }
+        return lines.joinToString("\n").take(1600)
+    }
+
+    private fun estimateTokenCount(text: String, charsPerToken: Float): Int {
+        val ratio = charsPerToken.coerceIn(2.0f, 8.0f).toDouble()
+        val value = (text.length / ratio).toInt()
+        return max(1, value)
+    }
+
+    private fun UIMessage.toCompressionText(truncateToolOutputs: Boolean): String {
+        val text = buildString {
+            parts.forEach { part ->
+                when (part) {
+                    is UIMessagePart.Text -> appendLine(part.text)
+                    is UIMessagePart.Reasoning -> appendLine("[reasoning] ${part.reasoning.take(1200)}")
+                    is UIMessagePart.Tool -> {
+                        appendLine("[tool] ${part.toolName}")
+                        appendLine("input: ${part.input.take(1200)}")
+                        val outputText = part.output.joinToString("\n") {
+                            when (it) {
+                                is UIMessagePart.Text -> it.text
+                                else -> it.toString()
+                            }
+                        }
+                        val normalizedOutput = if (truncateToolOutputs) {
+                            outputText.take(outputText.length / 2)
+                        } else {
+                            outputText
+                        }.take(2000)
+                        if (normalizedOutput.isNotBlank()) {
+                            appendLine("output: $normalizedOutput")
+                        }
+                    }
+
+                    else -> Unit
+                }
+            }
+        }.trim()
+        return "[${role.name}] $text".trim()
+    }
+
+    private suspend fun recallMemory(
+        assistantId: Uuid,
+        query: String,
+    ): RecallMemoryResult {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.isBlank()) {
+            return RecallMemoryResult(query = query, returnedCount = 0, chunks = emptyList())
+        }
+
+        val indexedChunks = memoryIndexRepository.getChunksOfAssistant(assistantId)
+        if (indexedChunks.isEmpty()) {
+            return RecallMemoryResult(query = query, returnedCount = 0, chunks = emptyList())
+        }
+
+        val settings = settingsStore.settingsFlow.first()
+        val embeddingModel = settings.getEmbeddingModel()
+            ?: return RecallMemoryResult(query = query, returnedCount = 0, chunks = emptyList())
+        val provider = embeddingModel.findProvider(settings.providers)
+            ?: return RecallMemoryResult(query = query, returnedCount = 0, chunks = emptyList())
+        val providerHandler = providerManager.getProviderByType(provider)
+        val queryEmbedding = providerHandler.generateEmbedding(
+            providerSetting = provider,
+            params = EmbeddingGenerationParams(
+                model = embeddingModel,
+                input = listOf(normalizedQuery)
+            )
+        ).embeddings.firstOrNull()
+            ?: return RecallMemoryResult(query = query, returnedCount = 0, chunks = emptyList())
+
+        val retrievalDocuments = indexedChunks.map { indexed ->
+            buildString {
+                if (indexed.conversationTitle.isNotBlank()) {
+                    appendLine(indexed.conversationTitle)
+                }
+                append(indexed.chunk.content)
+            }
+        }
+        val ranked = rankMemoryChunks(
+            query = normalizedQuery,
+            documents = retrievalDocuments,
+            documentEmbeddings = indexedChunks.map { it.chunk.embedding },
+            queryEmbedding = queryEmbedding,
+            bm25TopK = RECALL_BM25_TOP_K,
+            vectorRerankK = RECALL_VECTOR_RERANK_K
+        ).map { score ->
+            val indexed = indexedChunks[score.docIndex]
+            RecallMemoryChunk(
+                chunkId = indexed.chunk.id,
+                assistantId = indexed.chunk.assistantId,
+                conversationId = indexed.chunk.conversationId,
+                conversationTitle = indexed.conversationTitle,
+                sectionKey = indexed.chunk.sectionKey,
+                content = indexed.chunk.content,
+                bm25Score = score.bm25Score,
+                vectorScore = score.vectorScore,
+                finalScore = score.finalScore,
+                tokenEstimate = indexed.chunk.tokenEstimate,
+                updatedAt = indexed.chunk.updatedAt
+            )
+        }
+
+        val selected = buildList {
+            var usedTokens = 0
+            ranked.forEach { chunk ->
+                if (size >= RECALL_MAX_RETURN_CHUNKS) return@forEach
+                val nextTokens = chunk.tokenEstimate.coerceAtLeast(1)
+                if (usedTokens + nextTokens > RECALL_MAX_INJECT_TOKENS) return@forEach
+                add(chunk)
+                usedTokens += nextTokens
+            }
+        }
+
+        return RecallMemoryResult(
+            query = query,
+            returnedCount = selected.size,
+            chunks = selected
+        )
+    }
+
+    private fun normalizeCompressionState(conversation: Conversation): Conversation {
+        val maxIndex = conversation.messageNodes.lastIndex
+        val normalizedCompressedIndex = conversation.compressionState.lastCompressedMessageIndex
+            .coerceAtLeast(-1)
+            .coerceAtMost(maxIndex)
+        val normalizedEvents = conversation.compressionEvents.map { event ->
+            event.copy(boundaryIndex = event.boundaryIndex.coerceIn(0, conversation.messageNodes.size))
+        }
+        return conversation.copy(
+            compressionState = conversation.compressionState.copy(
+                lastCompressedMessageIndex = normalizedCompressedIndex
+            ),
+            compressionEvents = normalizedEvents,
+        )
+    }
+
+    private fun estimatePromptTokenUsage(
+        conversation: Conversation,
+        charsPerToken: Float,
+    ): Int {
+        val compressedUntil = conversation.compressionState.lastCompressedMessageIndex
+            .coerceAtMost(conversation.currentMessages.lastIndex)
+        val activeMessages = if (conversation.compressionState.hasSummary && compressedUntil >= 0) {
+            conversation.currentMessages.drop(compressedUntil + 1)
+        } else {
+            conversation.currentMessages
+        }
+        val estimatedChars = estimatePromptCharCount(
+            messages = activeMessages,
+            rollingSummaryJson = conversation.compressionState.rollingSummaryJson
+        )
+        val ratio = charsPerToken.coerceIn(2.0f, 8.0f).toDouble()
+        return (estimatedChars / ratio).toInt().coerceAtLeast(1)
+    }
+
+    private fun estimatePromptCharCount(
+        messages: List<UIMessage>,
+        rollingSummaryJson: String,
+    ): Int {
+        val messageChars = messages.sumOf { message ->
+            message.toCompressionText(truncateToolOutputs = false).length
+        }
+        return messageChars + rollingSummaryJson.length
+    }
+
+    private fun calibrateTokenEstimator(
+        promptChars: Int,
+        actualPromptTokens: Int,
+    ) {
+        if (promptChars <= 0 || actualPromptTokens <= 0) return
+        val observed = promptChars.toFloat() / actualPromptTokens.toFloat()
+        val old = settingsStore.settingsFlow.value.tokenEstimatorCharsPerToken
+        val updated = (old * 0.8f + observed * 0.2f).coerceIn(2.0f, 8.0f)
+        appScope.launch {
+            settingsStore.update {
+                it.copy(tokenEstimatorCharsPerToken = updated)
+            }
+        }
     }
 
     // ---- 通知 ----
@@ -1033,7 +1465,7 @@ class ChatService(
             return // 新会话且为空时不保存
         }
 
-        val updatedConversation = conversation.copy()
+        val updatedConversation = normalizeCompressionState(conversation.copy())
         updateConversation(conversationId, updatedConversation)
 
         if (!exists) {

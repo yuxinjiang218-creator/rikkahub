@@ -93,6 +93,7 @@ val appModule = module {
             settingsStore = get(),
             conversationRepo = get(),
             memoryRepository = get(),
+            memoryIndexRepository = get(),
             generationHandler = get(),
             templateTransformer = get(),
             providerManager = get(),

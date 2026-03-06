@@ -59,11 +59,13 @@ import me.rerere.rikkahub.ui.context.Navigator
 import androidx.paging.compose.collectAsLazyPagingItems
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import me.rerere.ai.provider.ModelType
 import me.rerere.hugeicons.stroke.LookTop
 import me.rerere.hugeicons.stroke.TransactionHistory
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.getEmbeddingModel
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationRepository
@@ -121,6 +123,8 @@ fun ChatDrawerContent(
 
     // Menu popup 状态
     var showMenuPopup by remember { mutableStateOf(false) }
+    var showEmbeddingModelRequiredDialog by remember { mutableStateOf(false) }
+    val embeddingModelConfigured = settings.getEmbeddingModel()?.type == ModelType.EMBEDDING
 
     ModalDrawerSheet(
         modifier = Modifier.width(300.dp)
@@ -227,6 +231,13 @@ fun ChatDrawerContent(
                 onMoveToAssistant = {
                     conversationToMove = it
                     showMoveToAssistantSheet = true
+                },
+                onGenerateMemoryIndex = {
+                    if (embeddingModelConfigured) {
+                        vm.generateMemoryIndex(it)
+                    } else {
+                        showEmbeddingModelRequiredDialog = true
+                    }
                 }
             )
 
@@ -351,6 +362,39 @@ fun ChatDrawerContent(
     }
 
     // 昵称编辑对话框
+    if (showEmbeddingModelRequiredDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showEmbeddingModelRequiredDialog = false
+            },
+            title = {
+                Text(stringResource(R.string.error_title_generate_memory_index))
+            },
+            text = {
+                Text(stringResource(R.string.memory_index_embedding_required))
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showEmbeddingModelRequiredDialog = false
+                        navController.navigate(Screen.SettingModels)
+                    }
+                ) {
+                    Text(stringResource(R.string.permission_go_to_settings))
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showEmbeddingModelRequiredDialog = false
+                    }
+                ) {
+                    Text(stringResource(R.string.cancel))
+                }
+            }
+        )
+    }
+
     nicknameEditState.EditStateContent { nickname, onUpdate ->
         AlertDialog(
             onDismissRequest = {

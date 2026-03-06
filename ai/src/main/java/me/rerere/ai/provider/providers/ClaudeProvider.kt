@@ -343,6 +343,9 @@ class ClaudeProvider(
         }.mergeCustomBody(params.customBody)
     }
 
+    // Kept for tests and internal callers that don't care about prompt caching.
+    private fun buildMessages(messages: List<UIMessage>) = buildMessages(messages, promptCaching = false)
+
     private fun buildMessages(messages: List<UIMessage>, promptCaching: Boolean) = buildJsonArray {
         messages
             .filter { it.isValidToUpload() && it.role != MessageRole.SYSTEM }

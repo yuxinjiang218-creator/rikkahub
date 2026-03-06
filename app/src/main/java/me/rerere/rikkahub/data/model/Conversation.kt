@@ -22,6 +22,8 @@ data class Conversation(
     val isPinned: Boolean = false,
     val workflowState: WorkflowState? = null,
     val todoState: TodoState? = null,
+    val compressionState: ConversationCompressionState = ConversationCompressionState(),
+    val compressionEvents: List<CompressionEvent> = emptyList(),
     @Serializable(with = InstantSerializer::class)
     val createAt: Instant = Instant.now(),
     @Serializable(with = InstantSerializer::class)
@@ -52,11 +54,17 @@ data class Conversation(
     }
 
     fun updateCurrentMessages(messages: List<UIMessage>): Conversation {
+        return updateCurrentMessages(messages = messages, startIndex = 0)
+    }
+
+    fun updateCurrentMessages(messages: List<UIMessage>, startIndex: Int): Conversation {
+        require(startIndex >= 0) { "startIndex must be >= 0" }
         val newNodes = this.messageNodes.toMutableList()
 
         messages.forEachIndexed { index, message ->
+            val targetIndex = startIndex + index
             val node = newNodes
-                .getOrElse(index) { message.toMessageNode() }
+                .getOrElse(targetIndex) { message.toMessageNode() }
 
             val newMessages = node.messages.toMutableList()
             var newMessageIndex = node.selectIndex
@@ -73,10 +81,10 @@ data class Conversation(
             )
 
             // 更新newNodes
-            if (index > newNodes.lastIndex) {
+            if (targetIndex > newNodes.lastIndex) {
                 newNodes.add(newNode)
             } else {
-                newNodes[index] = newNode
+                newNodes[targetIndex] = newNode
             }
         }
 
@@ -99,6 +107,27 @@ data class Conversation(
         )
     }
 }
+
+@Serializable
+data class ConversationCompressionState(
+    val rollingSummaryJson: String = "",
+    val rollingSummaryTokenEstimate: Int = 0,
+    val lastCompressedMessageIndex: Int = -1,
+    @Serializable(with = InstantSerializer::class)
+    val updatedAt: Instant = Instant.EPOCH
+) {
+    val hasSummary: Boolean
+        get() = rollingSummaryJson.isNotBlank()
+}
+
+@Serializable
+data class CompressionEvent(
+    val id: Long = 0L,
+    val boundaryIndex: Int,
+    val summarySnapshot: String = "",
+    @Serializable(with = InstantSerializer::class)
+    val createdAt: Instant = Instant.now()
+)
 
 @Serializable
 data class MessageNode(

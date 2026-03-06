@@ -89,6 +89,7 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.getAssistantById
+import me.rerere.rikkahub.data.model.CompressionEvent
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.service.ChatError
@@ -99,6 +100,7 @@ import me.rerere.rikkahub.ui.components.ui.RabbitLoadingIndicator
 import me.rerere.rikkahub.ui.components.ui.Tooltip
 import me.rerere.rikkahub.ui.hooks.ImeLazyListAutoScroller
 import me.rerere.rikkahub.utils.plus
+import me.rerere.rikkahub.utils.toLocalDateTime
 import kotlin.math.roundToInt
 import kotlin.uuid.Uuid
 
@@ -229,6 +231,22 @@ private fun ChatListNormal(
         )
     }
 
+    val normalizedCompressionEvents = remember(conversation.compressionEvents, conversation.messageNodes.size) {
+        conversation.compressionEvents
+            .map { event ->
+                event.copy(boundaryIndex = event.boundaryIndex.coerceIn(0, conversation.messageNodes.size))
+            }
+            .sortedBy { it.createdAt }
+    }
+    val latestCompressionEventId = normalizedCompressionEvents.lastOrNull()?.id
+    var expandedCompressionEventId by rememberSaveable(conversation.id) { mutableStateOf(latestCompressionEventId) }
+    val eventsByBoundary = remember(normalizedCompressionEvents) {
+        normalizedCompressionEvents.groupBy { it.boundaryIndex }
+    }
+    LaunchedEffect(latestCompressionEventId) {
+        expandedCompressionEventId = latestCompressionEventId
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize(),
@@ -275,6 +293,21 @@ private fun ChatListNormal(
                 key = { index, item -> item.id },
             ) { index, node ->
                 Column {
+                    eventsByBoundary[index].orEmpty().forEach { event ->
+                        CompressionBoundaryEvent(
+                            event = event,
+                            latest = event.id == latestCompressionEventId,
+                            expanded = expandedCompressionEventId == event.id,
+                            onToggle = {
+                                expandedCompressionEventId = if (expandedCompressionEventId == event.id) {
+                                    null
+                                } else {
+                                    event.id
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                     ListSelectableItem(
                         key = node.id,
                         onSelectChange = {
@@ -323,6 +356,24 @@ private fun ChatListNormal(
                             lastMessage = index == conversation.messageNodes.lastIndex,
                         )
                     }
+                }
+            }
+
+            eventsByBoundary[conversation.messageNodes.size].orEmpty().forEach { event ->
+                item(key = "compression_event_tail_${event.id}") {
+                    CompressionBoundaryEvent(
+                        event = event,
+                        latest = event.id == latestCompressionEventId,
+                        expanded = expandedCompressionEventId == event.id,
+                        onToggle = {
+                            expandedCompressionEventId = if (expandedCompressionEventId == event.id) {
+                                null
+                            } else {
+                                event.id
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
 
@@ -456,6 +507,77 @@ private fun ChatListNormal(
                     conversation = conversation,
                     onClickSuggestion = onClickSuggestion,
                     modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompressionBoundaryEvent(
+    event: CompressionEvent,
+    latest: Boolean,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier.padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        if (latest) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onToggle() },
+                color = MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.chat_page_compression_boundary_title),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = event.createdAt.toLocalDateTime(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (expanded && event.summarySnapshot.isNotBlank()) {
+                        Text(
+                            text = event.summarySnapshot,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Spacer(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(1.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant)
+                )
+                Text(
+                    text = event.createdAt.toLocalDateTime(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(1.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant)
                 )
             }
         }

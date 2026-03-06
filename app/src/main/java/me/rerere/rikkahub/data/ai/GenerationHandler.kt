@@ -40,7 +40,6 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantMemory
-import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.util.Locale
@@ -60,7 +59,6 @@ class GenerationHandler(
     private val providerManager: ProviderManager,
     private val json: Json,
     private val memoryRepo: MemoryRepository,
-    private val conversationRepo: ConversationRepository,
     private val aiLoggingManager: AILoggingManager,
 ) {
     fun generateText(
@@ -71,6 +69,7 @@ class GenerationHandler(
         outputTransformers: List<OutputMessageTransformer> = emptyList(),
         assistant: Assistant,
         memories: List<AssistantMemory>? = null,
+        rollingSummaryJson: String? = null,
         tools: List<Tool> = emptyList(),
         maxSteps: Int = 256,
     ): Flow<GenerationChunk> = flow {
@@ -145,6 +144,7 @@ class GenerationHandler(
                     provider = provider,
                     tools = toolsInternal,
                     memories = memories ?: emptyList(),
+                    rollingSummaryJson = rollingSummaryJson.orEmpty(),
                     stream = assistant.streamOutput
                 )
                 messages = messages.visualTransforms(
@@ -316,6 +316,7 @@ class GenerationHandler(
         provider: ProviderSetting,
         tools: List<Tool>,
         memories: List<AssistantMemory>,
+        rollingSummaryJson: String,
         stream: Boolean
     ) {
         val internalMessages = buildList {
@@ -330,9 +331,13 @@ class GenerationHandler(
                     appendLine()
                     append(buildMemoryPrompt(memories = memories))
                 }
+                if (rollingSummaryJson.isNotBlank()) {
+                    appendLine()
+                    append(buildRollingSummaryPrompt(rollingSummaryJson))
+                }
                 if (assistant.enableRecentChatsReference) {
                     appendLine()
-                    append(buildRecentChatsPrompt(assistant, conversationRepo))
+                    append(buildRecallMemoryGuidancePrompt())
                 }
 
                 // 工具prompt

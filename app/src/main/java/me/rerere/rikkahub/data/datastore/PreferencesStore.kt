@@ -18,11 +18,11 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.serialization.Serializable
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_COMPRESS_PROMPT
-import me.rerere.rikkahub.data.ai.prompts.DEFAULT_CODE_COMPRESS_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_OCR_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_SUGGESTION_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_TITLE_PROMPT
@@ -88,8 +88,10 @@ class SettingsStore(
         val OCR_PROMPT = stringPreferencesKey("ocr_prompt")
         val COMPRESS_MODEL = stringPreferencesKey("compress_model")
         val COMPRESS_PROMPT = stringPreferencesKey("compress_prompt")
-        val CODE_COMPRESS_MODEL = stringPreferencesKey("code_compress_model")
-        val CODE_COMPRESS_PROMPT = stringPreferencesKey("code_compress_prompt")
+        val EMBEDDING_MODEL = stringPreferencesKey("embedding_model")
+        val AUTO_COMPRESS_ENABLED = booleanPreferencesKey("auto_compress_enabled")
+        val AUTO_COMPRESS_TRIGGER_TOKENS = intPreferencesKey("auto_compress_trigger_tokens")
+        val TOKEN_ESTIMATOR_CHARS_PER_TOKEN = stringPreferencesKey("token_estimator_chars_per_token")
 
         // 提供商
         val PROVIDERS = stringPreferencesKey("providers")
@@ -170,9 +172,10 @@ class SettingsStore(
                 ocrPrompt = preferences[OCR_PROMPT] ?: DEFAULT_OCR_PROMPT,
                 compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) } ?: DEFAULT_AUTO_MODEL_ID,
                 compressPrompt = preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT,
-                codeCompressModelId = preferences[CODE_COMPRESS_MODEL]?.let { Uuid.parse(it) }
-                    ?: DEFAULT_AUTO_MODEL_ID,
-                codeCompressPrompt = preferences[CODE_COMPRESS_PROMPT] ?: DEFAULT_CODE_COMPRESS_PROMPT,
+                embeddingModelId = preferences[EMBEDDING_MODEL]?.takeIf { it.isNotBlank() }?.let { Uuid.parse(it) },
+                autoCompressEnabled = preferences[AUTO_COMPRESS_ENABLED] == true,
+                autoCompressTriggerTokens = preferences[AUTO_COMPRESS_TRIGGER_TOKENS] ?: 12000,
+                tokenEstimatorCharsPerToken = preferences[TOKEN_ESTIMATOR_CHARS_PER_TOKEN]?.toFloatOrNull() ?: 4.0f,
                 assistantId = preferences[SELECT_ASSISTANT]?.let { Uuid.parse(it) }
                     ?: DEFAULT_ASSISTANT_ID,
                 assistantTags = preferences[ASSISTANT_TAGS]?.let {
@@ -338,8 +341,12 @@ class SettingsStore(
             preferences[OCR_PROMPT] = settings.ocrPrompt
             preferences[COMPRESS_MODEL] = settings.compressModelId.toString()
             preferences[COMPRESS_PROMPT] = settings.compressPrompt
-            preferences[CODE_COMPRESS_MODEL] = settings.codeCompressModelId.toString()
-            preferences[CODE_COMPRESS_PROMPT] = settings.codeCompressPrompt
+            settings.embeddingModelId?.let {
+                preferences[EMBEDDING_MODEL] = it.toString()
+            } ?: preferences.remove(EMBEDDING_MODEL)
+            preferences[AUTO_COMPRESS_ENABLED] = settings.autoCompressEnabled
+            preferences[AUTO_COMPRESS_TRIGGER_TOKENS] = settings.autoCompressTriggerTokens.coerceAtLeast(1000)
+            preferences[TOKEN_ESTIMATOR_CHARS_PER_TOKEN] = settings.tokenEstimatorCharsPerToken.toString()
 
             preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
 
@@ -468,8 +475,10 @@ data class Settings(
     val ocrPrompt: String = DEFAULT_OCR_PROMPT,
     val compressModelId: Uuid = Uuid.random(),
     val compressPrompt: String = DEFAULT_COMPRESS_PROMPT,
-    val codeCompressModelId: Uuid = Uuid.random(),
-    val codeCompressPrompt: String = DEFAULT_CODE_COMPRESS_PROMPT,
+    val embeddingModelId: Uuid? = null,
+    val autoCompressEnabled: Boolean = false,
+    val autoCompressTriggerTokens: Int = 12000,
+    val tokenEstimatorCharsPerToken: Float = 4.0f,
     val assistantId: Uuid = DEFAULT_ASSISTANT_ID,
     val providers: List<ProviderSetting> = DEFAULT_PROVIDERS,
     val assistants: List<Assistant> = DEFAULT_ASSISTANTS,
@@ -577,6 +586,12 @@ fun List<ProviderSetting>.findModelById(uuid: Uuid): Model? {
 
 fun Settings.getCurrentChatModel(): Model? {
     return findModelById(this.getCurrentAssistant().chatModelId ?: this.chatModelId)
+}
+
+fun Settings.getEmbeddingModel(): Model? {
+    val modelId = embeddingModelId ?: return null
+    val model = findModelById(modelId) ?: return null
+    return model.takeIf { it.type == ModelType.EMBEDDING }
 }
 
 fun Settings.getCurrentAssistant(): Assistant {

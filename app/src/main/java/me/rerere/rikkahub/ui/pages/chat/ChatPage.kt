@@ -377,8 +377,13 @@ private fun ChatPageContent(
                             )
                         )
                     },
-                    onCompressContext = { additionalPrompt, targetTokens, keepRecentMessages, compressType ->
-                        vm.handleCompressContext(additionalPrompt, targetTokens, keepRecentMessages, compressType)
+                    onCompressContext = { additionalPrompt, keepRecentMessages, autoCompressEnabled, autoCompressTriggerTokens ->
+                        vm.handleCompressContext(
+                            additionalPrompt = additionalPrompt,
+                            keepRecentMessages = keepRecentMessages,
+                            autoCompressEnabled = autoCompressEnabled,
+                            autoCompressTriggerTokens = autoCompressTriggerTokens
+                        )
                     },
                 )
             },

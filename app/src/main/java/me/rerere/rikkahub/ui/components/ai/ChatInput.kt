@@ -167,7 +167,12 @@ fun ChatInput(
     workflowActive: Boolean = false,
     onToggleWorkflow: () -> Unit = {},
     onOpenSandboxFileManager: () -> Unit,
-    onCompressContext: (additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int, compressType: CompressType) -> Job,
+    onCompressContext: (
+        additionalPrompt: String,
+        keepRecentMessages: Int,
+        autoCompressEnabled: Boolean,
+        autoCompressTriggerTokens: Int
+    ) -> Job,
     onCancelClick: () -> Unit,
     onSendClick: () -> Unit,
     onLongSendClick: () -> Unit,
@@ -825,7 +830,12 @@ private fun FilesPicker(
     assistant: Assistant,
     state: ChatInputState,
     onOpenSandboxFileManager: () -> Unit,
-    onCompressContext: (additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int, compressType: CompressType) -> Job,
+    onCompressContext: (
+        additionalPrompt: String,
+        keepRecentMessages: Int,
+        autoCompressEnabled: Boolean,
+        autoCompressTriggerTokens: Int
+    ) -> Job,
     onUpdateAssistant: (Assistant) -> Unit,
     showInjectionSheet: Boolean,
     onShowInjectionSheetChange: (Boolean) -> Unit,
@@ -965,12 +975,22 @@ private fun FilesPicker(
 
     // Compress Context Dialog
     if (showCompressDialog) {
-        CompressContextDialog(onDismiss = {
-            onShowCompressDialogChange(false)
-            onDismiss()
-        }, onConfirm = { additionalPrompt, targetTokens, keepRecentMessages, compressType ->
-            onCompressContext(additionalPrompt, targetTokens, keepRecentMessages, compressType)
-        })
+        CompressContextDialog(
+            onDismiss = {
+                onShowCompressDialogChange(false)
+                onDismiss()
+            },
+            initialAutoCompressEnabled = settings.autoCompressEnabled,
+            initialAutoCompressTriggerTokens = settings.autoCompressTriggerTokens,
+            onConfirm = { additionalPrompt, keepRecentMessages, autoCompressEnabled, autoCompressTriggerTokens ->
+                onCompressContext(
+                    additionalPrompt,
+                    keepRecentMessages,
+                    autoCompressEnabled,
+                    autoCompressTriggerTokens
+                )
+            }
+        )
     }
 }
 

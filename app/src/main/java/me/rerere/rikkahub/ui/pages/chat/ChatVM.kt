@@ -42,7 +42,6 @@ import me.rerere.rikkahub.data.model.NodeFavoriteTarget
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FavoriteRepository
 import me.rerere.rikkahub.service.ChatError
-import me.rerere.rikkahub.ui.components.ai.CompressType
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.ui.hooks.writeStringPreference
 import me.rerere.rikkahub.ui.hooks.ChatInputState
@@ -272,18 +271,22 @@ class ChatVM(
 
     fun handleCompressContext(
         additionalPrompt: String,
-        targetTokens: Int,
         keepRecentMessages: Int,
-        compressType: CompressType = CompressType.NORMAL
+        autoCompressEnabled: Boolean,
+        autoCompressTriggerTokens: Int,
     ): Job {
         return viewModelScope.launch {
+            settingsStore.update {
+                it.copy(
+                    autoCompressEnabled = autoCompressEnabled,
+                    autoCompressTriggerTokens = autoCompressTriggerTokens
+                )
+            }
             chatService.compressConversation(
                 _conversationId,
                 conversation.value,
                 additionalPrompt,
-                targetTokens,
                 keepRecentMessages,
-                compressType
             ).onFailure {
                 chatService.addError(it, title = context.getString(R.string.error_title_compress_conversation))
             }
@@ -353,6 +356,18 @@ class ChatVM(
             val conversationFull = conversationRepo.getConversationById(conversation.id) ?: return@launch
             val updatedConversation = conversationFull.copy(assistantId = targetAssistantId)
             conversationRepo.updateConversation(updatedConversation)
+        }
+    }
+
+    fun generateMemoryIndex(conversation: Conversation) {
+        viewModelScope.launch {
+            chatService.generateMemoryIndex(conversation.id).onFailure {
+                chatService.addError(
+                    it,
+                    conversationId = conversation.id,
+                    title = context.getString(R.string.error_title_generate_memory_index)
+                )
+            }
         }
     }
 

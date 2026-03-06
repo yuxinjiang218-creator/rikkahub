@@ -81,7 +81,8 @@ fun ColumnScope.ConversationList(
     onDelete: (Conversation) -> Unit = {},
     onRegenerateTitle: (Conversation) -> Unit = {},
     onPin: (Conversation) -> Unit = {},
-    onMoveToAssistant: (Conversation) -> Unit = {}
+    onMoveToAssistant: (Conversation) -> Unit = {},
+    onGenerateMemoryIndex: (Conversation) -> Unit = {},
 ) {
     var hasScrolledToCurrent by remember(current.id) { mutableStateOf(false) }
 
@@ -157,6 +158,7 @@ fun ColumnScope.ConversationList(
                         onRegenerateTitle = onRegenerateTitle,
                         onPin = onPin,
                         onMoveToAssistant = onMoveToAssistant,
+                        onGenerateMemoryIndex = onGenerateMemoryIndex,
                         modifier = Modifier.animateItem()
                     )
                 }
@@ -227,6 +229,7 @@ private fun ConversationItem(
     onRegenerateTitle: (Conversation) -> Unit = {},
     onPin: (Conversation) -> Unit = {},
     onMoveToAssistant: (Conversation) -> Unit = {},
+    onGenerateMemoryIndex: (Conversation) -> Unit = {},
     onClick: (Conversation) -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -329,6 +332,19 @@ private fun ConversationItem(
                     },
                     leadingIcon = {
                         Icon(HugeIcons.Forward02, null)
+                    }
+                )
+
+                DropdownMenuItem(
+                    text = {
+                        Text(stringResource(R.string.chat_page_generate_memory_index))
+                    },
+                    onClick = {
+                        onGenerateMemoryIndex(conversation)
+                        showDropdownMenu = false
+                    },
+                    leadingIcon = {
+                        Icon(HugeIcons.Refresh01, null)
                     }
                 )
 
