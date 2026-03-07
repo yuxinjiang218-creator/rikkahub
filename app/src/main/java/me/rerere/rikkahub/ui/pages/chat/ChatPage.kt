@@ -32,8 +32,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -97,6 +99,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
     val currentChatModel by vm.currentChatModel.collectAsStateWithLifecycle()
     val enableWebSearch by vm.enableWebSearch.collectAsStateWithLifecycle()
     val errors by vm.errors.collectAsStateWithLifecycle()
+    val compressionUiState by vm.compressionUiState.collectAsStateWithLifecycle()
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val softwareKeyboardController = LocalSoftwareKeyboardController.current
@@ -120,8 +123,9 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
         windowAdaptiveInfo.width > windowAdaptiveInfo.height && windowAdaptiveInfo.width >= 1100.dp
 
     val inputState = vm.inputState
+    val latestConversation by rememberUpdatedState(conversation)
 
-    // 初始化输入状态（处理传入的 files 和 text 参数）
+    // 初始化输入状态（处理传入�?files �?text 参数�?
     LaunchedEffect(files, text) {
         if (files.isNotEmpty()) {
             val localFiles = filesManager.createChatFilesByContents(files)
@@ -167,6 +171,19 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
         }
     }
 
+    LaunchedEffect(vm, id) {
+        vm.compressionScrollEvents.collect { (conversationId, eventId) ->
+            if (conversationId != id) return@collect
+            var targetIndex: Int? = null
+            repeat(20) {
+                targetIndex = latestConversation.findCompressionScrollIndex(eventId)
+                if (targetIndex != null) return@repeat
+                kotlinx.coroutines.delay(50)
+            }
+            targetIndex?.let { chatListState.animateScrollToItem(it) }
+        }
+    }
+
     when {
         isBigScreen -> {
             PermanentNavigationDrawer(
@@ -191,6 +208,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
                     enableWebSearch = enableWebSearch,
                     currentChatModel = currentChatModel,
                     bigScreen = true,
+                    compressionUiState = compressionUiState,
                     errors = errors,
                     onDismissError = { vm.dismissError(it) },
                     onClearAllErrors = { vm.clearAllErrors() },
@@ -222,6 +240,7 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
                     enableWebSearch = enableWebSearch,
                     currentChatModel = currentChatModel,
                     bigScreen = false,
+                    compressionUiState = compressionUiState,
                     errors = errors,
                     onDismissError = { vm.dismissError(it) },
                     onClearAllErrors = { vm.clearAllErrors() },
@@ -247,6 +266,7 @@ private fun ChatPageContent(
     chatListState: LazyListState,
     enableWebSearch: Boolean,
     currentChatModel: Model?,
+    compressionUiState: me.rerere.rikkahub.service.CompressionUiState?,
     errors: List<ChatError>,
     onDismissError: (Uuid) -> Unit,
     onClearAllErrors: () -> Unit,
@@ -303,6 +323,7 @@ private fun ChatPageContent(
                     conversation = conversation,
                     mcpManager = vm.mcpManager,
                     hazeState = hazeState,
+                    autoCompressionUiState = compressionUiState,
                     onCancelClick = {
                         loadingJob?.cancel()
                     },
@@ -377,8 +398,13 @@ private fun ChatPageContent(
                             )
                         )
                     },
-                    onCompressContext = { additionalPrompt, targetTokens, keepRecentMessages, compressType ->
-                        vm.handleCompressContext(additionalPrompt, targetTokens, keepRecentMessages, compressType)
+                    onCompressContext = { additionalPrompt, keepRecentMessages, autoCompressEnabled, autoCompressTriggerTokens ->
+                        vm.handleCompressContext(
+                            additionalPrompt = additionalPrompt,
+                            keepRecentMessages = keepRecentMessages,
+                            autoCompressEnabled = autoCompressEnabled,
+                            autoCompressTriggerTokens = autoCompressTriggerTokens
+                        )
                     },
                 )
             },
@@ -395,6 +421,7 @@ private fun ChatPageContent(
                 errors = errors,
                 onDismissError = onDismissError,
                 onClearAllErrors = onClearAllErrors,
+                onRegenerateLatestCompression = { vm.regenerateLatestCompression() },
                 onRegenerate = {
                     vm.regenerateAtMessage(it)
                 },
@@ -606,4 +633,21 @@ private fun TopBar(
             }
         )
     }
+}
+
+private fun Conversation.findCompressionScrollIndex(eventId: Long): Int? {
+    val normalizedEvents = compressionEvents
+        .map { event -> event.copy(boundaryIndex = event.boundaryIndex.coerceIn(0, messageNodes.size)) }
+        .sortedBy { it.createdAt }
+    var listIndex = 0
+    for (boundary in 0..messageNodes.size) {
+        normalizedEvents.filter { it.boundaryIndex == boundary }.forEach { event ->
+            if (event.id == eventId) return listIndex
+            listIndex++
+        }
+        if (boundary < messageNodes.size) {
+            listIndex++
+        }
+    }
+    return null
 }

@@ -14,13 +14,18 @@ import kotlinx.coroutines.flow.map
 import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
+import me.rerere.rikkahub.data.db.dao.CompressionEventDAO
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
 import me.rerere.rikkahub.data.db.dao.FavoriteDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
+import me.rerere.rikkahub.data.db.entity.CompressionEventEntity
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.model.CompressionEvent
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.ConversationCompressionState
+import me.rerere.rikkahub.data.model.ConversationMemoryIndexState
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.sandbox.SandboxEngine
 import me.rerere.rikkahub.utils.JsonInstant
@@ -29,6 +34,7 @@ import kotlin.uuid.Uuid
 
 class ConversationRepository(
     private val conversationDAO: ConversationDAO,
+    private val compressionEventDAO: CompressionEventDAO,
     private val messageNodeDAO: MessageNodeDAO,
     private val favoriteDAO: FavoriteDAO,
     private val database: AppDatabase,
@@ -47,7 +53,8 @@ class ConversationRepository(
             limit = limit
         ).map { entity ->
             val nodes = loadMessageNodes(entity.id)
-            conversationEntityToConversation(entity, nodes)
+            val events = loadCompressionEvents(entity.id)
+            conversationEntityToConversation(entity, nodes, events)
         }
     }
 
@@ -197,7 +204,8 @@ class ConversationRepository(
         val entity = conversationDAO.getConversationById(uuid.toString())
         return if (entity != null) {
             val nodes = loadMessageNodes(entity.id)
-            conversationEntityToConversation(entity, nodes)
+            val events = loadCompressionEvents(entity.id)
+            conversationEntityToConversation(entity, nodes, events)
         } else null
     }
 
@@ -240,6 +248,7 @@ class ConversationRepository(
             conversationDAO.delete(
                 conversationToConversationEntity(conversation)
             )
+            compressionEventDAO.deleteByConversation(conversation.id.toString())
         }
         filesManager.deleteChatFiles(fullConversation.files)
         SandboxEngine.deleteSandbox(context, fullConversation.id.toString())
@@ -278,12 +287,20 @@ class ConversationRepository(
             chatSuggestions = JsonInstant.encodeToString(conversation.chatSuggestions),
             isPinned = conversation.isPinned,
             workflowState = conversation.workflowState?.let { JsonInstant.encodeToString(it) } ?: "",
+            rollingSummaryJson = conversation.compressionState.rollingSummaryJson,
+            rollingSummaryTokenEstimate = conversation.compressionState.rollingSummaryTokenEstimate,
+            lastCompressedMessageIndex = conversation.compressionState.lastCompressedMessageIndex,
+            lastCompressedAt = conversation.compressionState.updatedAt.toEpochMilli(),
+            lastIndexStatus = conversation.memoryIndexState.lastIndexStatus,
+            lastIndexedAt = conversation.memoryIndexState.lastIndexedAt.toEpochMilli(),
+            lastIndexError = conversation.memoryIndexState.lastIndexError,
         )
     }
 
     fun conversationEntityToConversation(
         conversationEntity: ConversationEntity,
-        messageNodes: List<MessageNode>
+        messageNodes: List<MessageNode>,
+        compressionEvents: List<CompressionEvent> = emptyList()
     ): Conversation {
         return Conversation(
             id = Uuid.parse(conversationEntity.id),
@@ -297,6 +314,18 @@ class ConversationRepository(
             workflowState = conversationEntity.workflowState.takeIf { it.isNotBlank() }?.let {
                 JsonInstant.decodeFromString(it)
             },
+            compressionState = ConversationCompressionState(
+                rollingSummaryJson = conversationEntity.rollingSummaryJson,
+                rollingSummaryTokenEstimate = conversationEntity.rollingSummaryTokenEstimate,
+                lastCompressedMessageIndex = conversationEntity.lastCompressedMessageIndex,
+                updatedAt = Instant.ofEpochMilli(conversationEntity.lastCompressedAt)
+            ),
+            memoryIndexState = ConversationMemoryIndexState(
+                lastIndexStatus = conversationEntity.lastIndexStatus,
+                lastIndexedAt = Instant.ofEpochMilli(conversationEntity.lastIndexedAt),
+                lastIndexError = conversationEntity.lastIndexError
+            ),
+            compressionEvents = compressionEvents,
         )
     }
 
@@ -315,6 +344,50 @@ class ConversationRepository(
             id = conversationId.toString(),
             isPinned = !(getConversationById(conversationId)?.isPinned ?: false)
         )
+    }
+
+    suspend fun addCompressionEvent(
+        conversationId: Uuid,
+        boundaryIndex: Int,
+        summarySnapshot: String,
+        compressStartIndex: Int,
+        compressEndIndex: Int,
+        keepRecentMessages: Int,
+        trigger: String,
+        additionalPrompt: String,
+        baseSummaryJson: String,
+        createdAt: Instant = Instant.now(),
+    ): CompressionEvent {
+        val id = compressionEventDAO.insert(
+            CompressionEventEntity(
+                conversationId = conversationId.toString(),
+                boundaryIndex = boundaryIndex,
+                summarySnapshot = summarySnapshot,
+                compressStartIndex = compressStartIndex,
+                compressEndIndex = compressEndIndex,
+                keepRecentMessages = keepRecentMessages,
+                trigger = trigger,
+                additionalPrompt = additionalPrompt,
+                baseSummaryJson = baseSummaryJson,
+                createdAt = createdAt.toEpochMilli()
+            )
+        )
+        return CompressionEvent(
+            id = id,
+            boundaryIndex = boundaryIndex,
+            summarySnapshot = summarySnapshot,
+            compressStartIndex = compressStartIndex,
+            compressEndIndex = compressEndIndex,
+            keepRecentMessages = keepRecentMessages,
+            trigger = trigger,
+            additionalPrompt = additionalPrompt,
+            baseSummaryJson = baseSummaryJson,
+            createdAt = createdAt
+        )
+    }
+
+    suspend fun getCompressionEvents(conversationId: Uuid): List<CompressionEvent> {
+        return loadCompressionEvents(conversationId.toString())
     }
 
     private fun conversationSummaryToConversation(entity: LightConversationEntity): Conversation {
@@ -366,6 +439,23 @@ class ConversationRepository(
                 offset += page.size
             }
             nodes
+        }
+    }
+
+    private suspend fun loadCompressionEvents(conversationId: String): List<CompressionEvent> {
+        return compressionEventDAO.getEventsOfConversation(conversationId).map { entity ->
+            CompressionEvent(
+                id = entity.id,
+                boundaryIndex = entity.boundaryIndex,
+                summarySnapshot = entity.summarySnapshot,
+                compressStartIndex = entity.compressStartIndex,
+                compressEndIndex = entity.compressEndIndex,
+                keepRecentMessages = entity.keepRecentMessages,
+                trigger = entity.trigger,
+                additionalPrompt = entity.additionalPrompt,
+                baseSummaryJson = entity.baseSummaryJson,
+                createdAt = Instant.ofEpochMilli(entity.createdAt)
+            )
         }
     }
 

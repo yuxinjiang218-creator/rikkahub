@@ -52,6 +52,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -89,9 +90,14 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.getAssistantById
+import me.rerere.rikkahub.data.model.CompressionEvent
+import me.rerere.rikkahub.data.model.CompressionSummarySection
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.rikkahub.data.model.parseCompressionSummarySnapshot
 import me.rerere.rikkahub.service.ChatError
+import me.rerere.rikkahub.ui.components.ai.CompressContextDialog
+import me.rerere.rikkahub.ui.components.ai.CompressContextDialogMode
 import me.rerere.rikkahub.ui.components.message.ChatMessage
 import me.rerere.rikkahub.ui.components.ui.ErrorCardsDisplay
 import me.rerere.rikkahub.ui.components.ui.ListSelectableItem
@@ -99,6 +105,7 @@ import me.rerere.rikkahub.ui.components.ui.RabbitLoadingIndicator
 import me.rerere.rikkahub.ui.components.ui.Tooltip
 import me.rerere.rikkahub.ui.hooks.ImeLazyListAutoScroller
 import me.rerere.rikkahub.utils.plus
+import me.rerere.rikkahub.utils.toLocalDateTime
 import kotlin.math.roundToInt
 import kotlin.uuid.Uuid
 
@@ -118,6 +125,7 @@ fun ChatList(
     errors: List<ChatError> = emptyList(),
     onDismissError: (Uuid) -> Unit = {},
     onClearAllErrors: () -> Unit = {},
+    onRegenerateLatestCompression: () -> Unit = {},
     onRegenerate: (UIMessage) -> Unit = {},
     onEdit: (UIMessage) -> Unit = {},
     onForkMessage: (UIMessage) -> Unit = {},
@@ -157,6 +165,7 @@ fun ChatList(
                 errors = errors,
                 onDismissError = onDismissError,
                 onClearAllErrors = onClearAllErrors,
+                onRegenerateLatestCompression = onRegenerateLatestCompression,
                 onRegenerate = onRegenerate,
                 onEdit = onEdit,
                 onForkMessage = onForkMessage,
@@ -184,6 +193,7 @@ private fun ChatListNormal(
     errors: List<ChatError>,
     onDismissError: (Uuid) -> Unit,
     onClearAllErrors: () -> Unit,
+    onRegenerateLatestCompression: () -> Unit,
     onRegenerate: (UIMessage) -> Unit,
     onEdit: (UIMessage) -> Unit,
     onForkMessage: (UIMessage) -> Unit,
@@ -226,6 +236,30 @@ private fun ChatListNormal(
         ConversationSizeWarningDialog(
             sizeInfo = sizeInfo,
             onDismiss = { showSizeWarningDialog = false }
+        )
+    }
+
+    val normalizedCompressionEvents = remember(conversation.compressionEvents, conversation.messageNodes.size) {
+        conversation.compressionEvents
+            .map { event ->
+                event.copy(boundaryIndex = event.boundaryIndex.coerceIn(0, conversation.messageNodes.size))
+            }
+            .sortedBy { it.createdAt }
+    }
+    val latestCompressionEventId = normalizedCompressionEvents.lastOrNull()?.id
+    var expandedCompressionEventId by rememberSaveable(conversation.id) { mutableStateOf(latestCompressionEventId) }
+    var showRegenerateConfirm by rememberSaveable(conversation.id) { mutableStateOf(false) }
+    val eventsByBoundary = remember(normalizedCompressionEvents) {
+        normalizedCompressionEvents.groupBy { it.boundaryIndex }
+    }
+    LaunchedEffect(latestCompressionEventId) {
+        expandedCompressionEventId = latestCompressionEventId
+    }
+    if (showRegenerateConfirm) {
+        CompressContextDialog(
+            mode = CompressContextDialogMode.RegenerateConfirm,
+            onDismiss = { showRegenerateConfirm = false },
+            onConfirmRegenerate = onRegenerateLatestCompression
         )
     }
 
@@ -275,6 +309,26 @@ private fun ChatListNormal(
                 key = { index, item -> item.id },
             ) { index, node ->
                 Column {
+                    eventsByBoundary[index].orEmpty().forEach { event ->
+                        CompressionBoundaryEvent(
+                            event = event,
+                            latest = event.id == latestCompressionEventId,
+                            expanded = expandedCompressionEventId == event.id,
+                            onRegenerate = if (event.id == latestCompressionEventId) {
+                                { showRegenerateConfirm = true }
+                            } else {
+                                null
+                            },
+                            onToggle = {
+                                expandedCompressionEventId = if (expandedCompressionEventId == event.id) {
+                                    null
+                                } else {
+                                    event.id
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                     ListSelectableItem(
                         key = node.id,
                         onSelectChange = {
@@ -323,6 +377,29 @@ private fun ChatListNormal(
                             lastMessage = index == conversation.messageNodes.lastIndex,
                         )
                     }
+                }
+            }
+
+            eventsByBoundary[conversation.messageNodes.size].orEmpty().forEach { event ->
+                item(key = "compression_event_tail_${event.id}") {
+                    CompressionBoundaryEvent(
+                        event = event,
+                        latest = event.id == latestCompressionEventId,
+                        expanded = expandedCompressionEventId == event.id,
+                        onRegenerate = if (event.id == latestCompressionEventId) {
+                            { showRegenerateConfirm = true }
+                        } else {
+                            null
+                        },
+                        onToggle = {
+                            expandedCompressionEventId = if (expandedCompressionEventId == event.id) {
+                                null
+                            } else {
+                                event.id
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
 
@@ -456,6 +533,175 @@ private fun ChatListNormal(
                     conversation = conversation,
                     onClickSuggestion = onClickSuggestion,
                     modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompressionBoundaryEvent(
+    event: CompressionEvent,
+    latest: Boolean,
+    expanded: Boolean,
+    onRegenerate: (() -> Unit)?,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val snapshot = remember(event.summarySnapshot) {
+        parseCompressionSummarySnapshot(event.summarySnapshot)
+    }
+    Column(
+        modifier = modifier.padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        if (latest) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .clickable { onToggle() },
+                color = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp),
+                tonalElevation = 2.dp,
+                shadowElevation = 0.dp,
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(width = 4.dp, height = 42.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = stringResource(R.string.chat_page_compression_boundary_title),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = event.createdAt.toLocalDateTime(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (onRegenerate != null) {
+                            TextButton(onClick = onRegenerate) {
+                                Text(
+                                    text = stringResource(R.string.chat_page_regenerate_compression_action),
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = if (expanded) HugeIcons.ArrowUp01 else HugeIcons.ArrowDown01,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
+                    snapshot?.preview?.takeIf { it.isNotBlank() }?.let { preview ->
+                        Text(
+                            text = preview,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = if (expanded) Int.MAX_VALUE else 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    if (expanded && snapshot != null && snapshot.sections.isNotEmpty()) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            snapshot.sections.forEachIndexed { index, section ->
+                                CompressionSummarySectionView(section = section)
+                                if (index != snapshot.sections.lastIndex) {
+                                    Spacer(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(1.dp)
+                                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                                    )
+                                }
+                            }
+                        }
+                    } else if (expanded && event.summarySnapshot.isNotBlank()) {
+                        Text(
+                            text = event.summarySnapshot,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Spacer(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(1.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant)
+                )
+                Text(
+                    text = event.createdAt.toLocalDateTime(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(1.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompressionSummarySectionView(
+    section: CompressionSummarySection,
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = section.title,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+        section.items.forEach { item ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Box(
+                    modifier = Modifier
+                        .padding(top = 6.dp)
+                        .size(5.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
+                )
+                Text(
+                    text = item,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
                 )
             }
         }

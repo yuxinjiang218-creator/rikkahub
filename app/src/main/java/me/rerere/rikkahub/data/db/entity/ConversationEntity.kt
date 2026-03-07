@@ -24,4 +24,18 @@ data class ConversationEntity(
     val isPinned: Boolean,
     @ColumnInfo("workflow_state", defaultValue = "")
     val workflowState: String = "",
+    @ColumnInfo("rolling_summary_json", defaultValue = "")
+    val rollingSummaryJson: String = "",
+    @ColumnInfo("rolling_summary_token_estimate", defaultValue = "0")
+    val rollingSummaryTokenEstimate: Int = 0,
+    @ColumnInfo("last_compressed_message_index", defaultValue = "-1")
+    val lastCompressedMessageIndex: Int = -1,
+    @ColumnInfo("last_compressed_at", defaultValue = "0")
+    val lastCompressedAt: Long = 0L,
+    @ColumnInfo("last_index_status", defaultValue = "idle")
+    val lastIndexStatus: String = "idle",
+    @ColumnInfo("last_indexed_at", defaultValue = "0")
+    val lastIndexedAt: Long = 0L,
+    @ColumnInfo("last_index_error", defaultValue = "")
+    val lastIndexError: String = "",
 )

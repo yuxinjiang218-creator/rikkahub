@@ -313,6 +313,67 @@ fun List<UIMessage>.limitContext(size: Int): List<UIMessage> {
     return this.subList(adjustedStartIndex, this.size)
 }
 
+fun UIMessage.countsTowardKeepRecent(): Boolean {
+    if (role != MessageRole.USER && role != MessageRole.ASSISTANT) return false
+    return !parts.isEmptyUIMessage()
+}
+
+@Suppress("DEPRECATION")
+fun UIMessage.isToolDependencyMessage(): Boolean {
+    if (role == MessageRole.TOOL) return true
+    return parts.any { part ->
+        when (part) {
+            is UIMessagePart.Tool -> true
+            is UIMessagePart.ToolCall -> true
+            is UIMessagePart.ToolResult -> true
+            else -> false
+        }
+    }
+}
+
+fun List<UIMessage>.findKeepStartIndexForVisibleMessages(visibleMessageCount: Int): Int? {
+    if (visibleMessageCount <= 0) return size
+    if (isEmpty()) return null
+
+    var remainingVisibleMessages = visibleMessageCount
+    var keepStartIndex: Int? = null
+    for (index in lastIndex downTo 0) {
+        if (!this[index].countsTowardKeepRecent()) continue
+        remainingVisibleMessages--
+        if (remainingVisibleMessages == 0) {
+            keepStartIndex = index
+            break
+        }
+    }
+
+    val initialStartIndex = keepStartIndex ?: return null
+    var adjustedStartIndex = initialStartIndex
+    val visitedIndices = mutableSetOf<Int>()
+
+    while (adjustedStartIndex > 0 && visitedIndices.add(adjustedStartIndex)) {
+        var changed = false
+
+        while (adjustedStartIndex > 0 && this[adjustedStartIndex - 1].isToolDependencyMessage()) {
+            adjustedStartIndex--
+            changed = true
+        }
+
+        if (this[adjustedStartIndex].isToolDependencyMessage()) {
+            val userIndex = (adjustedStartIndex - 1 downTo 0).firstOrNull { index ->
+                this[index].role == MessageRole.USER && this[index].countsTowardKeepRecent()
+            }
+            if (userIndex != null) {
+                adjustedStartIndex = userIndex
+                changed = true
+            }
+        }
+
+        if (!changed) break
+    }
+
+    return adjustedStartIndex
+}
+
 @Serializable
 sealed class ToolApprovalState {
     @Serializable
