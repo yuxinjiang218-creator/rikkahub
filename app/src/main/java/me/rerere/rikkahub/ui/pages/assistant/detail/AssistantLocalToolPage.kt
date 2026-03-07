@@ -241,6 +241,36 @@ private fun AssistantLocalToolContent(
             }
         )
 
+        LocalToolCard(
+            title = stringResource(R.string.assistant_page_local_tools_tts_title),
+            description = stringResource(R.string.assistant_page_local_tools_tts_desc),
+            icon = Lucide.Share2,
+            isEnabled = assistant.localTools.contains(LocalToolOption.Tts),
+            onToggle = { enabled ->
+                val newLocalTools = if (enabled) {
+                    assistant.localTools + LocalToolOption.Tts
+                } else {
+                    assistant.localTools - LocalToolOption.Tts
+                }
+                onUpdate(assistant.copy(localTools = newLocalTools))
+            }
+        )
+
+        LocalToolCard(
+            title = stringResource(R.string.assistant_page_local_tools_ask_user_title),
+            description = stringResource(R.string.assistant_page_local_tools_ask_user_desc),
+            icon = Lucide.Bot,
+            isEnabled = assistant.localTools.contains(LocalToolOption.AskUser),
+            onToggle = { enabled ->
+                val newLocalTools = if (enabled) {
+                    assistant.localTools + LocalToolOption.AskUser
+                } else {
+                    assistant.localTools - LocalToolOption.AskUser
+                }
+                onUpdate(assistant.copy(localTools = newLocalTools))
+            }
+        )
+
         // ✅ 文件管理卡片 - 始终可见，无开关，仅供用户管理沙箱文件
         FileManagerCard(
             assistantId = assistant.id
