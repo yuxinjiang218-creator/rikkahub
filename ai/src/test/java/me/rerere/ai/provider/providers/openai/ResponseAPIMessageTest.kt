@@ -1,7 +1,6 @@
 package me.rerere.ai.provider.providers.openai
 
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -13,7 +12,6 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
-import me.rerere.ai.ui.handleMessageChunk
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -353,101 +351,6 @@ class ResponseAPIMessageTest {
         val reasoning = requestBody["reasoning"]?.jsonObject
         assertTrue("reasoning should exist", reasoning != null)
         assertEquals("low", reasoning!!["effort"]?.jsonPrimitive?.content)
-    }
-
-    @Test
-    fun `response output item added should keep call id and response item metadata`() {
-        val chunk = api.parseResponseDelta(
-            Json.parseToJsonElement(
-                """
-                {
-                  "type": "response.output_item.added",
-                  "item": {
-                    "id": "fc_item_1",
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "sandbox_python",
-                    "arguments": ""
-                  }
-                }
-                """.trimIndent()
-            ).jsonObject
-        )
-
-        val tool = chunk!!.choices.single().delta!!.getTools().single()
-        assertEquals("call_1", tool.toolCallId)
-        assertEquals("sandbox_python", tool.toolName)
-        assertEquals("fc_item_1", tool.metadata?.get("stream_tool_item_id")?.jsonPrimitive?.content)
-    }
-
-    @Test
-    fun `response output item done should recover function call details`() {
-        val chunk = api.parseResponseDelta(
-            Json.parseToJsonElement(
-                """
-                {
-                  "type": "response.output_item.done",
-                  "item": {
-                    "id": "fc_item_2",
-                    "type": "function_call",
-                    "call_id": "call_2",
-                    "name": "container_shell",
-                    "arguments": "{\"command\":\"pwd\"}"
-                  }
-                }
-                """.trimIndent()
-            ).jsonObject
-        )
-
-        val tool = chunk!!.choices.single().delta!!.getTools().single()
-        assertEquals("call_2", tool.toolCallId)
-        assertEquals("container_shell", tool.toolName)
-        assertEquals("""{"command":"pwd"}""", tool.input)
-    }
-
-    @Test
-    fun `response function call arguments done should merge into existing function call item`() {
-        val addedChunk = api.parseResponseDelta(
-            Json.parseToJsonElement(
-                """
-                {
-                  "type": "response.output_item.added",
-                  "item": {
-                    "id": "fc_item_3",
-                    "type": "function_call",
-                    "call_id": "call_3",
-                    "name": "sandbox_python",
-                    "arguments": "{\"operation\":\"python_exec\",\"params\":{\"code\":\"print('hel"
-                  }
-                }
-                """.trimIndent()
-            ).jsonObject
-        )!!
-        val doneChunk = api.parseResponseDelta(
-            Json.parseToJsonElement(
-                """
-                {
-                  "type": "response.function_call_arguments.done",
-                  "item_id": "fc_item_3",
-                  "call_id": "call_3",
-                  "arguments": "{\"operation\":\"python_exec\",\"params\":{\"code\":\"print('hello')\"}}"
-                }
-                """.trimIndent()
-            ).jsonObject
-        )!!
-
-        val mergedMessages = listOf(UIMessage.user("run python"))
-            .handleMessageChunk(addedChunk)
-            .handleMessageChunk(doneChunk)
-        val tool = mergedMessages.last().getTools().single()
-
-        assertEquals("call_3", tool.toolCallId)
-        assertEquals("sandbox_python", tool.toolName)
-        assertEquals(
-            """{"operation":"python_exec","params":{"code":"print('hello')"}}""",
-            tool.input
-        )
-        assertEquals("fc_item_3", tool.metadata?.get("stream_tool_item_id")?.jsonPrimitive?.content)
     }
 
     // ==================== Helper Functions ====================

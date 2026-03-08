@@ -6,12 +6,7 @@ import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.Model
@@ -19,9 +14,6 @@ import me.rerere.ai.util.json
 import kotlin.time.Clock
 import kotlin.time.Instant
 import kotlin.uuid.Uuid
-
-private const val TOOL_STREAM_INDEX_KEY = "stream_tool_index"
-private const val TOOL_RESPONSE_ITEM_ID_KEY = "stream_tool_item_id"
 
 // 公共消息抽象, 具体的Provider实现会转换为API接口需要的DTO
 @Serializable
@@ -100,12 +92,29 @@ data class UIMessage(
                     }
 
                     is UIMessagePart.Tool -> {
-                        val targetTool = acc.findMergeTarget(deltaPart)
-                        if (targetTool == null) {
-                            acc + deltaPart.copy()
+                        if (deltaPart.toolCallId.isBlank()) {
+                            // No ID yet - append to the last Tool if it also has no ID
+                            val lastTool = acc.lastOrNull { it is UIMessagePart.Tool } as? UIMessagePart.Tool
+                            if (lastTool != null) {
+                                acc.map { part ->
+                                    if (part === lastTool) part.merge(deltaPart) else part
+                                }
+                            } else {
+                                acc + deltaPart.copy()
+                            }
                         } else {
-                            acc.map { part ->
-                                if (part === targetTool) targetTool.merge(deltaPart) else part
+                            // Has ID - find and update by ID, or insert new
+                            val existsPart = acc.find {
+                                it is UIMessagePart.Tool && it.toolCallId == deltaPart.toolCallId
+                            } as? UIMessagePart.Tool
+                            if (existsPart == null) {
+                                acc + deltaPart.copy()
+                            } else {
+                                acc.map { part ->
+                                    if (part is UIMessagePart.Tool && part.toolCallId == deltaPart.toolCallId) {
+                                        part.merge(deltaPart)
+                                    } else part
+                                }
                             }
                         }
                     }
@@ -499,84 +508,14 @@ sealed class UIMessagePart {
         }.getOrElse { JsonObject(emptyMap()) }
 
         fun merge(other: Tool): Tool {
-            val mergedId = toolCallId.mergeStreamingFragment(other.toolCallId)
-            val mergedName = toolName.mergeStreamingFragment(other.toolName)
             return Tool(
-                toolCallId = mergedId,
-                toolName = mergedName,
-                input = input.mergeStreamingFragment(other.input),
+                toolCallId = toolCallId,
+                toolName = toolName + other.toolName,
+                input = input + other.input,
                 output = output + other.output,
                 approvalState = approvalState,
-                metadata = mergeToolMetadata(metadata, other.metadata),
+                metadata = if (other.metadata != null) other.metadata else metadata,
             )
-        }
-    }
-}
-
-private fun List<UIMessagePart>.findMergeTarget(deltaPart: UIMessagePart.Tool): UIMessagePart.Tool? {
-    val deltaStreamIndex = deltaPart.streamToolIndex()
-    val deltaResponseItemId = deltaPart.responseItemId()
-    if (deltaPart.toolCallId.isNotBlank()) {
-        filterIsInstance<UIMessagePart.Tool>().firstOrNull { it.toolCallId == deltaPart.toolCallId }?.let {
-            return it
-        }
-    }
-    if (!deltaResponseItemId.isNullOrBlank()) {
-        filterIsInstance<UIMessagePart.Tool>().firstOrNull { it.responseItemId() == deltaResponseItemId }?.let {
-            return it
-        }
-    }
-    if (deltaStreamIndex != null) {
-        filterIsInstance<UIMessagePart.Tool>().firstOrNull { it.streamToolIndex() == deltaStreamIndex }?.let {
-            return it
-        }
-    }
-    if (deltaPart.toolCallId.isNotBlank() || deltaStreamIndex != null || !deltaResponseItemId.isNullOrBlank()) {
-        return null
-    }
-    return filterIsInstance<UIMessagePart.Tool>().lastOrNull {
-        it.toolCallId.isBlank() || (deltaPart.toolCallId.isBlank() && it.streamToolIndex() == null)
-    } ?: filterIsInstance<UIMessagePart.Tool>().lastOrNull()
-}
-
-private fun UIMessagePart.Tool.streamToolIndex(): Int? =
-    metadata?.get(TOOL_STREAM_INDEX_KEY)?.jsonPrimitive?.intOrNull
-
-private fun UIMessagePart.Tool.responseItemId(): String? =
-    metadata?.get(TOOL_RESPONSE_ITEM_ID_KEY)?.jsonPrimitive?.content
-
-private fun String.mergeStreamingFragment(other: String): String {
-    if (other.isBlank()) return this
-    if (this.isBlank()) return other
-    if (this == other) return this
-    if (other.startsWith(this)) return other
-    if (this.startsWith(other)) return this
-    val maxOverlap = minOf(this.length, other.length)
-    for (overlap in maxOverlap downTo 1) {
-        if (this.endsWith(other.substring(0, overlap))) {
-            return this + other.substring(overlap)
-        }
-    }
-    return this + other
-}
-
-private fun mergeToolMetadata(base: JsonObject?, incoming: JsonObject?): JsonObject? {
-    if (base == null) return incoming
-    if (incoming == null) return base
-    return JsonObject(base + incoming)
-}
-
-fun buildToolStreamMetadata(
-    streamIndex: Int? = null,
-    responseItemId: String? = null
-): JsonObject? {
-    if (streamIndex == null && responseItemId.isNullOrBlank()) return null
-    return buildJsonObject {
-        streamIndex?.let {
-            put(TOOL_STREAM_INDEX_KEY, JsonPrimitive(it))
-        }
-        responseItemId?.takeIf { it.isNotBlank() }?.let {
-            put(TOOL_RESPONSE_ITEM_ID_KEY, JsonPrimitive(it))
         }
     }
 }
