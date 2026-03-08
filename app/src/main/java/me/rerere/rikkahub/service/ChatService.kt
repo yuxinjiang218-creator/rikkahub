@@ -2144,11 +2144,16 @@ class ChatService(
                 )
             }
 
+        val forkConversationId = Uuid.random()
         val forkConversation = Conversation(
-            id = Uuid.random(),
+            id = forkConversationId,
             assistantId = currentConversation.assistantId,
             messageNodes = copiedNodes,
         )
+
+        if (!SandboxEngine.copySandbox(context, conversationId.toString(), forkConversationId.toString())) {
+            Log.w(TAG, "forkConversationAtMessage: failed to copy sandbox from $conversationId to $forkConversationId")
+        }
 
         saveConversation(forkConversation.id, forkConversation)
         return forkConversation

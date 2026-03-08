@@ -302,7 +302,42 @@ object SandboxEngine {
             null
         }
     }
-    
+
+    /**
+     * 复制整个沙箱内容到新的沙箱 ID。
+     */
+    fun copySandbox(
+        context: Context,
+        sourceAssistantId: String,
+        targetAssistantId: String,
+    ): Boolean {
+        return try {
+            val sourceSandboxDir = File(context.filesDir, "sandboxes/$sourceAssistantId")
+            if (!sourceSandboxDir.exists()) {
+                return true
+            }
+
+            val targetSandboxDir = getSandboxDir(context, targetAssistantId)
+            sourceSandboxDir.walkTopDown().forEach { source ->
+                if (source == sourceSandboxDir) return@forEach
+
+                val target = File(targetSandboxDir, source.relativeTo(sourceSandboxDir).path)
+                if (source.isDirectory) {
+                    target.mkdirs()
+                } else {
+                    target.parentFile?.mkdirs()
+                    source.copyTo(target, overwrite = true)
+                    target.setLastModified(source.lastModified())
+                }
+            }
+
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+     
     // ==================== Private Methods ====================
     
     private fun calculateDirectorySize(dir: File): Long {
