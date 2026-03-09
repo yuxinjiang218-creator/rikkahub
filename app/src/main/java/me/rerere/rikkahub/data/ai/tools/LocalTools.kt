@@ -463,6 +463,7 @@ class LocalTools(
         return Tool(
             name = "container_shell",
             description = """完整 Linux Shell（Alpine），支持 apk、git、wget、Python3、Node.js。超时 5 分钟。
+【工作目录】默认在 /workspace 下工作。/workspace 映射到当前对话的沙箱目录，用户在文件管理器中可见；后续命令应尽量在 /workspace 内操作，创建、修改、下载、解压出的用户文件也应优先放在这里。除非有明确理由，不要把项目文件放到 /root、/tmp、/usr/local 或其他 /workspace 之外的位置。
 【重要】安装开发工具：使用 apk add 安装（如 apk add python3、apk add nodejs npm、apk add g++ 等）。所有开发工具都应通过 apk 包管理器安装，不要尝试解压 ZIP 包。
 【Node.js & npm】已自动修复 PRoot 兼容性，安装后可直接使用：
   - 安装：apk add nodejs npm
@@ -523,6 +524,7 @@ class LocalTools(
             description = """在容器后台执行Shell命令并立即返回，不等待命令完成。
 适用于启动长期运行的服务（如 uvicorn、nginx、redis-server 等）。
 启动后返回进程ID，可用于后续查询状态、查看日志或终止进程。
+【工作目录】默认同样在 /workspace 下工作；启动服务、写配置、生成日志或产物时，应优先基于 /workspace 中用户可见的文件。
 
 【使用场景】
 ✅ 启动需要持续运行的服务（Web服务器、数据库、缓存等）
