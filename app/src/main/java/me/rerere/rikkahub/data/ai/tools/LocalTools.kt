@@ -1,8 +1,10 @@
-package me.rerere.rikkahub.data.ai.tools
+﻿package me.rerere.rikkahub.data.ai.tools
 
 import android.content.Context
+import android.net.Uri
 import com.whl.quickjs.wrapper.QuickJSContext
 import com.whl.quickjs.wrapper.QuickJSObject
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -17,6 +19,7 @@ import me.rerere.rikkahub.data.ai.subagent.SubAgentProgressManager
 import me.rerere.rikkahub.data.ai.subagent.SubAgentResult
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
+import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.sandbox.SandboxEngine
 import me.rerere.rikkahub.data.model.TodoStatus
 import me.rerere.rikkahub.data.model.TodoItem
@@ -32,11 +35,12 @@ sealed class LocalToolOption {
 
     @Serializable
     @SerialName("sandbox_fs")
-    @Deprecated("Renamed to ChaquoPy", ReplaceWith("ChaquoPy"))
+    @Deprecated("Legacy alias. Use Container instead.", ReplaceWith("Container"))
     data object SandboxFs : LocalToolOption()
 
     @Serializable
     @SerialName("chaquopy_tools")
+    @Deprecated("Legacy alias kept only for migration. Use Container instead.", ReplaceWith("Container"))
     data object ChaquoPy : LocalToolOption()
 
     @Serializable
@@ -70,6 +74,7 @@ sealed class LocalToolOption {
 
     @Serializable
     @SerialName("sandbox_file")
+    @Deprecated("Legacy alias kept only for migration. Sandbox file AI tool has been removed.", ReplaceWith("Container"))
     data object SandboxFile : LocalToolOption()
 
     @Serializable
@@ -86,6 +91,7 @@ class LocalTools(
     private val prootManager: me.rerere.rikkahub.data.container.PRootManager,
     private val backgroundProcessManager: me.rerere.rikkahub.data.container.BackgroundProcessManager,
     private val eventBus: AppEventBus,
+    private val skillManager: SkillManager,
     val subAgentExecutor: me.rerere.rikkahub.data.ai.subagent.SubAgentExecutor? = null,
 ) {
     val javascriptTool by lazy {
@@ -237,7 +243,7 @@ class LocalTools(
         )
     }
 
-    // ========== 沙箱工具集合（5个独立工具，包含 Matplotlib 绘图）==========
+    // ========== 沙箱工具集合 ==========
     
     /**
      * 工具 1: 沙箱文件操作
@@ -275,56 +281,8 @@ class LocalTools(
         )
     }
 
-    fun createSandboxFileTool(sandboxId: Uuid): Tool = createSandboxTool(
-        name = "sandbox_file",
-        description = "沙箱文件操作。文件用 file_path，目录用 path。最大 50MB。",
-        operations = listOf(
-            "write" to "写入文件：{file_path, content}",
-            "read" to "读取文件：{file_path}",
-            "delete" to "删除文件/目录：{file_path, recursive?}",
-            "list" to "列出目录：{path, show_hidden?}",
-            "mkdir" to "创建目录：{dir_path}",
-            "copy" to "复制：{src, dst}",
-            "move" to "移动/重命名：{src, dst}",
-            "stat" to "文件信息：{file_path}",
-            "exists" to "检查存在：{file_path}",
-            "zip_create" to "创建 ZIP：{zip_name, source_paths: []}"
-        ),
-        sandboxId = sandboxId
-    )
-    
     /**
-     * 工具 2: Python 代码执行与数据可视化
-     * Python 执行、代码分析、编译检查、Matplotlib 绘图
-     */
-    fun createSandboxPythonTool(sandboxId: Uuid): Tool = createSandboxTool(
-        name = "sandbox_python",
-        description = "执行 Python 3.11 代码。预装：numpy、pandas、matplotlib、requests。解压Windows ZIP文件：将反斜杠(\\)转换为正斜杠(/)，解压到指定目录，避免根目录污染。",
-        operations = listOf(
-            "python_exec" to "执行代码：{code}。定义 'result' 变量返回数据",
-            "matplotlib_plot" to "生成图表：{code}。无需指定保存路径，Matplotlib 自动处理；中文注释时不要指定字体，使用系统默认字体。返回 image_url（格式 file:///path/to/img.png）可直接显示",
-            "analyze_code" to "代码分析：{file_path, language, operation}",
-            "compile_check" to "语法检查：{file_path, language}"
-        ),
-        sandboxId = sandboxId
-    )
-    
-    /**
-     * 工具 3: Shell 执行
-     * Shell 命令和脚本执行（Android Toybox 限制）
-     */
-    fun createSandboxShellTool(sandboxId: Uuid): Tool = createSandboxTool(
-        name = "sandbox_shell",
-        description = "Android Toybox shell。如需完整 Linux（apk、git、wget），请用 container_shell。",
-        operations = listOf(
-            "exec" to "执行命令：{command}",
-            "exec_script" to "执行脚本：{script} 或 {script_path}, {env?}, {timeout?}"
-        ),
-        sandboxId = sandboxId
-    )
-    
-    /**
-     * 工具 3b: Shell 执行（只读模式）
+     * 工具 2: Shell 执行（只读模式）
      * 只允许只读命令，用于Explore和Plan代理
      */
     fun createSandboxShellReadonlyTool(sandboxId: Uuid): Tool {
@@ -416,55 +374,18 @@ class LocalTools(
     }
     
     /**
-     * 工具 4: 数据处理
-     * Excel、PDF、图片、SQLite、下载
-     */
-    fun createSandboxDataTool(sandboxId: Uuid): Tool = createSandboxTool(
-        name = "sandbox_data",
-        description = "数据处理：Excel、PDF、图片、SQLite、下载",
-        operations = listOf(
-            "process_image" to "图片处理：{input_path, operation, output_path?}",
-            "convert_excel" to "Excel 转换：{input_path, format: csv/json, output_path?}",
-            "extract_pdf_text" to "PDF 提取文本：{input_path, output_path?, pages?}",
-            "sqlite_query" to "SQL 查询：{db_path, query, params?, max_rows?}",
-            "sqlite_tables" to "数据库结构：{db_path, detail?}",
-            "download_file" to "HTTP 下载：{url, output_path?, timeout?, headers?}"
-        ),
-        sandboxId = sandboxId
-    )
-    
-    /**
-     * 工具 5: 开发工具
-     * Git完整工作流、ktlint、pip 包管理
-     */
-    fun createSandboxDevTool(sandboxId: Uuid): Tool = createSandboxTool(
-        name = "sandbox_dev",
-        description = "开发工具：Git 工作流、ktlint",
-        operations = listOf(
-            "git_init" to "初始化仓库：{path}",
-            "git_add" to "添加文件：{path, file_path}",
-            "git_commit" to "提交更改：{path, message, author_name?, author_email?}",
-            "git_status" to "查看状态：{path}",
-            "git_branch" to "分支操作：{path, action, branch_name?}",
-            "git_checkout" to "切换分支：{path, branch_name? | file_path?, create?}",
-            "git_log" to "提交历史：{path, max_count?}",
-            "git_diff" to "查看差异：{path, file_path?, staged?}",
-            "git_rm" to "删除文件：{path, file_path, cached?}",
-            "git_mv" to "重命名：{path, src, dst}",
-            "install_tool" to "安装工具：{tool: ktlint, version?, force?}"
-        ),
-        sandboxId = sandboxId
-    )
-    
-    /**
      * 容器运行时 Shell 执行工具（PRoot）
      * 仅当容器运行时启用且就绪时暴露
      */
-    fun createContainerShellTool(sandboxId: Uuid): Tool {
+    fun createContainerShellTool(sandboxId: Uuid, enabledSkills: Set<String> = emptySet()): Tool {
         return Tool(
             name = "container_shell",
             description = """完整 Linux Shell（Alpine），支持 apk、git、wget、Python3、Node.js。超时 5 分钟。
 【工作目录】默认在 /workspace 下工作。/workspace 映射到当前对话的沙箱目录，用户在文件管理器中可见；后续命令应尽量在 /workspace 内操作，创建、修改、下载、解压出的用户文件也应优先放在这里。除非有明确理由，不要把项目文件放到 /root、/tmp、/usr/local 或其他 /workspace 之外的位置。
+【Skills】可写技能库挂载在 /skills；当前助手已启用的 skills 以只读镜像方式挂载在 /opt/rikkahub/skills。若用户要求创建或更新可复用 skill，应在 /skills/<directory>/ 下写入合规 skill 包，其中 SKILL.md frontmatter 至少包含 name 和 description。
+【交付】需要展示或交付给用户的最终文件请写入 /delivery。工具返回结果中的 delivery_items 会列出本轮新交付文件及其 render_url。
+【图片交付】如果 delivery_items 中出现图片文件，想让聊天界面显示图片时，必须在你的正文中使用 Markdown 图片语法引用对应 render_url，例如 ![chart](render_url)。不要只说“图片已生成”而不插入链接。
+【非图片交付】zip、pdf、csv、json 等非图片文件会显示为本轮助手消息下方的附件，无需再手写下载说明。
 【重要】安装开发工具：使用 apk add 安装（如 apk add python3、apk add nodejs npm、apk add g++ 等）。所有开发工具都应通过 apk 包管理器安装，不要尝试解压 ZIP 包。
 【Node.js & npm】已自动修复 PRoot 兼容性，安装后可直接使用：
   - 安装：apk add nodejs npm
@@ -506,11 +427,41 @@ class LocalTools(
                 }
 
                 // 调用 PRootManager 执行（全局单例，无需创建容器）
+                runBlocking {
+                    skillManager.syncSkillsToRuntime(sandboxId.toString(), enabledSkills)
+                }
+                val beforeDelivery = snapshotDeliveryFiles(sandboxId)
                 val result = prootManager.executeShell(
                     sandboxId = sandboxId.toString(),
                     command = command
                 )
-                listOf(UIMessagePart.Text(result.toString()))
+                val deliveryItems = collectDeliveryItems(sandboxId, beforeDelivery)
+                val response = buildJsonObject {
+                    result.forEach { (key, value) -> put(key, value) }
+                    put("delivery_items", buildJsonArray {
+                        deliveryItems.forEach { item ->
+                            add(buildJsonObject {
+                                put("relative_path", item.relativePath)
+                                put("display_name", item.displayName)
+                                put("mime", item.mime)
+                                put("size", item.size)
+                                put("render_url", item.renderUrl)
+                            })
+                        }
+                    })
+                    if (deliveryItems.any { it.isImage }) {
+                        put(
+                            "delivery_hint",
+                            JsonPrimitive("Images written to /delivery are not shown automatically. To display an image in chat, reference its render_url with Markdown image syntax in your assistant reply.")
+                        )
+                    }
+                }
+                buildList {
+                    add(UIMessagePart.Text(response.toString()))
+                    deliveryItems.filterNot { it.isImage }.forEach { item ->
+                        add(UIMessagePart.Document(url = item.renderUrl, fileName = item.displayName, mime = item.mime))
+                    }
+                }
             }
         )
     }
@@ -519,13 +470,14 @@ class LocalTools(
      * 容器后台执行工具（非阻塞）
      * 适用于启动长期运行的服务（如 uvicorn、nginx、数据库等）
      */
-    fun createContainerShellBgTool(sandboxId: Uuid): Tool {
+    fun createContainerShellBgTool(sandboxId: Uuid, enabledSkills: Set<String> = emptySet()): Tool {
         return Tool(
             name = "container_shell_bg",
             description = """在容器后台执行Shell命令并立即返回，不等待命令完成。
 适用于启动长期运行的服务（如 uvicorn、nginx、redis-server 等）。
 启动后返回进程ID，可用于后续查询状态、查看日志或终止进程。
 【工作目录】默认同样在 /workspace 下工作；启动服务、写配置、生成日志或产物时，应优先基于 /workspace 中用户可见的文件。
+【交付】若后台任务会产出最终文件，请把最终文件写到 /delivery；后续通过 container_process 查询完成状态或日志时，仍会按同样规则收集交付文件。
 
 【使用场景】
 ✅ 启动需要持续运行的服务（Web服务器、数据库、缓存等）
@@ -568,6 +520,9 @@ class LocalTools(
                 val tag = args.jsonObject["tag"]?.jsonPrimitive?.contentOrNull
 
                 // 调用 BackgroundProcessManager
+                runBlocking {
+                    skillManager.syncSkillsToRuntime(sandboxId.toString(), enabledSkills)
+                }
                 val result = backgroundProcessManager.startBackgroundProcess(
                     sandboxId = sandboxId.toString(),
                     command = command,
@@ -845,78 +800,6 @@ class LocalTools(
         }
     }
 
-    /**
-     * 通用沙箱工具创建函数
-     */
-    private fun createSandboxTool(
-        name: String,
-        description: String,
-        operations: List<Pair<String, String>>,
-        sandboxId: Uuid
-    ): Tool {
-        val operationList = operations.map { it.first }
-        val operationDescriptions = operations.joinToString("; ") { "${it.first}: ${it.second}" }
-        
-        return Tool(
-            name = name,
-            description = "$description Operations: $operationDescriptions",
-            parameters = {
-                InputSchema.Obj(
-                    properties = buildJsonObject {
-                        put("operation", buildJsonObject {
-                            put("type", "string")
-                            put("description", "Operation: ${operationList.joinToString(", ")}")
-                            put("enum", buildJsonArray {
-                                operationList.forEach { add(it) }
-                            })
-                        })
-                        put("params", buildJsonObject {
-                            put("type", "object")
-                            put("description", "Operation parameters (see operation description)")
-                        })
-                    },
-                    required = listOf("operation", "params")
-                )
-            },
-            execute = { args ->
-                val operation = args.jsonObject["operation"]?.jsonPrimitive?.contentOrNull
-                val paramsObj = args.jsonObject["params"]?.jsonObject
-                
-                val result = when {
-                    operation == null -> buildJsonObject {
-                        put("success", JsonPrimitive(false))
-                        put("error", JsonPrimitive("Missing required parameter: operation"))
-                    }
-                    paramsObj == null -> buildJsonObject {
-                        put("success", JsonPrimitive(false))
-                        put("error", JsonPrimitive("Missing required parameter: params"))
-                    }
-                    !operationList.contains(operation) -> buildJsonObject {
-                        put("success", JsonPrimitive(false))
-                        put("error", JsonPrimitive("Operation '$operation' not available in $name. Available: ${operationList.joinToString(", ")}"))
-                    }
-                    operation == "matplotlib_plot" -> {
-                        // Matplotlib 绘图使用专门的执行方法
-                        val code = paramsObj["code"]?.jsonPrimitive?.contentOrNull ?: ""
-                        if (code.isBlank()) {
-                            buildJsonObject {
-                                put("success", JsonPrimitive(false))
-                                put("error", JsonPrimitive("Missing required parameter: code"))
-                            }
-                        } else {
-                            SandboxEngine.executeMatplotlibPlot(context, sandboxId.toString(), code)
-                        }
-                    }
-                    else -> {
-                        val params = jsonObjectToMap(paramsObj)
-                        SandboxEngine.execute(context, sandboxId.toString(), operation, params)
-                    }
-                }
-                listOf(UIMessagePart.Text(result.toString()))
-            }
-        )
-    }
-
     val askUserTool by lazy {
         Tool(
             name = "ask_user",
@@ -972,26 +855,18 @@ class LocalTools(
     }
 
     /**
-       * 获取工具列表（新版 - 5个独立沙箱工具）
+       * 获取当前对话可用的本地工具。
        *
-       * 容器运行时工具暴露逻辑变更（全局单例）：
-       * - 全局单例容器（非 per-conversation）
-       * - 仅当容器状态为 Running 时暴露工具
+       * 容器运行时采用全局单例：
+       * - 仅当容器状态为 Running 时暴露 container 工具
        * - 所有使用容器工具的对话共享同一容器实例
-       * - 沙箱目录依然 per-conversation 隔离
-       * - 容器工具已合并到 ChaquoPy 工具中（开了 ChaquoPy 且容器运行时才暴露）
-       *
-       * @param options 启用的工具选项
-       * @param sandboxId 沙箱 ID（使用沙箱功能时必需，通常使用 conversationId）
-       * @param subAgents 启用的子代理列表
-       * @param settings 当前设置（用于子代理执行）
-       * @param parentModel 主对话使用的模型（子代理将继承此模型，除非配置了专用模型）
-       * @param parentWorkflowPhase 父代理的Workflow阶段（用于子代理权限控制）
-       * @param mcpTools 可用的MCP工具（用于子代理）
+       * - 沙箱目录依然按对话隔离
+       * - 保留 ChaquoPy 选项仅用于旧配置迁移，实际统一走 Container
        */
       fun getTools(
           options: List<LocalToolOption>,
           sandboxId: Uuid? = null,
+          enabledSkills: Set<String> = emptySet(),
           workflowStateProvider: (() -> me.rerere.rikkahub.data.model.WorkflowState?)? = null,
           onWorkflowStateUpdate: ((me.rerere.rikkahub.data.model.WorkflowState) -> Unit)? = null,
           todoStateProvider: (() -> me.rerere.rikkahub.data.model.TodoState?)? = null,
@@ -1016,23 +891,13 @@ class LocalTools(
             tools.add(ttsTool)
         }
 
-        // ✅ 文件管理工具 - 需要开关
-        if (sandboxId != null && options.contains(LocalToolOption.SandboxFile)) {
-            tools.add(createSandboxFileTool(sandboxId))
-        }
-
-        // ✅ ChaquoPy 工具（独立）
-        if (sandboxId != null && options.contains(LocalToolOption.ChaquoPy)) {
-            tools.add(createSandboxPythonTool(sandboxId))
-            tools.add(createSandboxShellTool(sandboxId))
-            tools.add(createSandboxDataTool(sandboxId))
-            tools.add(createSandboxDevTool(sandboxId))
-        }
-
         // ✅ 容器工具（独立开关）
-        if (sandboxId != null && options.contains(LocalToolOption.Container) && prootManager.isRunning) {
-            tools.add(createContainerShellTool(sandboxId))
-            tools.add(createContainerShellBgTool(sandboxId))
+        if (sandboxId != null &&
+            (options.contains(LocalToolOption.Container) || options.contains(LocalToolOption.ChaquoPy)) &&
+            prootManager.isRunning
+        ) {
+            tools.add(createContainerShellTool(sandboxId, enabledSkills))
+            tools.add(createContainerShellBgTool(sandboxId, enabledSkills))
             tools.add(createContainerProcessTool(sandboxId))
         }
 
@@ -1065,23 +930,13 @@ class LocalTools(
     }
     
     /**
-     * 获取旧版单一沙箱工具（向后兼容）
-     * 注意：新版本推荐使用 getTools() 获取 5 个独立工具
-     */
-    @Deprecated("Use getTools() with 5 separate tools instead", ReplaceWith("getTools(options, sandboxId)"))
-    fun createSandboxFsTool(sandboxId: Uuid): Tool {
-        // 创建一个聚合所有操作的工具作为向后兼容
-        return createSandboxFileTool(sandboxId)
-    }
-    
-    /**
      * 获取工具描述列表（用于 AI 提示）
      */
     fun getToolDescriptions(options: List<LocalToolOption>): String {
         return options.mapNotNull { option ->
             when (option) {
                 LocalToolOption.JavascriptEngine -> "JavaScript Engine"
-                LocalToolOption.ChaquoPy -> "ChaquoPy Tools (4): sandbox_python, sandbox_shell, sandbox_data, sandbox_dev"
+                LocalToolOption.ChaquoPy -> null
                 LocalToolOption.Container -> {
                     if (prootManager.isRunning) {
                         "Container Tools (3): container_shell, container_shell_bg, container_process"
@@ -1094,12 +949,44 @@ class LocalTools(
                 LocalToolOption.WorkflowTodo -> "Workflow TODO"
                 LocalToolOption.WorkflowControl -> "Workflow Control"
                 LocalToolOption.SubAgent -> "SubAgent"
-                LocalToolOption.SandboxFile -> "Sandbox File"
                 LocalToolOption.Tts -> "Text To Speech"
                 LocalToolOption.AskUser -> "Ask User"
                 else -> null // 忽略已废弃的选项
             }
         }.joinToString(", ")
+    }
+
+    private fun snapshotDeliveryFiles(sandboxId: Uuid): Map<String, Long> {
+        val deliveryDir = SandboxEngine.getDeliveryDir(context, sandboxId.toString())
+        return if (!deliveryDir.exists()) {
+            emptyMap()
+        } else {
+            deliveryDir.walkTopDown()
+                .filter { it.isFile }
+                .associate { it.absolutePath to it.lastModified() }
+        }
+    }
+
+    private fun collectDeliveryItems(sandboxId: Uuid, before: Map<String, Long>): List<DeliveryItem> {
+        val deliveryDir = SandboxEngine.getDeliveryDir(context, sandboxId.toString())
+        if (!deliveryDir.exists()) return emptyList()
+        return deliveryDir.walkTopDown()
+            .filter { it.isFile }
+            .filter { before[it.absolutePath] != it.lastModified() }
+            .sortedBy { it.relativeTo(deliveryDir).path }
+            .map { file ->
+                val mime = SandboxEngine.getFileMimeType(file.name)
+                DeliveryItem(
+                    relativePath = file.relativeTo(deliveryDir).path.replace(File.separatorChar, '/'),
+                    displayName = file.name,
+                    mime = mime,
+                    size = file.length(),
+                    renderUrl = Uri.fromFile(file).toString(),
+                    isImage = mime.startsWith("image/")
+                )
+            }
+            .toList()
+
     }
 }
 
@@ -1110,6 +997,15 @@ private data class ShellValidationResult(
     val isValid: Boolean,
     val blockedCommand: String? = null,
     val errorMessage: String? = null
+)
+
+private data class DeliveryItem(
+    val relativePath: String,
+    val displayName: String,
+    val mime: String,
+    val size: Long,
+    val renderUrl: String,
+    val isImage: Boolean,
 )
 
 /**

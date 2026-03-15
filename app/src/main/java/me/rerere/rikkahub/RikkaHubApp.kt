@@ -28,6 +28,8 @@ import me.rerere.rikkahub.di.viewModelModule
 import me.rerere.rikkahub.data.container.PRootManager
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.service.ScheduledPromptManager
+import me.rerere.rikkahub.service.ScheduledTaskKeepAliveService
 import me.rerere.rikkahub.service.WebServerService
 import me.rerere.rikkahub.utils.DatabaseUtil
 import org.koin.android.ext.android.get
@@ -41,6 +43,8 @@ private const val TAG = "RikkaHubApp"
 const val CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID = "chat_completed"
 const val CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID = "chat_live_update"
 const val WEB_SERVER_NOTIFICATION_CHANNEL_ID = "web_server"
+const val SCHEDULED_TASK_NOTIFICATION_CHANNEL_ID = "scheduled_task"
+const val SCHEDULED_TASK_KEEP_ALIVE_NOTIFICATION_CHANNEL_ID = "scheduled_task_keep_alive"
 
 class RikkaHubApp : Application() {
     override fun onCreate() {
@@ -67,6 +71,8 @@ class RikkaHubApp : Application() {
 
         // Start WebServer if enabled in settings
         startWebServerIfEnabled()
+        startScheduledPromptManager()
+        startScheduledTaskKeepAliveIfEnabled()
 
         // Increment launch count
         incrementLaunchCount()
@@ -176,12 +182,57 @@ class RikkaHubApp : Application() {
             .setShowBadge(false)
             .build()
         notificationManager.createNotificationChannel(webServerChannel)
+
+        val scheduledTaskChannel = NotificationChannelCompat
+            .Builder(SCHEDULED_TASK_NOTIFICATION_CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_DEFAULT)
+            .setName("定时任务")
+            .setVibrationEnabled(true)
+            .build()
+        notificationManager.createNotificationChannel(scheduledTaskChannel)
+
+        val scheduledTaskKeepAliveChannel = NotificationChannelCompat
+            .Builder(SCHEDULED_TASK_KEEP_ALIVE_NOTIFICATION_CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_LOW)
+            .setName("定时任务保活")
+            .setVibrationEnabled(false)
+            .setShowBadge(false)
+            .build()
+        notificationManager.createNotificationChannel(scheduledTaskKeepAliveChannel)
+    }
+
+    private fun startScheduledPromptManager() {
+        get<ScheduledPromptManager>().start()
+    }
+
+    private fun startScheduledTaskKeepAliveIfEnabled() {
+        get<AppScope>().launch {
+            runCatching {
+                delay(900)
+                val settings = get<SettingsStore>().settingsFlowRaw.first()
+                if (!settings.scheduledTaskKeepAliveEnabled) return@launch
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    ContextCompat.checkSelfPermission(
+                        this@RikkaHubApp,
+                        android.Manifest.permission.POST_NOTIFICATIONS
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    Log.w(TAG, "startScheduledTaskKeepAliveIfEnabled: notification permission not granted, skipping")
+                    return@launch
+                }
+                val intent = Intent(this@RikkaHubApp, ScheduledTaskKeepAliveService::class.java).apply {
+                    action = ScheduledTaskKeepAliveService.ACTION_START
+                }
+                startForegroundService(intent)
+            }.onFailure {
+                Log.e(TAG, "startScheduledTaskKeepAliveIfEnabled failed", it)
+            }
+        }
     }
 
     override fun onTerminate() {
         super.onTerminate()
         get<AppScope>().cancel()
         stopService(Intent(this, WebServerService::class.java))
+        stopService(Intent(this, ScheduledTaskKeepAliveService::class.java))
     }
 }
 

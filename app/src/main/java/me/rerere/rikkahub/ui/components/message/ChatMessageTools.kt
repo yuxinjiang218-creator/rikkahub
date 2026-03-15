@@ -1,5 +1,10 @@
 package me.rerere.rikkahub.ui.components.message
 
+import android.content.Intent
+import androidx.core.content.FileProvider
+import androidx.core.net.toFile
+import androidx.core.net.toUri
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -28,6 +33,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -170,6 +176,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         null
     }
     val images = tool.output.filterIsInstance<UIMessagePart.Image>()
+    val documents = tool.output.filterIsInstance<UIMessagePart.Document>()
 
     val title = when (tool.toolName) {
         ToolNames.MEMORY -> when (memoryAction) {
@@ -219,7 +226,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         ToolNames.SCRAPE_WEB -> arguments.getStringContent("url") != null
         ToolNames.TTS -> arguments.getStringContent("text") != null
         else -> false
-    } || isDenied || images.isNotEmpty()
+    } || isDenied || images.isNotEmpty() || documents.isNotEmpty()
 
     ControlledChainOfThoughtStep(
         expanded = expanded,
@@ -278,7 +285,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         } else {
             null
         },
-        onClick = if (content != null || isPending || images.isNotEmpty()) {
+        onClick = if (content != null || isPending || images.isNotEmpty() || documents.isNotEmpty()) {
             { showResult = true }
         } else {
             null
@@ -377,6 +384,16 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
                                         .height(64.dp)
                                         .wrapContentWidth(),
                                 )
+                            }
+                        }
+                    }
+                    if (documents.isNotEmpty()) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            documents.forEach { document ->
+                                DeliveryDocumentChip(document)
                             }
                         }
                     }
@@ -686,11 +703,52 @@ private fun GenericToolPreview(
                                 modifier = Modifier.fillMaxWidth(),
                             )
 
+                            is UIMessagePart.Document -> {}
+
                             else -> {}
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun DeliveryDocumentChip(document: UIMessagePart.Document) {
+    val context = LocalContext.current
+    Surface(
+        tonalElevation = 2.dp,
+        onClick = {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                data = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    document.url.toUri().toFile()
+                )
+            }
+            context.startActivity(Intent.createChooser(intent, null))
+        },
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = HugeIcons.QuillWrite01,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = document.fileName,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

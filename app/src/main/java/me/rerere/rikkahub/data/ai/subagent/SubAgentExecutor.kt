@@ -19,7 +19,6 @@ import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.SubAgent
-import me.rerere.rikkahub.data.model.SubAgentStatus
 import me.rerere.rikkahub.data.model.SubAgentToolSet
 import me.rerere.rikkahub.data.model.WorkflowPhase
 import kotlin.uuid.Uuid
@@ -68,38 +67,31 @@ class SubAgentExecutor(
         val startTime = System.currentTimeMillis()
 
         try {
-            // 1. 构建子代理的系统提示词
             val systemPrompt = buildSubAgentSystemPrompt(subAgent, files)
-
-            // 2. 构建消息列表
             val messages = buildSubAgentMessages(systemPrompt, task, context)
-
-            // 3. 确定模型
             val model = subAgent.modelId?.let {
                 settings.findModelById(it)
             } ?: parentModel
 
-            // 4. 准备子代理的工具集（受限的）
             val tools = buildSubAgentTools(
                 toolSet = subAgent.allowedTools,
                 sandboxId = sandboxId,
                 containerEnabled = containerEnabled,
                 localTools = localTools,
                 mcpTools = mcpTools,
-                settings = settings
+                settings = settings,
+                parentWorkflowPhase = parentWorkflowPhase
             )
 
-            // 5. 创建临时Assistant配置
             val assistant = Assistant(
                 id = Uuid.random(),
                 name = subAgent.name,
                 systemPrompt = systemPrompt,
                 temperature = subAgent.temperature,
                 maxTokens = subAgent.maxTokens,
-                contextMessageSize = 0,  // 0 = 不限制消息数量
+                contextMessageSize = 0,
             )
 
-            // 6. 执行生成（流式）
             var resultText = ""
             var finalMessages: List<UIMessage> = emptyList()
             var stepIndex = 0
@@ -119,52 +111,49 @@ class SubAgentExecutor(
                         finalMessages = chunk.messages
                         val lastMessage = chunk.messages.lastOrNull()
 
-                        // 检测步骤变化（通过消息数量或工具调用变化）
                         val currentStep = chunk.messages.size
                         if (currentStep > stepIndex) {
                             stepIndex = currentStep
                             toolCallsInCurrentStep.clear()
                         }
 
-                        // 提取工具调用
                         lastMessage?.parts
                             ?.filterIsInstance<UIMessagePart.Tool>()
-                            ?.let { toolCalls ->
-                                toolCalls.forEach { toolCall ->
-                                    if (!toolCallsInCurrentStep.contains(toolCall.toolName)) {
-                                        toolCallsInCurrentStep.add(toolCall.toolName)
-                                        totalToolCalls++  // 累计工具调用次数
-                                        // Emit工具调用更新
-                                        emit(SubAgentProgress.ToolCallUpdate(
+                            ?.forEach { toolCall ->
+                                if (!toolCallsInCurrentStep.contains(toolCall.toolName)) {
+                                    toolCallsInCurrentStep.add(toolCall.toolName)
+                                    totalToolCalls++
+                                    emit(
+                                        SubAgentProgress.ToolCallUpdate(
                                             toolName = toolCall.toolName,
                                             status = "executing",
                                             result = null
-                                        ))
-                                    }
+                                        )
+                                    )
                                 }
                             }
 
-                        // 提取文本内容（实时流式输出）
                         val textContent = lastMessage?.toText() ?: ""
                         if (textContent.isNotEmpty() && textContent != resultText) {
                             val newContent = textContent.removePrefix(resultText)
                             resultText = textContent
-
-                            // Emit文本块（实时输出）
-                            emit(SubAgentProgress.TextChunk(
-                                content = newContent,
-                                isThinking = lastMessage?.parts?.any { it is UIMessagePart.Reasoning } ?: false
-                            ))
+                            emit(
+                                SubAgentProgress.TextChunk(
+                                    content = newContent,
+                                    isThinking = lastMessage?.parts?.any { it is UIMessagePart.Reasoning } ?: false
+                                )
+                            )
                         }
 
-                        // Emit步骤更新
-                        emit(SubAgentProgress.StepUpdate(
-                            stepIndex = stepIndex,
-                            totalSteps = 50, // maxSteps
-                            currentMessage = textContent.take(100), // 摘要
-                            toolCalls = toolCallsInCurrentStep.toList(),
-                            totalToolCalls = totalToolCalls
-                        ))
+                        emit(
+                            SubAgentProgress.StepUpdate(
+                                stepIndex = stepIndex,
+                                totalSteps = 50,
+                                currentMessage = textContent.take(100),
+                                toolCalls = toolCallsInCurrentStep.toList(),
+                                totalToolCalls = totalToolCalls
+                            )
+                        )
                     }
                 }
             }
@@ -172,35 +161,33 @@ class SubAgentExecutor(
             val duration = System.currentTimeMillis() - startTime
             Log.d(TAG, "Sub-agent ${subAgent.name} completed in ${duration}ms")
 
-            val result = SubAgentResult(
-                success = true,
-                result = resultText,
-                duration = duration,
-                messages = finalMessages
+            emit(
+                SubAgentProgress.Complete(
+                    SubAgentResult(
+                        success = true,
+                        result = resultText,
+                        duration = duration,
+                        messages = finalMessages
+                    )
+                )
             )
-
-            // Emit完成事件
-            emit(SubAgentProgress.Complete(result))
-
         } catch (e: Exception) {
             Log.e(TAG, "Sub-agent ${subAgent.name} failed", e)
             val duration = System.currentTimeMillis() - startTime
-            val result = SubAgentResult(
-                success = false,
-                result = "",
-                error = e.message ?: "Unknown error",
-                duration = duration
-            )
-
-            // Emit错误事件
             emit(SubAgentProgress.Error(e.message ?: "Unknown error"))
-            emit(SubAgentProgress.Complete(result))
+            emit(
+                SubAgentProgress.Complete(
+                    SubAgentResult(
+                        success = false,
+                        result = "",
+                        error = e.message ?: "Unknown error",
+                        duration = duration
+                    )
+                )
+            )
         }
     }
 
-    /**
-     * 构建子代理的系统提示词
-     */
     private fun buildSubAgentSystemPrompt(subAgent: SubAgent, files: List<String>): String {
         return buildString {
             appendLine(subAgent.systemPrompt)
@@ -210,14 +197,11 @@ class SubAgentExecutor(
                 files.forEach { file ->
                     appendLine("- $file")
                 }
-                appendLine("你可以使用 sandbox_file 的 read 操作读取这些文件。")
+                appendLine("你可以使用当前已暴露的文件工具读取这些文件。")
             }
         }
     }
 
-    /**
-     * 构建子代理的消息列表
-     */
     private fun buildSubAgentMessages(
         systemPrompt: String,
         task: String,
@@ -247,74 +231,45 @@ class SubAgentExecutor(
         )
     }
 
-    /**
-     * 为子代理构建受限的工具集
-     */
     private fun buildSubAgentTools(
         toolSet: SubAgentToolSet,
         sandboxId: Uuid,
         containerEnabled: Boolean,
         localTools: LocalTools,
         mcpTools: List<Tool>,
-        settings: Settings
+        settings: Settings,
+        parentWorkflowPhase: WorkflowPhase? = null
     ): List<Tool> {
         val tools = mutableListOf<Tool>()
+        val isReadonlyPhase = parentWorkflowPhase == WorkflowPhase.PLAN || parentWorkflowPhase == WorkflowPhase.REVIEW
 
-        // 网络搜索工具
         if (toolSet.enableWebSearch) {
             tools.addAll(createSearchTools(context, settings))
         }
 
-        // 沙箱文件操作（所有子代理默认都有）
-        if (toolSet.enableSandboxFile) {
-            tools.add(localTools.createSandboxFileTool(sandboxId))
-        }
-
-        // Python执行
-        if (toolSet.enableSandboxPython) {
-            tools.add(localTools.createSandboxPythonTool(sandboxId))
-        }
-
-        // Shell执行（完整权限）
-        if (toolSet.enableSandboxShell) {
-            tools.add(localTools.createSandboxShellTool(sandboxId))
-        }
-
-        // Shell执行（只读模式，白名单限制）
         if (toolSet.enableSandboxShellReadonly) {
             tools.add(localTools.createSandboxShellReadonlyTool(sandboxId))
         }
 
-        // 数据处理
-        if (toolSet.enableSandboxData) {
-            tools.add(localTools.createSandboxDataTool(sandboxId))
-        }
-
-        // 开发工具
-        if (toolSet.enableSandboxDev) {
-            tools.add(localTools.createSandboxDevTool(sandboxId))
-        }
-
-        // 容器运行时工具（仅当容器启用且正在运行）
-        if (toolSet.enableContainer && containerEnabled) {
-            // TODO: createContainerPythonTool 方法暂未实现，已通过 shell 工具支持 Python（apk add python3）
-            // tools.add(localTools.createContainerPythonTool(sandboxId))
+        if (!isReadonlyPhase &&
+            (toolSet.enableContainer ||
+                toolSet.enableSandboxPython ||
+                toolSet.enableSandboxShell ||
+                toolSet.enableSandboxData ||
+                toolSet.enableSandboxDev) &&
+            containerEnabled
+        ) {
             tools.add(localTools.createContainerShellTool(sandboxId))
         }
 
-        // MCP工具（根据allowedMcpServers过滤）
         if (toolSet.allowedMcpServers.isNotEmpty()) {
-            // 构建允许的服务器ID集合
             val allowedServerIds = toolSet.allowedMcpServers
-
-            // 从settings中获取每个服务器对应的工具名称
             val serverToolNames = settings.mcpServers
                 .filter { serverConfig -> serverConfig.id in allowedServerIds }
                 .flatMap { serverConfig -> serverConfig.commonOptions.tools }
                 .map { tool -> "mcp__${tool.name}" }
                 .toSet()
 
-            // 只添加来自允许服务器的工具
             mcpTools.filter { tool -> tool.name in serverToolNames }
                 .let { tools.addAll(it) }
         }
@@ -323,56 +278,35 @@ class SubAgentExecutor(
     }
 }
 
-/**
- * 子代理执行进度（用于流式更新UI）
- */
 sealed class SubAgentProgress {
-    /**
-     * 执行步骤更新
-     */
     data class StepUpdate(
         val stepIndex: Int,
         val totalSteps: Int? = null,
         val currentMessage: String = "",
         val toolCalls: List<String> = emptyList(),
-        val totalToolCalls: Int = 0,  // 累计工具调用次数
+        val totalToolCalls: Int = 0,
     ) : SubAgentProgress()
 
-    /**
-     * 工具调用更新
-     */
     data class ToolCallUpdate(
         val toolName: String,
-        val status: String, // "pending", "executing", "completed", "failed"
+        val status: String,
         val result: String? = null,
     ) : SubAgentProgress()
 
-    /**
-     * 流式文本输出（子代理的实时输出）
-     */
     data class TextChunk(
         val content: String,
         val isThinking: Boolean = false,
     ) : SubAgentProgress()
 
-    /**
-     * 执行完成
-     */
     data class Complete(
         val result: SubAgentResult,
     ) : SubAgentProgress()
 
-    /**
-     * 执行错误
-     */
     data class Error(
         val error: String,
     ) : SubAgentProgress()
 }
 
-/**
- * 子代理执行结果
- */
 data class SubAgentResult(
     val success: Boolean,
     val result: String,

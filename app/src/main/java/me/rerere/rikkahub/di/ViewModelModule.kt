@@ -44,7 +44,7 @@ val viewModelModule = module {
             settingsStore = get(),
             memoryRepository = get(),
             filesManager = get(),
-            skillManager = get(),
+            skillsRepository = get(),
         )
     }
     viewModelOf(::TranslatorVM)
@@ -59,7 +59,12 @@ val viewModelModule = module {
     viewModelOf(::DeveloperVM)
     viewModelOf(::PromptVM)
     viewModelOf(::QuickMessagesVM)
-    viewModelOf(::SkillsVM)
+    viewModel {
+        SkillsVM(
+            context = get(),
+            skillsRepository = get(),
+        )
+    }
     viewModelOf(::FavoriteVM)
     viewModelOf(::SearchVM)
     viewModelOf(::StatsVM)

@@ -1,24 +1,36 @@
 package me.rerere.rikkahub.ui.pages.assistant.detail
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LargeFlexibleTopAppBar
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.rikkahub.R
 import kotlinx.coroutines.launch
@@ -27,10 +39,10 @@ import me.rerere.rikkahub.ui.components.ai.ExtensionEmptyState
 import me.rerere.rikkahub.ui.components.ai.LorebooksContent
 import me.rerere.rikkahub.ui.components.ai.ModeInjectionsContent
 import me.rerere.rikkahub.ui.components.ai.QuickMessagesContent
-import me.rerere.rikkahub.ui.components.ai.SkillsContent
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.theme.CustomColors
+import me.rerere.rikkahub.data.skills.SkillCatalogEntry
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
 
@@ -39,11 +51,15 @@ fun AssistantExtensionsPage(id: String) {
     val vm: AssistantDetailVM = koinViewModel(parameters = { parametersOf(id) })
     val assistant by vm.assistant.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
-    val skills by vm.skills.collectAsStateWithLifecycle()
+    val skillsState by vm.skillsState.collectAsStateWithLifecycle()
     val navController = LocalNavController.current
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val scope = rememberCoroutineScope()
     val pagerState = rememberPagerState { 4 }
+
+    LaunchedEffect(Unit) {
+        vm.refreshSkills()
+    }
 
     Scaffold(
         topBar = {
@@ -156,16 +172,26 @@ fun AssistantExtensionsPage(id: String) {
                     }
 
                     3 -> {
-                        if (skills.isEmpty()) {
+                        if (skillsState.isLoading) {
+                            Column(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.Center,
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                CircularProgressIndicator()
+                            }
+                        } else if (skillsState.entries.isEmpty() && skillsState.invalidEntries.isEmpty()) {
                             ExtensionEmptyState(
                                 message = stringResource(R.string.assistant_extensions_page_empty_skills),
                                 buttonText = stringResource(R.string.assistant_extensions_page_goto_extensions),
                                 onAction = { navController.navigate(Screen.Skills) },
                             )
                         } else {
-                            SkillsContent(
-                                skills = skills,
+                            AssistantSkillsSelectionContent(
+                                skills = skillsState.entries,
                                 enabledSkills = assistant.enabledSkills,
+                                invalidCount = skillsState.invalidEntries.size,
+                                onManage = { navController.navigate(Screen.Skills) },
                                 onToggle = { name, checked ->
                                     val newSkills = if (checked) assistant.enabledSkills + name
                                     else assistant.enabledSkills - name
@@ -176,6 +202,67 @@ fun AssistantExtensionsPage(id: String) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AssistantSkillsSelectionContent(
+    skills: List<SkillCatalogEntry>,
+    enabledSkills: Set<String>,
+    invalidCount: Int,
+    onManage: () -> Unit,
+    onToggle: (String, Boolean) -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        item("manage") {
+            ListItem(
+                headlineContent = { Text("管理 Skills") },
+                supportingContent = {
+                    Text(
+                        text = if (invalidCount > 0) {
+                            "进入技能页可创建、编辑、导入技能，并查看 $invalidCount 个无效 skill。"
+                        } else {
+                            "进入技能页可创建、编辑、导入技能。"
+                        }
+                    )
+                },
+                trailingContent = {
+                    Text(
+                        text = "前往",
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable(onClick = onManage),
+                    )
+                },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            )
+        }
+
+        items(skills, key = { it.directoryName }) { skill ->
+            ListItem(
+                headlineContent = { Text(skill.name) },
+                supportingContent = {
+                    Text(
+                        text = buildString {
+                            append(skill.description)
+                            append("\n")
+                            append(skill.directoryName)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    )
+                },
+                trailingContent = {
+                    Switch(
+                        checked = enabledSkills.contains(skill.directoryName),
+                        onCheckedChange = { checked -> onToggle(skill.directoryName, checked) },
+                    )
+                },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            )
         }
     }
 }

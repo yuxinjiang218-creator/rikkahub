@@ -8,7 +8,9 @@ import me.rerere.rikkahub.data.repository.FilesRepository
 import me.rerere.rikkahub.data.repository.GenMediaRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.repository.MemoryIndexRepository
+import me.rerere.rikkahub.data.repository.ScheduledTaskRunRepository
 import me.rerere.rikkahub.data.repository.SourcePreviewRepository
+import me.rerere.rikkahub.data.skills.SkillsRepository
 import org.koin.dsl.module
 
 val repositoryModule = module {
@@ -29,6 +31,10 @@ val repositoryModule = module {
     }
 
     single {
+        ScheduledTaskRunRepository(get())
+    }
+
+    single {
         GenMediaRepository(get())
     }
 
@@ -46,5 +52,13 @@ val repositoryModule = module {
 
     single {
         SkillManager(get(), get())
+    }
+
+    single {
+        SkillsRepository(
+            context = get(),
+            appScope = get(),
+            skillManager = get(),
+        )
     }
 }

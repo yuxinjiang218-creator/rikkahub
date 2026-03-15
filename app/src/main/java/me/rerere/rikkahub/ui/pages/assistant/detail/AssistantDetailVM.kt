@@ -5,10 +5,8 @@ import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -16,13 +14,12 @@ import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.files.FilesManager
-import me.rerere.rikkahub.data.files.SkillManager
-import me.rerere.rikkahub.data.files.SkillMetadata
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantMemory
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.Tag
 import me.rerere.rikkahub.data.repository.MemoryRepository
+import me.rerere.rikkahub.data.skills.SkillsRepository
 import kotlin.uuid.Uuid
 
 private const val TAG = "AssistantDetailVM"
@@ -32,18 +29,11 @@ class AssistantDetailVM(
     private val settingsStore: SettingsStore,
     private val memoryRepository: MemoryRepository,
     private val filesManager: FilesManager,
-    private val skillManager: SkillManager,
+    private val skillsRepository: SkillsRepository,
 ) : ViewModel() {
     private val assistantId = Uuid.parse(id)
 
-    private val _skills = MutableStateFlow<List<SkillMetadata>>(emptyList())
-    val skills = _skills.asStateFlow()
-
-    init {
-        viewModelScope.launch(Dispatchers.IO) {
-            _skills.value = skillManager.listSkills()
-        }
-    }
+    val skillsState = skillsRepository.state
 
     val settings: StateFlow<Settings> =
         settingsStore.settingsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, Settings.dummy())
@@ -165,6 +155,10 @@ class AssistantDetailVM(
                     })
             )
         }
+    }
+
+    fun refreshSkills() {
+        skillsRepository.requestRefresh()
     }
 
     fun addMemory(memory: AssistantMemory) {

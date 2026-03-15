@@ -91,6 +91,7 @@ import me.rerere.rikkahub.ui.pages.extensions.QuickMessagesPage
 import me.rerere.rikkahub.ui.pages.search.SearchPage
 import me.rerere.rikkahub.ui.pages.stats.StatsPage
 import me.rerere.rikkahub.ui.pages.setting.SettingAboutPage
+import me.rerere.rikkahub.ui.pages.setting.SettingAdvancedPage
 import me.rerere.rikkahub.ui.pages.setting.SettingDisplayPage
 import me.rerere.rikkahub.ui.pages.setting.SettingDonatePage
 import me.rerere.rikkahub.ui.pages.setting.SettingFilesPage
@@ -99,10 +100,14 @@ import me.rerere.rikkahub.ui.pages.setting.SettingModelPage
 import me.rerere.rikkahub.ui.pages.setting.SettingPage
 import me.rerere.rikkahub.ui.pages.setting.SettingProviderDetailPage
 import me.rerere.rikkahub.ui.pages.setting.SettingProviderPage
+import me.rerere.rikkahub.ui.pages.setting.SettingScheduledTaskPage
 import me.rerere.rikkahub.ui.pages.setting.SettingSearchPage
 import me.rerere.rikkahub.ui.pages.setting.SettingTTSPage
 import me.rerere.rikkahub.ui.pages.setting.SettingWebPage
+import me.rerere.rikkahub.ui.pages.setting.SettingWorkflowControlPage
 import me.rerere.rikkahub.ui.pages.share.handler.ShareHandlerPage
+import me.rerere.rikkahub.ui.pages.scheduled.ScheduledTaskRunDetailPage
+import me.rerere.rikkahub.ui.pages.scheduled.ScheduledTaskRunsPage
 import me.rerere.rikkahub.ui.pages.translator.TranslatorPage
 import me.rerere.rikkahub.ui.pages.webview.WebViewPage
 import me.rerere.rikkahub.ui.theme.LocalDarkMode
@@ -188,10 +193,18 @@ class RouteActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Navigate to the chat screen if a conversation ID is provided
         intent.getStringExtra("conversationId")?.let { text ->
             navStack?.add(Screen.Chat(text))
-        }    }
+        }
+        intent.getStringExtra("scheduledTaskRunId")?.let { runId ->
+            navStack?.add(Screen.ScheduledTaskRunDetail(runId))
+            intent.removeExtra("scheduledTaskRunId")
+        }
+        if (intent.getBooleanExtra("openScheduledTaskSettings", false)) {
+            navStack?.add(Screen.SettingScheduledTasks)
+            intent.removeExtra("openScheduledTaskSettings")
+        }
+    }
 
     @Composable
     fun AppRoutes() {
@@ -221,6 +234,17 @@ class RouteActivity : ComponentActivity() {
 
         val backStack = rememberNavBackStack(startScreen)
         SideEffect { this@RouteActivity.navStack = backStack }
+
+        LaunchedEffect(backStack) {
+            intent?.getStringExtra("scheduledTaskRunId")?.let { runId ->
+                backStack.add(Screen.ScheduledTaskRunDetail(runId))
+                intent?.removeExtra("scheduledTaskRunId")
+            }
+            if (intent?.getBooleanExtra("openScheduledTaskSettings", false) == true) {
+                backStack.add(Screen.SettingScheduledTasks)
+                intent?.removeExtra("openScheduledTaskSettings")
+            }
+        }
 
         ShareHandler(backStack)
 
@@ -341,6 +365,18 @@ class RouteActivity : ComponentActivity() {
                                 SettingPage()
                             }
 
+                            entry<Screen.SettingAdvanced> {
+                                SettingAdvancedPage()
+                            }
+
+                            entry<Screen.SettingWorkflowControl> {
+                                SettingWorkflowControlPage()
+                            }
+
+                            entry<Screen.SettingScheduledTasks> {
+                                SettingScheduledTaskPage()
+                            }
+
                             entry<Screen.Backup> {
                                 BackupPage()
                             }
@@ -431,6 +467,14 @@ class RouteActivity : ComponentActivity() {
 
                             entry<Screen.Stats> {
                                 StatsPage()
+                            }
+
+                            entry<Screen.ScheduledTaskRuns> {
+                                ScheduledTaskRunsPage()
+                            }
+
+                            entry<Screen.ScheduledTaskRunDetail> { key ->
+                                ScheduledTaskRunDetailPage(key.id)
                             }
                         }
                     )
@@ -534,6 +578,15 @@ sealed interface Screen : NavKey {
     data object Setting : Screen
 
     @Serializable
+    data object SettingAdvanced : Screen
+
+    @Serializable
+    data object SettingWorkflowControl : Screen
+
+    @Serializable
+    data object SettingScheduledTasks : Screen
+
+    @Serializable
     data object Backup : Screen
 
     @Serializable
@@ -594,6 +647,12 @@ sealed interface Screen : NavKey {
     data object Prompts : Screen
     @Serializable
     data object Skills : Screen
+
+    @Serializable
+    data object ScheduledTaskRuns : Screen
+
+    @Serializable
+    data class ScheduledTaskRunDetail(val id: String) : Screen
 
     @Serializable
     data object MessageSearch : Screen

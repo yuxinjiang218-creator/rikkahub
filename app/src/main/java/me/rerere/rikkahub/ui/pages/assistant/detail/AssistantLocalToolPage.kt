@@ -1,4 +1,4 @@
-package me.rerere.rikkahub.ui.pages.assistant.detail
+﻿package me.rerere.rikkahub.ui.pages.assistant.detail
 
 import android.content.Intent
 import androidx.compose.foundation.clickable
@@ -97,6 +97,7 @@ import me.rerere.rikkahub.sandbox.SandboxUsage
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import me.rerere.rikkahub.ui.components.sandbox.SandboxFileManagerDialog
 import me.rerere.rikkahub.ui.components.ui.FormItem
 import kotlinx.coroutines.Dispatchers
 import org.koin.androidx.compose.koinViewModel
@@ -170,13 +171,20 @@ private fun FileManagerCard(
 
             // 描述
             Text(
-                text = "管理该助手的所有对话沙箱中的文件。此功能仅供用户管理文件，不影响AI模型对文件工具的访问权限。",
+                text = "管理该助手各对话中的工作区文件，并可在同一入口浏览容器目录。此功能仅供用户管理文件，不影响 AI 模型对工具的访问权限。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             // 文件管理界面
-            ConversationSandboxList(assistantId = assistantId)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                ConversationSandboxList(assistantId = assistantId)
+            }
         }
     }
 }
@@ -187,6 +195,18 @@ private fun AssistantLocalToolContent(
     assistant: Assistant,
     onUpdate: (Assistant) -> Unit
 ) {
+    LaunchedEffect(assistant.localTools) {
+        if (assistant.localTools.any { it == LocalToolOption.ChaquoPy || it == LocalToolOption.SandboxFile }) {
+            onUpdate(
+                assistant.copy(
+                    localTools = assistant.localTools
+                        .filterNot { it == LocalToolOption.ChaquoPy || it == LocalToolOption.SandboxFile }
+                        .plus(LocalToolOption.Container)
+                        .distinct()
+                )
+            )
+        }
+    }
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -278,41 +298,9 @@ private fun AssistantLocalToolContent(
             assistantId = assistant.id
         )
 
-        // ✅ 文件管理工具开关（控制是否暴露给AI模型）
-        LocalToolCard(
-            title = "文件管理工具",
-            description = "允许 AI 访问沙箱文件系统（仅暴露给模型，非文件管理器UI）",
-            icon = Lucide.Folder,
-            isEnabled = assistant.localTools.contains(LocalToolOption.SandboxFile),
-            onToggle = { enabled ->
-                val newLocalTools = if (enabled) {
-                    assistant.localTools + LocalToolOption.SandboxFile
-                } else {
-                    assistant.localTools - LocalToolOption.SandboxFile
-                }
-                onUpdate(assistant.copy(localTools = newLocalTools))
-            }
-        )
-
-        // ✅ ChaquoPy工具卡片
-        val isChaquoPyEnabled = assistant.localTools.contains(LocalToolOption.ChaquoPy)
-        LocalToolCard(
-            title = "ChaquoPy工具",
-            description = "沙箱Python执行环境，支持数据分析、图表绘制等高级功能",
-            icon = Lucide.Terminal,
-            isEnabled = isChaquoPyEnabled,
-            onToggle = { enabled ->
-                val newLocalTools = if (enabled) {
-                    assistant.localTools + LocalToolOption.ChaquoPy
-                } else {
-                    assistant.localTools - LocalToolOption.ChaquoPy
-                }
-                onUpdate(assistant.copy(localTools = newLocalTools))
-            }
-        )
-
         // ✅ 容器工具卡片
-        val isContainerEnabled = assistant.localTools.contains(LocalToolOption.Container)
+        val isContainerEnabled = assistant.localTools.contains(LocalToolOption.Container) ||
+            assistant.localTools.contains(LocalToolOption.ChaquoPy)
         LocalToolCard(
             title = "容器工具 (PRoot)",
             description = "Linux 容器环境，支持 pip install 任意 Python 包",
@@ -320,9 +308,13 @@ private fun AssistantLocalToolContent(
             isEnabled = isContainerEnabled,
             onToggle = { enabled ->
                 val newLocalTools = if (enabled) {
-                    assistant.localTools + LocalToolOption.Container
+                    assistant.localTools
+                        .filterNot { it == LocalToolOption.ChaquoPy }
+                        .plus(LocalToolOption.Container)
+                        .distinct()
                 } else {
-                    assistant.localTools - LocalToolOption.Container
+                    assistant.localTools
+                        .filterNot { it == LocalToolOption.ChaquoPy || it == LocalToolOption.Container }
                 }
                 onUpdate(assistant.copy(localTools = newLocalTools))
             },
@@ -331,23 +323,6 @@ private fun AssistantLocalToolContent(
                     ContainerStatusCard()
                 }
             } else null
-        )
-
-        // ✅ Workflow TODO 工具卡片
-        val isWorkflowControlEnabled = assistant.localTools.contains(LocalToolOption.WorkflowControl)
-        LocalToolCard(
-            title = "工作流控制",
-            description = "控制聊天页中的工作流开关与工作流侧边栏入口显示",
-            icon = Lucide.Sparkles,
-            isEnabled = isWorkflowControlEnabled,
-            onToggle = { enabled ->
-                val newLocalTools = if (enabled) {
-                    assistant.localTools + LocalToolOption.WorkflowControl
-                } else {
-                    assistant.localTools - LocalToolOption.WorkflowControl
-                }
-                onUpdate(assistant.copy(localTools = newLocalTools))
-            }
         )
 
         val isWorkflowTodoEnabled = assistant.localTools.contains(LocalToolOption.WorkflowTodo)
@@ -763,7 +738,7 @@ private fun getFileIcon(fileName: String, isDirectory: Boolean): androidx.compos
  * 如需在其他页面使用，请复制此组件或将其提取到公共组件库。
  */
 @Composable
-private fun SandboxFileManagerDialog(
+private fun LegacySandboxFileManagerDialog(
     sandboxId: String,
     title: String = "沙箱文件管理",
     onDismiss: () -> Unit
@@ -951,18 +926,16 @@ private fun SandboxFileManagerDialog(
                                     }
                                 },
                                 onShare = {
-                                    if (!item.isDirectory) {
-                                        val uri = SandboxEngine.getFileShareUri(context, sandboxId, item.path)
-                                        uri?.let { shareUri ->
-                                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                                type = SandboxEngine.getFileMimeType(item.name)
-                                                putExtra(Intent.EXTRA_STREAM, shareUri)
-                                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                            }
-                                            context.startActivity(
-                                                Intent.createChooser(intent, "分享 ${item.name}")
-                                            )
+                                    val uri = SandboxEngine.getShareableUri(context, sandboxId, item.path)
+                                    uri?.let { shareUri ->
+                                        val intent = Intent(Intent.ACTION_SEND).apply {
+                                            type = if (item.isDirectory) "application/zip" else SandboxEngine.getFileMimeType(item.name)
+                                            putExtra(Intent.EXTRA_STREAM, shareUri)
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                         }
+                                        context.startActivity(
+                                            Intent.createChooser(intent, if (item.isDirectory) "分享 ${item.name}.zip" else "分享 ${item.name}")
+                                        )
                                     }
                                 },
                                 onDelete = {
@@ -982,15 +955,15 @@ private fun SandboxFileManagerDialog(
                                     }
                                 },
                                 onShare = {
-                                    val uri = SandboxEngine.getFileShareUri(context, sandboxId, item.path)
+                                    val uri = SandboxEngine.getShareableUri(context, sandboxId, item.path)
                                     uri?.let { shareUri ->
                                         val intent = Intent(Intent.ACTION_SEND).apply {
-                                            type = SandboxEngine.getFileMimeType(item.name)
+                                            type = if (item.isDirectory) "application/zip" else SandboxEngine.getFileMimeType(item.name)
                                             putExtra(Intent.EXTRA_STREAM, shareUri)
                                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                         }
                                         context.startActivity(
-                                            Intent.createChooser(intent, "分享 ${item.name}")
+                                            Intent.createChooser(intent, if (item.isDirectory) "分享 ${item.name}.zip" else "分享 ${item.name}")
                                         )
                                     }
                                 },
@@ -1294,17 +1267,15 @@ private fun FileManagerItem(
                 modifier = Modifier.width(80.dp),
                 horizontalArrangement = Arrangement.End
             ) {
-                if (!item.isDirectory) {
-                    IconButton(
-                        onClick = onShare,
-                        modifier = Modifier.size(28.dp)
-                    ) {
-                        Icon(
-                            Lucide.Share2,
-                            contentDescription = "分享",
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
+                IconButton(
+                    onClick = onShare,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Lucide.Share2,
+                        contentDescription = if (item.isDirectory) "分享文件夹" else "分享",
+                        modifier = Modifier.size(16.dp)
+                    )
                 }
                 IconButton(
                     onClick = onDelete,

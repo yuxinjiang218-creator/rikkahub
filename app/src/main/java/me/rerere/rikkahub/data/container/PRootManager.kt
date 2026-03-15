@@ -22,6 +22,8 @@ import kotlinx.serialization.json.put
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Singleton
+import me.rerere.rikkahub.data.files.FileFolders
+import me.rerere.rikkahub.sandbox.SandboxEngine
 
 /**
  * PRoot 容器管理器 - 全局单例架构
@@ -41,6 +43,14 @@ import javax.inject.Singleton
 class PRootManager(
     private val context: Context
 ) {
+
+    data class ContainerDirectoryEntry(
+        val name: String,
+        val path: String,
+        val isDirectory: Boolean,
+        val size: Long,
+        val modified: Long,
+    )
 
     companion object {
         private const val TAG = "PRootManager"
@@ -781,6 +791,8 @@ fi
         return try {
             // 确保沙箱目录存在
             val sandboxDir = File(context.filesDir, "sandboxes/$sandboxId")
+            val deliveryDir = SandboxEngine.getDeliveryDir(context, sandboxId)
+            val runtimeSkillsDir = SandboxEngine.getRuntimeSkillsDir(context, sandboxId)
             sandboxDir.mkdirs()
             
             // 安装依赖
@@ -903,6 +915,92 @@ fi
                 put("stderr", "")
             }
         }
+    }
+
+    suspend fun listContainerDirectory(
+        sandboxId: String,
+        containerPath: String,
+    ): List<ContainerDirectoryEntry> {
+        val normalizedPath = normalizeContainerPath(containerPath)
+        val mountedHostDir = SandboxEngine.resolveHostFileForContainerPath(context, sandboxId, normalizedPath)
+        if (mountedHostDir != null && mountedHostDir.exists() && mountedHostDir.isDirectory) {
+            return mountedHostDir.listFiles()
+                ?.map { file ->
+                    val childPath = buildContainerChildPath(normalizedPath, file.name)
+                    ContainerDirectoryEntry(
+                        name = file.name,
+                        path = childPath,
+                        isDirectory = file.isDirectory,
+                        size = if (file.isFile) file.length() else 0L,
+                        modified = file.lastModified(),
+                    )
+                }
+                ?.sortedWith(compareBy<ContainerDirectoryEntry>({ !it.isDirectory }, { it.name.lowercase() }))
+                ?: emptyList()
+        }
+
+        if (_containerState.value != ContainerStateEnum.Running) return emptyList()
+
+        val escaped = normalizedPath.replace("'", "'\"'\"'")
+        val script = """
+            target='$escaped'
+            if [ ! -d "${'$'}target" ]; then
+              exit 0
+            fi
+            find "${'$'}target" -mindepth 1 -maxdepth 1 -exec stat -c '%n\t%F\t%s\t%Y' {} \;
+        """.trimIndent()
+        val result = execInContainer(
+            sandboxId = sandboxId,
+            command = listOf("sh", "-c", script),
+            env = getToolEnvironment(),
+        )
+        if (result.exitCode != 0) return emptyList()
+
+        return result.stdout.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .mapNotNull { line ->
+                val parts = line.split('\t')
+                if (parts.size < 4) return@mapNotNull null
+                val fullPath = parts[0]
+                ContainerDirectoryEntry(
+                    name = fullPath.substringAfterLast('/').ifBlank { fullPath },
+                    path = fullPath,
+                    isDirectory = parts[1].contains("directory", ignoreCase = true),
+                    size = parts[2].toLongOrNull() ?: 0L,
+                    modified = parts[3].toLongOrNull()?.times(1000L) ?: 0L,
+                )
+            }
+            .sortedWith(compareBy<ContainerDirectoryEntry>({ !it.isDirectory }, { it.name.lowercase() }))
+            .toList()
+    }
+
+    suspend fun readContainerTextFile(
+        sandboxId: String,
+        containerPath: String,
+        maxBytes: Int = 128 * 1024,
+    ): String? {
+        val normalizedPath = normalizeContainerPath(containerPath)
+        val mountedHostFile = SandboxEngine.resolveHostFileForContainerPath(context, sandboxId, normalizedPath)
+        if (mountedHostFile != null && mountedHostFile.exists() && mountedHostFile.isFile) {
+            return runCatching { mountedHostFile.readText() }.getOrNull()
+        }
+        if (_containerState.value != ContainerStateEnum.Running) return null
+
+        val escaped = normalizedPath.replace("'", "'\"'\"'")
+        val script = """
+            target='$escaped'
+            if [ ! -f "${'$'}target" ]; then
+              exit 0
+            fi
+            head -c $maxBytes "${'$'}target"
+        """.trimIndent()
+        val result = execInContainer(
+            sandboxId = sandboxId,
+            command = listOf("sh", "-c", script),
+            env = getToolEnvironment(),
+        )
+        return if (result.exitCode == 0) result.stdout else null
     }
 
     /**
@@ -1059,6 +1157,9 @@ fi
             // 构建 PRoot 命令
             val prootBinary = File(prootDir, "proot").absolutePath
             val sandboxDir = File(context.filesDir, "sandboxes/$sandboxId")
+            val deliveryDir = SandboxEngine.getDeliveryDir(context, sandboxId)
+            val runtimeSkillsDir = SandboxEngine.getRuntimeSkillsDir(context, sandboxId)
+            val skillLibraryDir = File(context.filesDir, FileFolders.SKILLS).apply { mkdirs() }
 
             // 确保沙箱目录存在
             sandboxDir.mkdirs()
@@ -1082,6 +1183,12 @@ fi
                 // 绑定挂载对话的沙箱目录到 /workspace
                 add("-b")
                 add("${sandboxDir.absolutePath}:/workspace")
+                add("-b")
+                add("${deliveryDir.absolutePath}:/delivery")
+                add("-b")
+                add("${skillLibraryDir.absolutePath}:/skills")
+                add("-b")
+                add("${runtimeSkillsDir.absolutePath}:/opt/rikkahub/skills")
 
                 // 绑定挂载容器的 upper 层到 /usr/local（pip 安装位置）
                 add("-b")
@@ -2054,6 +2161,9 @@ fi
     ): List<String> {
         val prootBinary = File(prootDir, "proot").absolutePath
         val sandboxDir = File(context.filesDir, "sandboxes/$sandboxId")
+        val deliveryDir = SandboxEngine.getDeliveryDir(context, sandboxId)
+        val runtimeSkillsDir = SandboxEngine.getRuntimeSkillsDir(context, sandboxId)
+        val skillLibraryDir = File(context.filesDir, FileFolders.SKILLS).apply { mkdirs() }
 
         return buildList {
             add(prootBinary)
@@ -2069,6 +2179,12 @@ fi
             // 绑定挂载对话的沙箱目录到 /workspace
             add("-b")
             add("${sandboxDir.absolutePath}:/workspace")
+            add("-b")
+            add("${deliveryDir.absolutePath}:/delivery")
+            add("-b")
+            add("${skillLibraryDir.absolutePath}:/skills")
+            add("-b")
+            add("${runtimeSkillsDir.absolutePath}:/opt/rikkahub/skills")
 
             // 绑定挂载容器的 upper 层到 /usr/local（pip 安装位置）
             add("-b")
@@ -2102,6 +2218,20 @@ fi
 
             // 执行的命令
             addAll(command)
+        }
+    }
+
+    private fun normalizeContainerPath(path: String): String {
+        if (path.isBlank()) return "/"
+        val normalized = path.replace('\\', '/').replace(Regex("/+"), "/").trimEnd('/')
+        return if (normalized.startsWith("/")) normalized.ifBlank { "/" } else "/$normalized"
+    }
+
+    private fun buildContainerChildPath(parent: String, name: String): String {
+        val normalizedParent = normalizeContainerPath(parent)
+        return when (normalizedParent) {
+            "/" -> "/$name"
+            else -> "$normalizedParent/$name"
         }
     }
 }

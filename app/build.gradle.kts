@@ -10,7 +10,6 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
-    id("com.chaquo.python") version "17.0.0"
 }
 
 android {
@@ -180,14 +179,6 @@ ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
 
-chaquopy {
-    defaultConfig {
-        version = "3.11"
-        pip {
-            install("-r", "src/main/python/requirements.txt")
-        }
-    }
-}
 kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)

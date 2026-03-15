@@ -31,12 +31,16 @@ import me.rerere.rikkahub.data.ai.prompts.LEARNING_MODE_PROMPT
 import me.rerere.rikkahub.data.datastore.migration.PreferenceStoreV1Migration
 import me.rerere.rikkahub.data.datastore.migration.PreferenceStoreV2Migration
 import me.rerere.rikkahub.data.datastore.migration.PreferenceStoreV3Migration
+import me.rerere.rikkahub.data.files.FileFolders
+import me.rerere.rikkahub.data.files.SkillFrontmatterParser
+import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.InjectionPosition
 import me.rerere.rikkahub.data.model.Lorebook
 import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
+import me.rerere.rikkahub.data.model.ScheduledPromptTask
 import me.rerere.rikkahub.data.model.Tag
 import me.rerere.rikkahub.data.sync.s3.S3Config
 import me.rerere.rikkahub.ui.theme.PresetThemes
@@ -47,6 +51,7 @@ import me.rerere.search.SearchServiceOptions
 import me.rerere.tts.provider.TTSProviderSetting
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.get
+import java.io.File
 import kotlin.uuid.Uuid
 
 private const val TAG = "PreferencesStore"
@@ -103,6 +108,9 @@ class SettingsStore(
         val SELECT_ASSISTANT = stringPreferencesKey("select_assistant")
         val ASSISTANTS = stringPreferencesKey("assistants")
         val ASSISTANT_TAGS = stringPreferencesKey("assistant_tags")
+        val ENABLE_WORKFLOW_CONTROL = booleanPreferencesKey("enable_workflow_control")
+        val SCHEDULED_TASKS = stringPreferencesKey("scheduled_tasks")
+        val SCHEDULED_TASK_KEEP_ALIVE_ENABLED = booleanPreferencesKey("scheduled_task_keep_alive_enabled")
 
         // 搜索
         val SEARCH_SERVICES = stringPreferencesKey("search_services")
@@ -185,6 +193,11 @@ class SettingsStore(
                 assistantTags = preferences[ASSISTANT_TAGS]?.let {
                     JsonInstant.decodeFromString(it)
                 } ?: emptyList(),
+                enableWorkflowControl = preferences[ENABLE_WORKFLOW_CONTROL] == true,
+                scheduledTasks = preferences[SCHEDULED_TASKS]?.let {
+                    JsonInstant.decodeFromString(it)
+                } ?: emptyList(),
+                scheduledTaskKeepAliveEnabled = preferences[SCHEDULED_TASK_KEEP_ALIVE_ENABLED] == true,
                 providers = JsonInstant.decodeFromString(preferences[PROVIDERS] ?: "[]"),
                 assistants = JsonInstant.decodeFromString(preferences[ASSISTANTS] ?: "[]"),
                 dynamicColor = preferences[DYNAMIC_COLOR] != false,
@@ -257,6 +270,21 @@ class SettingsStore(
                     assistants.add(defaultAssistant.copy())
                 }
             }
+            val migratedWorkflowEnabled = it.enableWorkflowControl ||
+                assistants.any { assistant -> assistant.localTools.contains(LocalToolOption.WorkflowControl) }
+            val migratedAssistants = assistants.map { assistant ->
+                if (assistant.localTools.any { tool ->
+                        tool == LocalToolOption.WorkflowControl || tool == LocalToolOption.SandboxFile
+                    }) {
+                    assistant.copy(
+                        localTools = assistant.localTools.filterNot { tool ->
+                            tool == LocalToolOption.WorkflowControl || tool == LocalToolOption.SandboxFile
+                        }
+                    )
+                } else {
+                    assistant
+                }
+            }.toMutableList()
             val ttsProviders = it.ttsProviders.ifEmpty { DEFAULT_TTS_PROVIDERS }.toMutableList()
             DEFAULT_TTS_PROVIDERS.forEach { defaultTTSProvider ->
                 if (ttsProviders.none { provider -> provider.id == defaultTTSProvider.id }) {
@@ -265,8 +293,9 @@ class SettingsStore(
             }
             it.copy(
                 providers = providers,
-                assistants = assistants,
-                ttsProviders = ttsProviders
+                assistants = migratedAssistants,
+                ttsProviders = ttsProviders,
+                enableWorkflowControl = migratedWorkflowEnabled,
             )
         }
         .map { settings ->
@@ -274,7 +303,12 @@ class SettingsStore(
             val validMcpServerIds = settings.mcpServers.map { it.id }.toSet()
             val validModeInjectionIds = settings.modeInjections.map { it.id }.toSet()
             val validLorebookIds = settings.lorebooks.map { it.id }.toSet()
+            val validAssistantIds = settings.assistants.map { it.id }.toSet()
+            val fallbackAssistantId = settings.assistants.firstOrNull()?.id ?: DEFAULT_ASSISTANT_ID
+            val maxSearchIndex = (settings.searchServices.size - 1).coerceAtLeast(0)
             val validQuickMessageIds = settings.quickMessages.map { it.id }.toSet()
+            val skillDirectoryAliases = loadSkillDirectoryAliases(context)
+            val validSkillDirectoryNames = skillDirectoryAliases.values.toSet()
             settings.copy(
                 providers = settings.providers.distinctBy { it.id }.map { provider ->
                     when (provider) {
@@ -292,6 +326,15 @@ class SettingsStore(
                     }
                 },
                 assistants = settings.assistants.distinctBy { it.id }.map { assistant ->
+                    val sanitizedLocalTools = assistant.localTools.filterNot { tool ->
+                        tool == LocalToolOption.WorkflowControl || tool == LocalToolOption.SandboxFile
+                    }.let { tools ->
+                        if (settings.enableWorkflowControl) {
+                            (tools + LocalToolOption.WorkflowControl).distinct()
+                        } else {
+                            tools
+                        }
+                    }
                     assistant.copy(
                         // 过滤掉不存在的 MCP 服务器 ID
                         mcpServers = assistant.mcpServers.filter { serverId ->
@@ -308,7 +351,15 @@ class SettingsStore(
                         // 过滤掉不存在的快捷消息 ID
                         quickMessageIds = assistant.quickMessageIds.filter { id ->
                             id in validQuickMessageIds
-                        }.toSet()
+                        }.toSet(),
+                        enabledSkills = assistant.enabledSkills.mapNotNull { skillKey ->
+                            when {
+                                skillKey in validSkillDirectoryNames -> skillKey
+                                skillDirectoryAliases.containsKey(skillKey) -> skillDirectoryAliases.getValue(skillKey)
+                                else -> null
+                            }
+                        }.toSet(),
+                        localTools = sanitizedLocalTools,
                     )
                 },
                 ttsProviders = settings.ttsProviders.distinctBy { it.id },
@@ -318,6 +369,24 @@ class SettingsStore(
                 modeInjections = settings.modeInjections.distinctBy { it.id },
                 lorebooks = settings.lorebooks.distinctBy { it.id },
                 quickMessages = settings.quickMessages.distinctBy { it.id },
+                scheduledTasks = settings.scheduledTasks
+                    .distinctBy { it.id }
+                    .map { task ->
+                        task.copy(
+                            assistantId = if (task.assistantId in validAssistantIds) {
+                                task.assistantId
+                            } else {
+                                fallbackAssistantId
+                            },
+                            overrideMcpServers = task.overrideMcpServers?.filter { it in validMcpServerIds }?.toSet(),
+                            overrideSearchServiceIndex = task.overrideSearchServiceIndex?.let { index ->
+                                if (settings.searchServices.isEmpty()) null else index.coerceIn(0, maxSearchIndex)
+                            },
+                            overrideLocalTools = task.overrideLocalTools
+                                ?.filterNot { tool -> tool == LocalToolOption.SandboxFile }
+                                ?.distinct(),
+                        )
+                    },
             )
         }
         .onEach {
@@ -334,6 +403,20 @@ class SettingsStore(
             return
         }
         settingsFlow.value = settings
+        val assistantsForStorage = settings.assistants.map { assistant ->
+            assistant.copy(
+                localTools = assistant.localTools.filterNot { tool ->
+                    tool == LocalToolOption.WorkflowControl || tool == LocalToolOption.SandboxFile
+                }
+            )
+        }
+        val scheduledTasksForStorage = settings.scheduledTasks.map { task ->
+            task.copy(
+                overrideLocalTools = task.overrideLocalTools
+                    ?.filterNot { tool -> tool == LocalToolOption.SandboxFile }
+                    ?.distinct()
+            )
+        }
         dataStore.edit { preferences ->
             preferences[DYNAMIC_COLOR] = settings.dynamicColor
             preferences[THEME_ID] = settings.themeId
@@ -363,9 +446,12 @@ class SettingsStore(
 
             preferences[PROVIDERS] = JsonInstant.encodeToString(settings.providers)
 
-            preferences[ASSISTANTS] = JsonInstant.encodeToString(settings.assistants)
+            preferences[ASSISTANTS] = JsonInstant.encodeToString(assistantsForStorage)
             preferences[SELECT_ASSISTANT] = settings.assistantId.toString()
             preferences[ASSISTANT_TAGS] = JsonInstant.encodeToString(settings.assistantTags)
+            preferences[ENABLE_WORKFLOW_CONTROL] = settings.enableWorkflowControl
+            preferences[SCHEDULED_TASKS] = JsonInstant.encodeToString(scheduledTasksForStorage)
+            preferences[SCHEDULED_TASK_KEEP_ALIVE_ENABLED] = settings.scheduledTaskKeepAliveEnabled
 
             preferences[SEARCH_SERVICES] = JsonInstant.encodeToString(settings.searchServices)
             preferences[SEARCH_COMMON] = JsonInstant.encodeToString(settings.searchCommonOptions)
@@ -499,6 +585,9 @@ data class Settings(
     val providers: List<ProviderSetting> = DEFAULT_PROVIDERS,
     val assistants: List<Assistant> = DEFAULT_ASSISTANTS,
     val assistantTags: List<Tag> = emptyList(),
+    val enableWorkflowControl: Boolean = false,
+    val scheduledTasks: List<ScheduledPromptTask> = emptyList(),
+    val scheduledTaskKeepAliveEnabled: Boolean = false,
     val searchServices: List<SearchServiceOptions> = listOf(SearchServiceOptions.DEFAULT),
     val searchCommonOptions: SearchCommonOptions = SearchCommonOptions(),
     val searchServiceSelected: Int = 0,
@@ -647,6 +736,25 @@ private fun Model.findModelProviderFromList(providers: List<ProviderSetting>): P
         }
     }
     return null
+}
+
+private fun loadSkillDirectoryAliases(context: Context): Map<String, String> {
+    val skillsRoot = File(context.filesDir, FileFolders.SKILLS)
+    if (!skillsRoot.exists()) return emptyMap()
+    val aliases = linkedMapOf<String, String>()
+    skillsRoot.listFiles()
+        ?.filter { it.isDirectory }
+        ?.forEach { directory ->
+            val skillFile = directory.resolve("SKILL.md")
+            if (!skillFile.exists()) return@forEach
+            val content = runCatching { skillFile.readText() }.getOrNull() ?: return@forEach
+            val name = SkillFrontmatterParser.parse(content)["name"]?.trim().orEmpty()
+            aliases[directory.name] = directory.name
+            if (name.isNotBlank()) {
+                aliases.putIfAbsent(name, directory.name)
+            }
+        }
+    return aliases
 }
 
 internal val DEFAULT_ASSISTANT_ID = Uuid.parse("0950e2dc-9bd5-4801-afa3-aa887aa36b4e")

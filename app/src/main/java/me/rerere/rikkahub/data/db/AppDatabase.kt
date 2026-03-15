@@ -14,6 +14,7 @@ import me.rerere.rikkahub.data.db.dao.ManagedFileDAO
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.dao.MemoryIndexChunkDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
+import me.rerere.rikkahub.data.db.dao.ScheduledTaskRunDAO
 import me.rerere.rikkahub.data.db.dao.SourcePreviewChunkDAO
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.CompressionEventEntity
@@ -23,6 +24,7 @@ import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
 import me.rerere.rikkahub.data.db.entity.MemoryIndexChunkEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
+import me.rerere.rikkahub.data.db.entity.ScheduledTaskRunEntity
 import me.rerere.rikkahub.data.db.entity.SourcePreviewChunkEntity
 import me.rerere.rikkahub.data.db.migrations.Migration_16_17
 import me.rerere.rikkahub.data.db.migrations.Migration_19_20
@@ -40,8 +42,9 @@ import me.rerere.rikkahub.utils.JsonInstant
         CompressionEventEntity::class,
         MemoryIndexChunkEntity::class,
         SourcePreviewChunkEntity::class,
+        ScheduledTaskRunEntity::class,
     ],
-    version = 20,
+    version = 21,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -54,6 +57,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         AutoMigration(from = 10, to = 11),
         AutoMigration(from = 12, to = 13),
         AutoMigration(from = 16, to = 17, spec = Migration_16_17::class),
+        AutoMigration(from = 20, to = 21),
     ]
 )
 @TypeConverters(TokenUsageConverter::class)
@@ -75,6 +79,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun memoryIndexChunkDao(): MemoryIndexChunkDAO
 
     abstract fun sourcePreviewChunkDao(): SourcePreviewChunkDAO
+
+    abstract fun scheduledTaskRunDao(): ScheduledTaskRunDAO
 }
 
 object TokenUsageConverter {

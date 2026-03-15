@@ -129,6 +129,15 @@ class McpManager(
         return mcpServers
     }
 
+    fun getAvailableToolsForServers(serverIds: Set<Uuid>): List<McpTool> {
+        val settings = settingsStore.settingsFlow.value
+        return settings.mcpServers
+            .filter { it.commonOptions.enable && it.id in serverIds }
+            .flatMap { config ->
+                config.commonOptions.tools.filter { tool -> tool.enable }
+            }
+    }
+
     suspend fun callTool(toolName: String, args: JsonObject): List<UIMessagePart> {
         val tools = getAllAvailableTools()
         val tool = tools.find { it.name == toolName }
@@ -151,6 +160,35 @@ class McpManager(
         )
         return result.content.map {
             when(it) {
+                is TextContent -> UIMessagePart.Text(it.text)
+                is ImageContent -> convertImageContentToFilePart(it)
+                else -> UIMessagePart.Text(JsonInstant.encodeToString(it))
+            }
+        }
+    }
+
+    suspend fun callToolFromServers(serverIds: Set<Uuid>, toolName: String, args: JsonObject): List<UIMessagePart> {
+        val tools = getAvailableToolsForServers(serverIds)
+        val tool = tools.find { it.name == toolName }
+            ?: return listOf(UIMessagePart.Text("Failed to execute tool, because no such tool"))
+        val matchingEntry = clients.entries.find { entry ->
+            entry.key.id in serverIds && entry.key.commonOptions.tools.any { it.name == toolName }
+        } ?: return listOf(UIMessagePart.Text("Failed to execute tool, because no such mcp client for the tool"))
+        val client = matchingEntry.value
+        val config = matchingEntry.key
+
+        if (client.transport == null) client.connect(getTransport(config))
+        val result = client.callTool(
+            request = CallToolRequest(
+                params = CallToolRequestParams(
+                    name = tool.name,
+                    arguments = args,
+                ),
+            ),
+            options = RequestOptions(timeout = 120.seconds),
+        )
+        return result.content.map {
+            when (it) {
                 is TextContent -> UIMessagePart.Text(it.text)
                 is ImageContent -> convertImageContentToFilePart(it)
                 else -> UIMessagePart.Text(JsonInstant.encodeToString(it))

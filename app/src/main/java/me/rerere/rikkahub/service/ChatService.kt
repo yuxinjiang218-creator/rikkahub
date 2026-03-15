@@ -58,9 +58,9 @@ import me.rerere.rikkahub.data.ai.tools.buildReadSourceTool
 import me.rerere.rikkahub.data.ai.tools.buildRecallMemoryTool
 import me.rerere.rikkahub.data.ai.tools.buildSearchSourceTool
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
-import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
+import me.rerere.rikkahub.data.ai.transformers.DeliveryOutputTransformer
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
 import me.rerere.rikkahub.data.ai.transformers.OcrTransformer
 import me.rerere.rikkahub.data.ai.transformers.PlaceholderTransformer
@@ -70,6 +70,7 @@ import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
 import me.rerere.rikkahub.data.ai.transformers.ThinkTagTransformer
 import me.rerere.rikkahub.data.ai.transformers.TimeReminderTransformer
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.getAssistantById
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getEmbeddingModel
@@ -88,6 +89,7 @@ import me.rerere.rikkahub.data.memory.sourceRef
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.MemoryIndexChunk
+import me.rerere.rikkahub.data.model.ScheduledPromptTask
 import me.rerere.rikkahub.data.model.ReadSourceResult
 import me.rerere.rikkahub.data.model.RecallMemoryChunk
 import me.rerere.rikkahub.data.model.RecallMemoryResult
@@ -104,6 +106,8 @@ import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.MemoryIndexRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.repository.SourcePreviewRepository
+import me.rerere.rikkahub.data.skills.SkillsRepository
+import me.rerere.rikkahub.data.skills.buildSkillsCatalogPrompt
 import me.rerere.rikkahub.sandbox.SandboxEngine
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
@@ -154,6 +158,13 @@ data class ChatError(
     val kind: ChatNoticeKind = ChatNoticeKind.ERROR,
 )
 
+data class ScheduledTaskExecutionResult(
+    val replyPreview: String,
+    val replyText: String,
+    val modelId: Uuid?,
+    val providerName: String,
+)
+
 enum class CompressionUiPhase {
     Compressing,
     Indexing,
@@ -189,6 +200,7 @@ private val outputTransformers by lazy {
         ThinkTagTransformer,
         Base64ImageToLocalFileTransformer,
         RegexOutputTransformer,
+        DeliveryOutputTransformer,
     )
 }
 
@@ -207,6 +219,7 @@ class ChatService(
     val mcpManager: McpManager,
     private val filesManager: FilesManager,
     private val skillManager: SkillManager,
+    private val skillsRepository: SkillsRepository,
 ) {
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
@@ -242,6 +255,175 @@ class ChatService(
 
     fun clearAllErrors() {
         _errors.value = emptyList()
+    }
+
+    suspend fun executeScheduledTask(task: ScheduledPromptTask): Result<ScheduledTaskExecutionResult> = runCatching {
+        if (task.prompt.isBlank()) {
+            throw BadRequestException("Scheduled prompt cannot be blank")
+        }
+
+        val settings = settingsStore.settingsFlow.first()
+        val assistant = settings.getAssistantById(task.assistantId)
+            ?: throw NotFoundException("Assistant not found: ${task.assistantId}")
+        val maxSearchIndex = (settings.searchServices.size - 1).coerceAtLeast(0)
+        val effectiveSearchServiceIndex = task.overrideSearchServiceIndex?.let { index ->
+            if (settings.searchServices.isEmpty()) {
+                settings.searchServiceSelected
+            } else {
+                index.coerceIn(0, maxSearchIndex)
+            }
+        } ?: settings.searchServiceSelected.coerceIn(0, maxSearchIndex)
+        val effectiveSettings = settings.copy(
+            enableWebSearch = task.overrideEnableWebSearch ?: settings.enableWebSearch,
+            searchServiceSelected = effectiveSearchServiceIndex
+        )
+        val effectiveAssistant = assistant.copy(
+            chatModelId = task.overrideModelId ?: assistant.chatModelId,
+            localTools = task.overrideLocalTools ?: assistant.localTools,
+            mcpServers = task.overrideMcpServers ?: assistant.mcpServers
+        )
+        val model = effectiveAssistant.chatModelId?.let { effectiveSettings.findModelById(it) }
+            ?: effectiveSettings.getCurrentChatModel()
+            ?: throw IllegalStateException("No model configured for scheduled task")
+        val provider = model.findProvider(effectiveSettings.providers)
+            ?: throw IllegalStateException("Provider not found for model: ${model.id}")
+
+        val promptText = task.prompt.replaceRegexes(
+            assistant = effectiveAssistant,
+            scope = AssistantAffectScope.USER,
+            visual = false
+        )
+        val messages = buildList {
+            addAll(effectiveAssistant.presetMessages)
+            add(
+                UIMessage(
+                    role = MessageRole.USER,
+                    parts = listOf(UIMessagePart.Text(promptText))
+                )
+            )
+        }
+
+        val sandboxId = task.id
+        if (effectiveAssistant.localTools.contains(LocalToolOption.Container)) {
+            skillsRepository.refresh()
+        }
+        val skillPrompt = buildSkillsCatalogPrompt(
+            assistant = effectiveAssistant,
+            model = model,
+            catalog = skillsRepository.state.value,
+        )
+        val assistantForGeneration = if (skillPrompt.isNullOrBlank()) {
+            effectiveAssistant
+        } else {
+            effectiveAssistant.copy(
+                systemPrompt = listOf(
+                    effectiveAssistant.systemPrompt.trim(),
+                    skillPrompt.trim()
+                ).filter { it.isNotBlank() }.joinToString("\n\n")
+            )
+        }
+
+        val availableMcpTools = mcpManager.getAvailableToolsForServers(assistantForGeneration.mcpServers)
+        val mcpWrappedTools = availableMcpTools.map { tool ->
+            Tool(
+                name = "mcp__${tool.name}",
+                description = tool.description ?: "",
+                parameters = { tool.inputSchema },
+                needsApproval = tool.needsApproval,
+                execute = {
+                    mcpManager.callToolFromServers(
+                        serverIds = assistantForGeneration.mcpServers,
+                        toolName = tool.name,
+                        args = it.jsonObject
+                    )
+                },
+            )
+        }
+
+        var generatedMessages = messages
+        generationHandler.generateText(
+            settings = effectiveSettings,
+            model = model,
+            messages = messages,
+            assistant = assistantForGeneration,
+            memories = if (assistantForGeneration.useGlobalMemory) {
+                memoryRepository.getGlobalMemories()
+            } else {
+                memoryRepository.getMemoriesOfAssistant(assistantForGeneration.id.toString())
+            },
+            inputTransformers = buildList {
+                addAll(inputTransformers)
+                add(templateTransformer)
+            },
+            outputTransformers = outputTransformers,
+            tools = buildList {
+                if (effectiveSettings.enableWebSearch) {
+                    addAll(createSearchTools(context, effectiveSettings))
+                }
+                if (assistantForGeneration.enableRecentChatsReference) {
+                    add(
+                        buildRecallMemoryTool(json = JsonInstant) { query, channel, role ->
+                            recallMemory(
+                                assistantId = assistantForGeneration.id,
+                                query = query,
+                                channel = channel,
+                                role = role
+                            )
+                        }
+                    )
+                    add(
+                        buildSearchSourceTool(json = JsonInstant) { query, role, candidateConversationIds ->
+                            searchSource(
+                                assistantId = assistantForGeneration.id,
+                                query = query,
+                                role = role,
+                                candidateConversationIds = candidateConversationIds
+                            )
+                        }
+                    )
+                    add(
+                        buildReadSourceTool(json = JsonInstant) { sourceRef ->
+                            readSource(
+                                assistantId = assistantForGeneration.id,
+                                sourceRef = sourceRef
+                            )
+                        }
+                    )
+                }
+                addAll(
+                    localTools.getTools(
+                        options = assistantForGeneration.localTools,
+                        sandboxId = sandboxId,
+                        enabledSkills = assistantForGeneration.enabledSkills,
+                        settings = effectiveSettings,
+                        parentModel = model,
+                        subAgents = me.rerere.rikkahub.data.model.SubAgentTemplates.All,
+                        mcpTools = mcpWrappedTools,
+                    )
+                )
+                addAll(mcpWrappedTools)
+            },
+        ).collect { chunk ->
+            when (chunk) {
+                is GenerationChunk.Messages -> {
+                    generatedMessages = chunk.messages
+                }
+            }
+        }
+
+        val finalMessage = generatedMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
+            ?: throw IllegalStateException("Scheduled task did not generate an assistant reply")
+        val replyText = finalMessage.toText()?.trim().orEmpty()
+        if (replyText.isBlank()) {
+            throw IllegalStateException("Scheduled task generated an empty reply")
+        }
+
+        ScheduledTaskExecutionResult(
+            replyPreview = replyText.take(200),
+            replyText = replyText.take(20_000),
+            modelId = model.id,
+            providerName = provider.name
+        )
     }
 
     fun getCompressionUiStateFlow(conversationId: Uuid): Flow<CompressionUiState?> {
@@ -642,6 +824,25 @@ class ChatService(
                 rollingSummaryJson = rollingSummaryJsonForGeneration
             )
 
+            if (assistant.localTools.contains(LocalToolOption.Container)) {
+                skillsRepository.refresh()
+            }
+            val skillPrompt = buildSkillsCatalogPrompt(
+                assistant = assistant,
+                model = model,
+                catalog = skillsRepository.state.value,
+            )
+            val assistantForGeneration = if (skillPrompt.isNullOrBlank()) {
+                assistant
+            } else {
+                assistant.copy(
+                    systemPrompt = listOf(
+                        assistant.systemPrompt.trim(),
+                        skillPrompt.trim(),
+                    ).filter { it.isNotBlank() }.joinToString("\n\n")
+                )
+            }
+
             val availableMcpTools = mcpManager.getAllAvailableTools()
             val mcpWrappedTools = availableMcpTools.map { tool ->
                 Tool(
@@ -664,11 +865,11 @@ class ChatService(
                 settings = settings,
                 model = model,
                 messages = messagesForGeneration,
-                assistant = assistant,
-                memories = if (assistant.useGlobalMemory) {
+                assistant = assistantForGeneration,
+                memories = if (assistantForGeneration.useGlobalMemory) {
                     memoryRepository.getGlobalMemories()
                 } else {
-                    memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
+                    memoryRepository.getMemoriesOfAssistant(assistantForGeneration.id.toString())
                 },
                 rollingSummaryJson = rollingSummaryJsonForGeneration,
                 inputTransformers = buildList {
@@ -680,11 +881,11 @@ class ChatService(
                     if (settings.enableWebSearch) {
                         addAll(createSearchTools(context, settings))
                     }
-                    if (assistant.enableRecentChatsReference) {
+                    if (assistantForGeneration.enableRecentChatsReference) {
                         add(
                             buildRecallMemoryTool(json = JsonInstant) { query, channel, role ->
                                 recallMemory(
-                                    assistantId = assistant.id,
+                                    assistantId = assistantForGeneration.id,
                                     query = query,
                                     channel = channel,
                                     role = role
@@ -694,7 +895,7 @@ class ChatService(
                         add(
                             buildSearchSourceTool(json = JsonInstant) { query, role, candidateConversationIds ->
                                 searchSource(
-                                    assistantId = assistant.id,
+                                    assistantId = assistantForGeneration.id,
                                     query = query,
                                     role = role,
                                     candidateConversationIds = candidateConversationIds
@@ -704,25 +905,17 @@ class ChatService(
                         add(
                             buildReadSourceTool(json = JsonInstant) { sourceRef ->
                                 readSource(
-                                    assistantId = assistant.id,
+                                    assistantId = assistantForGeneration.id,
                                     sourceRef = sourceRef
                                 )
                             }
                         )
                     }
-                    if (assistant.enabledSkills.isNotEmpty()) {
-                        addAll(
-                            createSkillTools(
-                                enabledSkills = assistant.enabledSkills,
-                                allSkills = skillManager.listSkills(),
-                                skillManager = skillManager,
-                            )
-                        )
-                    }
                     addAll(
                         localTools.getTools(
-                            options = assistant.localTools,
+                            options = assistantForGeneration.localTools,
                             sandboxId = conversationId,
+                            enabledSkills = assistantForGeneration.enabledSkills,
                             workflowStateProvider = {
                                 getConversationFlow(conversationId).value.workflowState
                             },
@@ -736,7 +929,7 @@ class ChatService(
                             todoStateProvider = {
                                 val currentConversation = getConversationFlow(conversationId).value
                                 currentConversation.todoState ?: if (
-                                    assistant.localTools.contains(
+                                    assistantForGeneration.localTools.contains(
                                         me.rerere.rikkahub.data.ai.tools.LocalToolOption.WorkflowTodo
                                     )
                                 ) {

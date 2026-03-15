@@ -96,8 +96,8 @@ object DocumentAsPromptTransformer : InputMessageTransformer {
             fileName.endsWith(".7z") || fileName.endsWith(".rar")) {
 
             val toolHint = when {
-                fileName.endsWith(".zip") -> "sandbox_file工具的unzip操作"
-                fileName.endsWith(".tar") || fileName.endsWith(".tar.gz") || fileName.endsWith(".tgz") -> "sandbox_shell工具的tar命令"
+                fileName.endsWith(".zip") -> "container_shell 工具中的 unzip 命令"
+                fileName.endsWith(".tar") || fileName.endsWith(".tar.gz") || fileName.endsWith(".tgz") -> "container_shell 工具的 tar 命令"
                 else -> "相应工具"
             }
 
