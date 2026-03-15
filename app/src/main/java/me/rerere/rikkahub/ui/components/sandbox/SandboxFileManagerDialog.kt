@@ -58,7 +58,9 @@ import com.composables.icons.lucide.Share2
 import com.composables.icons.lucide.Trash2
 import com.composables.icons.lucide.Wrench
 import com.composables.icons.lucide.X
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -104,8 +106,17 @@ fun SandboxFileManagerDialog(
     fun loadDirectory(path: String) {
         scope.launch {
             isLoading = true
-            val allFiles = SandboxEngine.listAllFiles(context, sandboxId)
-            currentItems = buildFileTree(allFiles, path)
+            currentItems = withContext(Dispatchers.IO) {
+                SandboxEngine.listDirectory(context, sandboxId, path).map { file ->
+                    FileSystemItem(
+                        name = file.name,
+                        path = file.path,
+                        isDirectory = file.isDirectory,
+                        size = file.size,
+                        modifiedTime = file.modified
+                    )
+                }
+            }
             isLoading = false
         }
     }

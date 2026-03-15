@@ -210,6 +210,35 @@ object SandboxEngine {
         
         return files.sortedBy { it.path }
     }
+
+    fun listDirectory(context: Context, assistantId: String, directoryPath: String = ""): List<SandboxFileInfo> {
+        return try {
+            val sandboxDir = getSandboxDir(context, assistantId)
+            val targetDir = if (directoryPath.isBlank()) sandboxDir else File(sandboxDir, directoryPath)
+            val sandboxCanonical = sandboxDir.canonicalFile
+            val targetCanonical = targetDir.canonicalFile
+
+            if (!targetCanonical.path.startsWith(sandboxCanonical.path) || !targetCanonical.exists() || !targetCanonical.isDirectory) {
+                return emptyList()
+            }
+
+            targetCanonical.listFiles()
+                ?.map { file ->
+                    SandboxFileInfo(
+                        name = file.name,
+                        path = file.relativeTo(sandboxDir).path.replace(File.separatorChar, '/'),
+                        size = if (file.isFile) file.length() else 0L,
+                        modified = file.lastModified(),
+                        isDirectory = file.isDirectory
+                    )
+                }
+                ?.sortedWith(compareBy<SandboxFileInfo>({ !it.isDirectory }, { it.name.lowercase() }))
+                ?: emptyList()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList()
+        }
+    }
     
     /**
      * 删除沙箱中的文件或目录

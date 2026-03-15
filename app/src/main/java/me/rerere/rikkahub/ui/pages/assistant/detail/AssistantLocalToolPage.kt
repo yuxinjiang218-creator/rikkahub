@@ -98,9 +98,11 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.FormItem
+import kotlinx.coroutines.Dispatchers
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 import org.koin.core.parameter.parametersOf
+import kotlinx.coroutines.withContext
 
 
 @Composable
@@ -404,11 +406,18 @@ private fun ConversationSandboxList(assistantId: kotlin.uuid.Uuid) {
     val context = LocalContext.current
     
     // 只显示有沙箱文件的对话
-    val conversationsWithSandbox = remember(conversations) {
-        conversations.filter { conv: Conversation ->
-            val sandboxDir = java.io.File(context.filesDir, "sandboxes/${conv.id}")
-            sandboxDir.exists() && sandboxDir.listFiles()?.isNotEmpty() == true
+    var conversationsWithSandbox by remember { mutableStateOf(emptyList<Conversation>()) }
+    var isLoadingSandboxes by remember { mutableStateOf(true) }
+
+    LaunchedEffect(conversations, context) {
+        isLoadingSandboxes = true
+        conversationsWithSandbox = withContext(Dispatchers.IO) {
+            conversations.filter { conv ->
+                val sandboxDir = java.io.File(context.filesDir, "sandboxes/${conv.id}")
+                sandboxDir.exists() && sandboxDir.listFiles()?.isNotEmpty() == true
+            }
         }
+        isLoadingSandboxes = false
     }
     
     // 统计所有沙箱
@@ -433,7 +442,19 @@ private fun ConversationSandboxList(assistantId: kotlin.uuid.Uuid) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             
-            if (conversationsWithSandbox.isEmpty()) {
+            if (isLoadingSandboxes) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text(
+                        text = "正在加载沙箱列表...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else if (conversationsWithSandbox.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -498,14 +519,9 @@ private fun ConversationSandboxItem(
     conversation: Conversation,
     onClick: () -> Unit
 ) {
-    val context = LocalContext.current
+    val usage: SandboxUsage? = null
     
     // 获取该对话沙箱的使用情况
-    var usage by remember { mutableStateOf<SandboxUsage?>(null) }
-    
-    LaunchedEffect(conversation.id) {
-        usage = SandboxEngine.getSandboxUsage(context, conversation.id.toString())
-    }
     
     Card(
         modifier = Modifier
@@ -575,6 +591,7 @@ private fun SandboxManagerForConversation(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var usage by remember { mutableStateOf<SandboxUsage?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var showFileManager by remember { mutableStateOf(false) }
@@ -582,7 +599,9 @@ private fun SandboxManagerForConversation(
     // 加载沙箱使用情况
     LaunchedEffect(conversation.id) {
         isLoading = true
-        usage = SandboxEngine.getSandboxUsage(context, conversation.id.toString())
+        usage = withContext(Dispatchers.IO) {
+            SandboxEngine.getSandboxUsage(context, conversation.id.toString())
+        }
         isLoading = false
     }
     
@@ -691,8 +710,14 @@ private fun SandboxManagerForConversation(
                         if (sandboxUsage.fileCount > 0) {
                             TextButton(
                                 onClick = {
-                                    SandboxEngine.clearSandbox(context, conversation.id.toString())
-                                    usage = SandboxEngine.getSandboxUsage(context, conversation.id.toString())
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            SandboxEngine.clearSandbox(context, conversation.id.toString())
+                                        }
+                                        usage = withContext(Dispatchers.IO) {
+                                            SandboxEngine.getSandboxUsage(context, conversation.id.toString())
+                                        }
+                                    }
                                 }
                             ) {
                                 Text("清空", color = MaterialTheme.colorScheme.error)
@@ -759,8 +784,17 @@ private fun SandboxFileManagerDialog(
     fun loadDirectory(path: String) {
         scope.launch {
             isLoading = true
-            val allFiles = SandboxEngine.listAllFiles(context, sandboxId)
-            currentItems = buildFileTree(allFiles, path)
+            currentItems = withContext(Dispatchers.IO) {
+                SandboxEngine.listDirectory(context, sandboxId, path).map { file ->
+                    FileSystemItem(
+                        name = file.name,
+                        path = file.path,
+                        isDirectory = file.isDirectory,
+                        size = file.size,
+                        modified = file.modified
+                    )
+                }
+            }
             isLoading = false
         }
     }

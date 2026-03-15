@@ -1767,12 +1767,12 @@ private fun LocalTools.createSpawnSubagentTool(
         SubAgentProgressManager.startSubAgent(toolCallId, args.jsonObject, progressFlow)
 
         // 等待执行完成并获取最终结果
-        val result = SubAgentProgressManager.getFinalResult(toolCallId, timeoutMs = 900000)
+        val result = SubAgentProgressManager.getFinalResult(toolCallId)
             ?: SubAgentResult(
                 success = false,
                 result = "",
-                error = "Sub-agent execution timed out or failed",
-                duration = 900000
+                error = "Sub-agent execution failed",
+                duration = 0
             )
 
         // 标记任务为已完成（不立即清理，保留状态供UI读取）
