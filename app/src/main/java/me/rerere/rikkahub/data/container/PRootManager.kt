@@ -1870,7 +1870,7 @@ fi
                     Lifecycle.Event.ON_STOP -> {
                         // 应用进入后台
                         Log.d(TAG, "App went to background")
-                        if (currentEnableContainerRuntime && _containerState.value == ContainerStateEnum.Running) {
+                        if (false && currentEnableContainerRuntime && _containerState.value == ContainerStateEnum.Running) {
                             Log.d(TAG, "Auto-stopping container")
                             GlobalScope.launch(Dispatchers.IO) {
                                 stop()
