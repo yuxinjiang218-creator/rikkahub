@@ -144,17 +144,8 @@ class S3Sync(
 
             // Backup app files
             if (config.items.contains(S3Config.BackupItem.FILES)) {
-                val uploadFolder = File(context.filesDir, FileFolders.UPLOAD)
-                if (uploadFolder.exists() && uploadFolder.isDirectory) {
-                    Log.i(TAG, "prepareBackupFile: Backing up files from ${uploadFolder.absolutePath}")
-                    uploadFolder.listFiles()?.forEach { file ->
-                        if (file.isFile) {
-                            addFileToZip(zipOut, file, "${FileFolders.UPLOAD}/${file.name}")
-                        }
-                    }
-                } else {
-                    Log.w(TAG, "prepareBackupFile: Upload folder does not exist or is not a directory")
-                }
+                backupFlatFolderToZip(zipOut, FileFolders.UPLOAD)
+                backupFlatFolderToZip(zipOut, FileFolders.KNOWLEDGE_BASE)
 
                 val skillsFolder = File(context.filesDir, FileFolders.SKILLS)
                 if (skillsFolder.exists() && skillsFolder.isDirectory) {
@@ -237,36 +228,20 @@ class S3Sync(
                         }
 
                         else -> {
-                            if (config.items.contains(S3Config.BackupItem.FILES) &&
-                                zipEntry.name.startsWith("${FileFolders.UPLOAD}/")
+                            if (config.items.contains(S3Config.BackupItem.FILES) && restoreFlatFolderEntry(
+                                    zipIn = zipIn,
+                                    entryName = zipEntry.name,
+                                    folder = FileFolders.UPLOAD,
+                                )
                             ) {
-                                val fileName = zipEntry.name.substringAfter("${FileFolders.UPLOAD}/")
-                                if (fileName.isNotEmpty()) {
-                                    val uploadFolder = File(context.filesDir, FileFolders.UPLOAD)
-                                    if (!uploadFolder.exists()) {
-                                        uploadFolder.mkdirs()
-                                        Log.i(TAG, "restoreFromBackupFile: Created upload directory")
-                                    }
-
-                                    val targetFile = File(uploadFolder, fileName)
-                                    Log.i(
-                                        TAG,
-                                        "restoreFromBackupFile: Restoring file ${zipEntry.name} to ${targetFile.absolutePath}"
-                                    )
-
-                                    try {
-                                        FileOutputStream(targetFile).use { outputStream ->
-                                            zipIn.copyTo(outputStream)
-                                        }
-                                        Log.i(
-                                            TAG,
-                                            "restoreFromBackupFile: Restored ${zipEntry.name} (${targetFile.length()} bytes)"
-                                        )
-                                    } catch (e: Exception) {
-                                        Log.e(TAG, "restoreFromBackupFile: Failed to restore file ${zipEntry.name}", e)
-                                        throw Exception("Failed to restore file ${zipEntry.name}: ${e.message}")
-                                    }
-                                }
+                                Unit
+                            } else if (config.items.contains(S3Config.BackupItem.FILES) && restoreFlatFolderEntry(
+                                    zipIn = zipIn,
+                                    entryName = zipEntry.name,
+                                    folder = FileFolders.KNOWLEDGE_BASE,
+                                )
+                            ) {
+                                Unit
                             } else if (config.items.contains(S3Config.BackupItem.FILES) &&
                                 zipEntry.name.startsWith("${FileFolders.SKILLS}/")
                             ) {
@@ -314,6 +289,56 @@ class S3Sync(
                 addFileToZip(zipOut, file, "$entryPrefix$relativePath")
             }
         }
+    }
+
+    private fun backupFlatFolderToZip(zipOut: ZipOutputStream, folder: String) {
+        val dir = File(context.filesDir, folder)
+        if (dir.exists() && dir.isDirectory) {
+            Log.i(TAG, "prepareBackupFile: Backing up files from ${dir.absolutePath}")
+            dir.listFiles()?.forEach { file ->
+                if (file.isFile) {
+                    addFileToZip(zipOut, file, "$folder/${file.name}")
+                }
+            }
+        } else {
+            Log.w(TAG, "prepareBackupFile: Folder does not exist or is not a directory: $folder")
+        }
+    }
+
+    private fun restoreFlatFolderEntry(
+        zipIn: ZipInputStream,
+        entryName: String,
+        folder: String,
+    ): Boolean {
+        if (!entryName.startsWith("$folder/")) return false
+        val fileName = entryName.substringAfter("$folder/")
+        if (fileName.isEmpty()) return true
+
+        val targetFolder = File(context.filesDir, folder)
+        if (!targetFolder.exists()) {
+            targetFolder.mkdirs()
+            Log.i(TAG, "restoreFromBackupFile: Created $folder directory")
+        }
+
+        val targetFile = File(targetFolder, fileName)
+        Log.i(
+            TAG,
+            "restoreFromBackupFile: Restoring file $entryName to ${targetFile.absolutePath}"
+        )
+
+        try {
+            FileOutputStream(targetFile).use { outputStream ->
+                zipIn.copyTo(outputStream)
+            }
+            Log.i(
+                TAG,
+                "restoreFromBackupFile: Restored $entryName (${targetFile.length()} bytes)"
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "restoreFromBackupFile: Failed to restore file $entryName", e)
+            throw Exception("Failed to restore file $entryName: ${e.message}")
+        }
+        return true
     }
 
     private fun restoreSkillEntry(zipIn: ZipInputStream, entryName: String) {

@@ -6,6 +6,7 @@ import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FavoriteRepository
 import me.rerere.rikkahub.data.repository.FilesRepository
 import me.rerere.rikkahub.data.repository.GenMediaRepository
+import me.rerere.rikkahub.data.repository.KnowledgeBaseRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.repository.MemoryIndexRepository
 import me.rerere.rikkahub.data.repository.ScheduledTaskRunRepository
@@ -32,6 +33,10 @@ val repositoryModule = module {
 
     single {
         ScheduledTaskRunRepository(get())
+    }
+
+    single {
+        KnowledgeBaseRepository(get(), get(), get())
     }
 
     single {

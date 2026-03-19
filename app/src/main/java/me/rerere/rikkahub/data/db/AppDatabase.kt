@@ -10,6 +10,8 @@ import me.rerere.rikkahub.data.db.dao.ConversationDAO
 import me.rerere.rikkahub.data.db.dao.CompressionEventDAO
 import me.rerere.rikkahub.data.db.dao.FavoriteDAO
 import me.rerere.rikkahub.data.db.dao.GenMediaDAO
+import me.rerere.rikkahub.data.db.dao.KnowledgeBaseChunkDAO
+import me.rerere.rikkahub.data.db.dao.KnowledgeBaseDocumentDAO
 import me.rerere.rikkahub.data.db.dao.ManagedFileDAO
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.dao.MemoryIndexChunkDAO
@@ -20,6 +22,8 @@ import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.CompressionEventEntity
 import me.rerere.rikkahub.data.db.entity.FavoriteEntity
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
+import me.rerere.rikkahub.data.db.entity.KnowledgeBaseChunkEntity
+import me.rerere.rikkahub.data.db.entity.KnowledgeBaseDocumentEntity
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
 import me.rerere.rikkahub.data.db.entity.MemoryIndexChunkEntity
@@ -28,6 +32,8 @@ import me.rerere.rikkahub.data.db.entity.ScheduledTaskRunEntity
 import me.rerere.rikkahub.data.db.entity.SourcePreviewChunkEntity
 import me.rerere.rikkahub.data.db.migrations.Migration_16_17
 import me.rerere.rikkahub.data.db.migrations.Migration_19_20
+import me.rerere.rikkahub.data.db.migrations.Migration_21_22
+import me.rerere.rikkahub.data.db.migrations.Migration_22_23
 import me.rerere.rikkahub.data.db.migrations.Migration_8_9
 import me.rerere.rikkahub.utils.JsonInstant
 
@@ -43,8 +49,10 @@ import me.rerere.rikkahub.utils.JsonInstant
         MemoryIndexChunkEntity::class,
         SourcePreviewChunkEntity::class,
         ScheduledTaskRunEntity::class,
+        KnowledgeBaseDocumentEntity::class,
+        KnowledgeBaseChunkEntity::class,
     ],
-    version = 21,
+    version = 23,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -81,6 +89,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun sourcePreviewChunkDao(): SourcePreviewChunkDAO
 
     abstract fun scheduledTaskRunDao(): ScheduledTaskRunDAO
+
+    abstract fun knowledgeBaseDocumentDao(): KnowledgeBaseDocumentDAO
+
+    abstract fun knowledgeBaseChunkDao(): KnowledgeBaseChunkDAO
 }
 
 object TokenUsageConverter {

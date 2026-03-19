@@ -37,7 +37,15 @@ val viewModelModule = module {
     viewModelOf(::SettingVM)
     viewModelOf(::DebugVM)
     viewModelOf(::HistoryVM)
-    viewModelOf(::AssistantVM)
+    viewModel {
+        AssistantVM(
+            settingsStore = get(),
+            memoryRepository = get(),
+            conversationRepo = get(),
+            filesManager = get(),
+            knowledgeBaseService = get(),
+        )
+    }
     viewModel<AssistantDetailVM> {
         AssistantDetailVM(
             id = it.get(),
@@ -45,6 +53,7 @@ val viewModelModule = module {
             memoryRepository = get(),
             filesManager = get(),
             skillsRepository = get(),
+            knowledgeBaseService = get(),
         )
     }
     viewModelOf(::TranslatorVM)

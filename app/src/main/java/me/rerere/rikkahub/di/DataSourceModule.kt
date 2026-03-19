@@ -26,6 +26,7 @@ import me.rerere.rikkahub.data.api.RikkaHubAPI
 import me.rerere.rikkahub.data.api.SponsorAPI
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.db.fts.KnowledgeBaseFtsManager
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
 import me.rerere.rikkahub.data.db.fts.SimpleDictManager
 import me.rerere.rikkahub.data.db.migrations.Migration_11_12
@@ -35,6 +36,8 @@ import me.rerere.rikkahub.data.db.migrations.Migration_15_16
 import me.rerere.rikkahub.data.db.migrations.Migration_17_18
 import me.rerere.rikkahub.data.db.migrations.Migration_18_19
 import me.rerere.rikkahub.data.db.migrations.Migration_19_20
+import me.rerere.rikkahub.data.db.migrations.Migration_21_22
+import me.rerere.rikkahub.data.db.migrations.Migration_22_23
 import me.rerere.rikkahub.data.db.migrations.Migration_6_7
 import me.rerere.search.SearchService
 import me.rerere.rikkahub.data.sync.S3Sync
@@ -64,7 +67,9 @@ val dataSourceModule = module {
                 Migration_15_16,
                 Migration_17_18,
                 Migration_18_19,
-                Migration_19_20
+                Migration_19_20,
+                Migration_21_22,
+                Migration_22_23,
             )
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {
@@ -91,6 +96,17 @@ val dataSourceModule = module {
                             conversation_id UNINDEXED,
                             title UNINDEXED,
                             update_at UNINDEXED,
+                            tokenize = 'simple'
+                        )
+                        """.trimIndent()
+                    )
+                    db.execSQL(
+                        """
+                        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_base_chunk_fts USING fts5(
+                            content,
+                            assistant_id UNINDEXED,
+                            document_id UNINDEXED,
+                            chunk_id UNINDEXED,
                             tokenize = 'simple'
                         )
                         """.trimIndent()
@@ -170,7 +186,19 @@ val dataSourceModule = module {
     }
 
     single {
+        get<AppDatabase>().knowledgeBaseDocumentDao()
+    }
+
+    single {
+        get<AppDatabase>().knowledgeBaseChunkDao()
+    }
+
+    single {
         MessageFtsManager(get())
+    }
+
+    single {
+        KnowledgeBaseFtsManager(get(), get())
     }
 
     single { McpManager(settingsStore = get(), appScope = get(), filesManager = get()) }

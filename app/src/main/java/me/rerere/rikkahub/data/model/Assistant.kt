@@ -25,6 +25,7 @@ data class Assistant(
     val enableMemory: Boolean = false,
     val useGlobalMemory: Boolean = false, // 使用全局共享记忆而非助手隔离记忆
     val enableRecentChatsReference: Boolean = false,
+    val enableKnowledgeBaseTool: Boolean = false,
     val messageTemplate: String = "{{ message }}",
     val presetMessages: List<UIMessage> = emptyList(),
     val quickMessageIds: Set<Uuid> = emptySet(),

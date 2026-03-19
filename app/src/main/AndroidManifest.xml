@@ -86,6 +86,11 @@
       android:foregroundServiceType="dataSync" />
 
     <service
+      android:name=".service.KnowledgeBaseIndexForegroundService"
+      android:exported="false"
+      android:foregroundServiceType="dataSync" />
+
+    <service
       android:name=".service.WebServerService"
       android:exported="false"
       android:foregroundServiceType="specialUse">

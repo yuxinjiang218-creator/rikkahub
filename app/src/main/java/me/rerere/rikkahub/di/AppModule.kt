@@ -14,6 +14,7 @@ import me.rerere.rikkahub.data.container.BackgroundProcessManager
 import me.rerere.rikkahub.data.container.PRootManager
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.service.ChatService
+import me.rerere.rikkahub.service.KnowledgeBaseService
 import me.rerere.rikkahub.service.ScheduledPromptManager
 import me.rerere.rikkahub.service.ScheduledPromptWorker
 import me.rerere.rikkahub.utils.EmojiData
@@ -91,6 +92,17 @@ val appModule = module {
     workerOf(::ScheduledPromptWorker)
 
     single {
+        KnowledgeBaseService(
+            context = get(),
+            settingsStore = get(),
+            providerManager = get(),
+            filesManager = get(),
+            knowledgeBaseRepository = get(),
+            knowledgeBaseFtsManager = get(),
+        )
+    }
+
+    single {
         LocalTools(
             context = get(),
             prootManager = get(),
@@ -118,7 +130,8 @@ val appModule = module {
             filesManager = get(),
             skillManager = get()
             ,
-            skillsRepository = get()
+            skillsRepository = get(),
+            knowledgeBaseService = get(),
         )
     }
 

@@ -46,10 +46,11 @@ class FilesManager(
         uri: Uri,
         displayName: String? = null,
         mimeType: String? = null,
+        folder: String = FileFolders.UPLOAD,
     ): ManagedFileEntity = withContext(Dispatchers.IO) {
         val resolvedName = displayName ?: getFileNameFromUri(uri) ?: "file"
         val resolvedMime = mimeType ?: resolveMimeType(uri, resolvedName)
-        val target = createTargetFile(FileFolders.UPLOAD, resolvedName, resolvedMime)
+        val target = createTargetFile(folder, resolvedName, resolvedMime)
         context.contentResolver.openInputStream(uri)?.use { input ->
             target.outputStream().use { output ->
                 input.copyTo(output)
@@ -58,8 +59,8 @@ class FilesManager(
         val now = System.currentTimeMillis()
         repository.insert(
             ManagedFileEntity(
-                folder = FileFolders.UPLOAD,
-                relativePath = "${FileFolders.UPLOAD}/${target.name}",
+                folder = folder,
+                relativePath = "$folder/${target.name}",
                 displayName = resolvedName,
                 mimeType = resolvedMime,
                 sizeBytes = target.length(),
@@ -146,7 +147,12 @@ class FilesManager(
                     }
                 }
                 val guessedMime = sourceMime ?: guessMimeType(file, sourceName)
-                trackUploadFile(file = file, displayName = sourceName, mimeType = guessedMime)
+                trackManagedFile(
+                    file = file,
+                    displayName = sourceName,
+                    mimeType = guessedMime,
+                    folder = FileFolders.UPLOAD,
+                )
                 newUris.add(newUri)
             }.onFailure {
                 it.printStackTrace()
@@ -176,7 +182,12 @@ class FilesManager(
             file.outputStream().use { outputStream ->
                 outputStream.write(byteArray)
             }
-            trackUploadFile(file = file, displayName = "image.png", mimeType = "image/png")
+            trackManagedFile(
+                file = file,
+                displayName = "image.png",
+                mimeType = "image/png",
+                folder = FileFolders.UPLOAD,
+            )
             newUris.add(newUri)
         }
         return newUris
@@ -249,7 +260,12 @@ class FilesManager(
         val fileName = buildUuidFileName(displayName = "pasted_text.txt", mimeType = "text/plain")
         val file = dir.resolve(fileName)
         file.writeText(text)
-        trackUploadFile(file = file, displayName = "pasted_text.txt", mimeType = "text/plain")
+        trackManagedFile(
+            file = file,
+            displayName = "pasted_text.txt",
+            mimeType = "text/plain",
+            folder = FileFolders.UPLOAD,
+        )
         return UIMessagePart.Document(
             url = file.toUri().toString(),
             fileName = "pasted_text.txt",
@@ -362,6 +378,21 @@ class FilesManager(
         repository.deleteById(id) > 0
     }
 
+    suspend fun deleteByRelativePath(relativePath: String, deleteFromDisk: Boolean = true): Boolean =
+        withContext(Dispatchers.IO) {
+            val entity = repository.getByPath(relativePath)
+            if (deleteFromDisk) {
+                runCatching {
+                    File(context.filesDir, relativePath).delete()
+                }
+            }
+            if (entity != null) {
+                repository.deleteByPath(relativePath) > 0
+            } else {
+                true
+            }
+        }
+
     private fun createTargetFile(folder: String, displayName: String, mimeType: String?): File {
         val dir = File(context.filesDir, folder)
         if (!dir.exists()) {
@@ -383,8 +414,8 @@ class FilesManager(
         return "${Uuid.random()}.$ext"
     }
 
-    private fun trackUploadFile(file: File, displayName: String, mimeType: String) {
-        val relativePath = "${FileFolders.UPLOAD}/${file.name}"
+    private fun trackManagedFile(file: File, displayName: String, mimeType: String, folder: String) {
+        val relativePath = "$folder/${file.name}"
         appScope.launch(Dispatchers.IO) {
             runCatching {
                 val existing = repository.getByPath(relativePath)
@@ -394,7 +425,7 @@ class FilesManager(
                 val now = System.currentTimeMillis()
                 repository.insert(
                     ManagedFileEntity(
-                        folder = FileFolders.UPLOAD,
+                        folder = folder,
                         relativePath = relativePath,
                         displayName = displayName,
                         mimeType = mimeType,
@@ -404,10 +435,10 @@ class FilesManager(
                     )
                 )
             }.onFailure {
-                Log.e(TAG, "trackUploadFile: Failed to track file ${file.absolutePath}", it)
+                Log.e(TAG, "trackManagedFile: Failed to track file ${file.absolutePath}", it)
                 Logging.log(
                     TAG,
-                    "trackUploadFile: Failed to track file ${file.absolutePath} ${it.message} | ${it.stackTraceToString()}"
+                    "trackManagedFile: Failed to track file ${file.absolutePath} ${it.message} | ${it.stackTraceToString()}"
                 )
             }
         }
@@ -587,5 +618,6 @@ class FilesManager(
 
 object FileFolders {
     const val UPLOAD = "upload"
+    const val KNOWLEDGE_BASE = "knowledge_base"
     const val SKILLS = "skills"
 }

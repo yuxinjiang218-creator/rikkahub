@@ -15,6 +15,7 @@
   <string name="assistant_detail_memory_desc">Manage assistant memory and recent chat references</string>
   <string name="assistant_detail_prompt_desc">Set system prompts, message templates, and regex rules</string>
   <string name="assistant_detail_request_desc">Configure custom request headers and body parameters</string>
+  <string name="knowledge_base_embedding_required">Please configure a global embedding model before using the knowledge base</string>
   <string name="assistant_importer_import_failed">Import failed</string>
   <string name="assistant_importer_import_tavern_json">Import Tavern Character Card (JSON)</string>
   <string name="assistant_importer_import_tavern_png">Import Tavern Character Card (PNG)</string>

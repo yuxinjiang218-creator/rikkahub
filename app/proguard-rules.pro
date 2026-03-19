@@ -45,3 +45,17 @@
 -keepattributes Signature, InnerClasses, EnclosingMethod
 -keep class com.fasterxml.jackson.** { *; }
 -keep class com.auth0.jwt.** { *; }
+
+# POI/log4j optional metadata and OSGi annotations are not present on Android.
+-dontwarn aQute.bnd.annotation.**
+-dontwarn edu.umd.cs.findbugs.annotations.**
+-dontwarn org.osgi.framework.**
+-dontwarn org.osgi.framework.wiring.**
+
+# POI includes desktop graphics helpers for Office rendering/debug output.
+# The knowledge base only uses text extraction paths on Android.
+-dontwarn java.awt.**
+-dontwarn java.awt.color.**
+-dontwarn java.awt.geom.**
+-dontwarn java.awt.image.**
+-dontwarn javax.imageio.**

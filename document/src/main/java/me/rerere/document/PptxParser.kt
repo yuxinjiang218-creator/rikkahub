@@ -4,121 +4,125 @@ import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 import java.io.File
 import java.io.InputStream
-import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
-
-private data class SlideContent(
-    val slideNumber: Int,
-    val content: String,
-    val notes: String = ""
-)
 
 object PptxParser {
     fun parse(file: File): String {
-        return try {
-            ZipFile(file).use { zipFile ->
-                val slides = mutableListOf<SlideContent>()
-
-                // Find all slide XML files and sort them by number
-                val slideEntries = zipFile.entries().toList()
-                    .filter { it.name.matches(Regex("ppt/slides/slide\\d+\\.xml")) }
-                    .sortedBy { entry ->
-                        entry.name.substringAfter("slide").substringBefore(".xml").toIntOrNull() ?: 0
-                    }
-
-                if (slideEntries.isEmpty()) {
-                    return "No slides found in PPTX file"
+        val result = StringBuilder()
+        runCatching {
+            stream(file) { _, _, text ->
+                if (result.isNotEmpty()) {
+                    result.appendLine()
                 }
-
-                // Parse each slide
-                slideEntries.forEachIndexed { index, entry ->
-                    val slideNumber = index + 1
-                    val slideContent = zipFile.getInputStream(entry).use { stream ->
-                        parseSlideXml(stream)
-                    }
-
-                    // Try to get notes for this slide
-                    val notesEntry = zipFile.getEntry("ppt/notesSlides/notesSlide${slideNumber}.xml")
-                    val notes = if (notesEntry != null) {
-                        zipFile.getInputStream(notesEntry).use { stream ->
-                            parseNotesXml(stream)
-                        }
-                    } else ""
-
-                    slides.add(SlideContent(slideNumber, slideContent, notes))
-                }
-
-                // Format output
-                formatOutput(slides)
+                result.append(text.trimEnd())
+                true
             }
-        } catch (e: Exception) {
-            "Error parsing PPTX file: ${e.message}"
+        }.onFailure { error ->
+            return "Error parsing PPTX file: ${error.message}"
+        }
+        return result.toString().trim()
+    }
+
+    fun stream(
+        file: File,
+        sink: (slideNumber: Int, totalSlides: Int, text: String) -> Boolean,
+    ) {
+        ZipFile(file).use { zipFile ->
+            val slideEntries = zipFile.entries().toList()
+                .filter { it.name.matches(Regex("ppt/slides/slide\\d+\\.xml")) }
+                .sortedBy { entry ->
+                    entry.name.substringAfter("slide").substringBefore(".xml").toIntOrNull() ?: 0
+                }
+
+            if (slideEntries.isEmpty()) {
+                error("No slides found in PPTX file")
+            }
+
+            val totalSlides = slideEntries.size
+            slideEntries.forEachIndexed { index, entry ->
+                val slideNumber = index + 1
+                val slideContent = zipFile.getInputStream(entry).use(::parseSlideXml)
+                val notesEntry = zipFile.getEntry("ppt/notesSlides/notesSlide$slideNumber.xml")
+                val notes = notesEntry?.let { zipFile.getInputStream(it).use(::parseNotesXml) }.orEmpty()
+                val rendered = buildString {
+                    append("## Slide $slideNumber")
+                    appendLine()
+                    appendLine()
+                    append(slideContent.trim())
+                    if (notes.isNotBlank()) {
+                        appendLine()
+                        appendLine()
+                        append("### Speaker Notes")
+                        appendLine()
+                        appendLine()
+                        append(notes.trim())
+                    }
+                }.trim()
+                if (!sink(slideNumber, totalSlides, rendered)) {
+                    return
+                }
+            }
         }
     }
 
-    private fun formatOutput(slides: List<SlideContent>): String {
+    private fun parseSlideXml(inputStream: InputStream): String {
+        val factory = XmlPullParserFactory.newInstance()
+        factory.isNamespaceAware = true
+        val parser = factory.newPullParser()
+        parser.setInput(inputStream, "UTF-8")
+
         val result = StringBuilder()
 
-        slides.forEach { slide ->
-            result.append("## Slide ${slide.slideNumber}\n\n")
-            result.append(slide.content)
-
-            if (slide.notes.isNotBlank()) {
-                result.append("\n### Speaker Notes\n\n")
-                result.append(slide.notes)
+        while (parser.eventType != XmlPullParser.END_DOCUMENT) {
+            when (parser.eventType) {
+                XmlPullParser.START_TAG -> {
+                    when (parser.name) {
+                        "sp" -> processShape(parser, result)
+                        "graphicFrame" -> processGraphicFrame(parser, result)
+                    }
+                }
             }
-
-            result.append("\n")
+            parser.next()
         }
 
         return result.toString().trim()
     }
 
-    private fun parseSlideXml(inputStream: InputStream): String {
-        return try {
-            val factory = XmlPullParserFactory.newInstance()
-            factory.isNamespaceAware = true
-            val parser = factory.newPullParser()
-            parser.setInput(inputStream, "UTF-8")
+    private fun parseNotesXml(inputStream: InputStream): String {
+        val factory = XmlPullParserFactory.newInstance()
+        factory.isNamespaceAware = true
+        val parser = factory.newPullParser()
+        parser.setInput(inputStream, "UTF-8")
 
-            val result = StringBuilder()
-
-            while (parser.eventType != XmlPullParser.END_DOCUMENT) {
-                when (parser.eventType) {
-                    XmlPullParser.START_TAG -> {
-                        when (parser.name) {
-                            "sp" -> processShape(parser, result)  // Text box/shape
-                            "graphicFrame" -> processGraphicFrame(parser, result)  // Table
+        val result = StringBuilder()
+        while (parser.eventType != XmlPullParser.END_DOCUMENT) {
+            if (parser.eventType == XmlPullParser.START_TAG && parser.name == "t") {
+                parser.next()
+                if (parser.eventType == XmlPullParser.TEXT) {
+                    val text = parser.text?.trim().orEmpty()
+                    if (text.isNotBlank()) {
+                        if (result.isNotEmpty()) {
+                            result.appendLine()
                         }
+                        result.append(text)
                     }
                 }
-                parser.next()
             }
-
-            result.toString()
-        } catch (e: Exception) {
-            "Error parsing slide XML: ${e.message}\n"
+            parser.next()
         }
+
+        return result.toString().trim()
     }
 
     private fun processShape(parser: XmlPullParser, result: StringBuilder) {
         val shapeStartDepth = parser.depth
         val textContent = StringBuilder()
-        var hasBullet = false
-        var bulletLevel = 0
-        var isNumbered = false
 
         while (parser.next() != XmlPullParser.END_DOCUMENT) {
             when (parser.eventType) {
                 XmlPullParser.START_TAG -> {
-                    when (parser.name) {
-                        "p" -> {
-                            // Start of paragraph - check for bullet/numbering
-                            val paragraphInfo = processParagraph(parser, textContent)
-                            hasBullet = paragraphInfo.first
-                            bulletLevel = paragraphInfo.second
-                            isNumbered = paragraphInfo.third
-                        }
+                    if (parser.name == "p") {
+                        processParagraph(parser, textContent)
                     }
                 }
 
@@ -132,12 +136,15 @@ object PptxParser {
 
         val text = textContent.toString().trim()
         if (text.isNotBlank()) {
+            if (result.isNotEmpty()) {
+                result.appendLine()
+                result.appendLine()
+            }
             result.append(text)
-            result.append("\n\n")
         }
     }
 
-    private fun processParagraph(parser: XmlPullParser, result: StringBuilder): Triple<Boolean, Int, Boolean> {
+    private fun processParagraph(parser: XmlPullParser, result: StringBuilder) {
         val paragraphStartDepth = parser.depth
         val paragraphText = StringBuilder()
         var hasBullet = false
@@ -149,17 +156,13 @@ object PptxParser {
                 XmlPullParser.START_TAG -> {
                     when (parser.name) {
                         "pPr" -> {
-                            // Paragraph properties - check for bullets
                             val bulletInfo = extractBulletInfo(parser)
                             hasBullet = bulletInfo.first
                             bulletLevel = bulletInfo.second
                             isNumbered = bulletInfo.third
                         }
 
-                        "r" -> {
-                            // Text run
-                            extractTextRun(parser, paragraphText)
-                        }
+                        "r" -> extractTextRun(parser, paragraphText)
                     }
                 }
 
@@ -172,17 +175,18 @@ object PptxParser {
         }
 
         val text = paragraphText.toString().trim()
-        if (text.isNotBlank()) {
-            if (hasBullet) {
-                val indent = "  ".repeat(bulletLevel)
-                val marker = if (isNumbered) "1. " else "- "
-                result.append("$indent$marker$text\n")
-            } else {
-                result.append("$text\n")
-            }
-        }
+        if (text.isBlank()) return
 
-        return Triple(hasBullet, bulletLevel, isNumbered)
+        if (result.isNotEmpty()) {
+            result.appendLine()
+        }
+        if (hasBullet) {
+            val indent = "  ".repeat(bulletLevel)
+            val marker = if (isNumbered) "1. " else "- "
+            result.append(indent)
+            result.append(marker)
+        }
+        result.append(text)
     }
 
     private fun extractBulletInfo(parser: XmlPullParser): Triple<Boolean, Int, Boolean> {
@@ -254,7 +258,14 @@ object PptxParser {
             when (parser.eventType) {
                 XmlPullParser.START_TAG -> {
                     if (parser.name == "tbl") {
-                        processTable(parser, result)
+                        val tableText = processTable(parser)
+                        if (tableText.isNotBlank()) {
+                            if (result.isNotEmpty()) {
+                                result.appendLine()
+                                result.appendLine()
+                            }
+                            result.append(tableText)
+                        }
                     }
                 }
 
@@ -267,7 +278,7 @@ object PptxParser {
         }
     }
 
-    private fun processTable(parser: XmlPullParser, result: StringBuilder) {
+    private fun processTable(parser: XmlPullParser): String {
         val tableStartDepth = parser.depth
         val rows = mutableListOf<List<String>>()
 
@@ -277,7 +288,7 @@ object PptxParser {
                     if (parser.name == "tr") {
                         val cells = extractTableRow(parser)
                         if (cells.isNotEmpty()) {
-                            rows.add(cells)
+                            rows += cells
                         }
                     }
                 }
@@ -290,29 +301,26 @@ object PptxParser {
             }
         }
 
-        // Convert to markdown table
-        if (rows.isNotEmpty()) {
-            val maxCols = rows.maxOfOrNull { it.size } ?: 0
+        if (rows.isEmpty()) return ""
 
-            for ((index, row) in rows.withIndex()) {
-                result.append("| ")
-                for (colIndex in 0 until maxCols) {
-                    val cellContent = if (colIndex < row.size) row[colIndex] else ""
-                    result.append("$cellContent | ")
-                }
-                result.append("\n")
-
-                // Add separator after first row (header)
-                if (index == 0) {
-                    result.append("| ")
-                    repeat(maxCols) {
-                        result.append("--- | ")
-                    }
-                    result.append("\n")
-                }
+        val result = StringBuilder()
+        val maxCols = rows.maxOfOrNull { it.size } ?: 0
+        rows.forEachIndexed { index, row ->
+            result.append("| ")
+            for (colIndex in 0 until maxCols) {
+                result.append(if (colIndex < row.size) row[colIndex] else "")
+                result.append(" | ")
             }
-            result.append("\n")
+            result.appendLine()
+            if (index == 0) {
+                result.append("| ")
+                repeat(maxCols) {
+                    result.append("--- | ")
+                }
+                result.appendLine()
+            }
         }
+        return result.toString().trim()
     }
 
     private fun extractTableRow(parser: XmlPullParser): List<String> {
@@ -323,8 +331,7 @@ object PptxParser {
             when (parser.eventType) {
                 XmlPullParser.START_TAG -> {
                     if (parser.name == "tc") {
-                        val cellText = extractTableCell(parser)
-                        cells.add(cellText)
+                        cells += extractCellText(parser)
                     }
                 }
 
@@ -339,20 +346,17 @@ object PptxParser {
         return cells
     }
 
-    private fun extractTableCell(parser: XmlPullParser): String {
+    private fun extractCellText(parser: XmlPullParser): String {
         val cellStartDepth = parser.depth
         val result = StringBuilder()
 
         while (parser.next() != XmlPullParser.END_DOCUMENT) {
             when (parser.eventType) {
                 XmlPullParser.START_TAG -> {
-                    if (parser.name == "t") {
-                        parser.next()
-                        if (parser.eventType == XmlPullParser.TEXT) {
-                            if (result.isNotEmpty()) {
-                                result.append(" ")
-                            }
-                            result.append(parser.text ?: "")
+                    if (parser.name == "txBody") {
+                        val cellText = extractTextBody(parser)
+                        if (cellText.isNotBlank()) {
+                            result.append(cellText)
                         }
                     }
                 }
@@ -368,86 +372,24 @@ object PptxParser {
         return result.toString().trim()
     }
 
-    private fun parseNotesXml(inputStream: InputStream): String {
-        return try {
-            val factory = XmlPullParserFactory.newInstance()
-            factory.isNamespaceAware = true
-            val parser = factory.newPullParser()
-            parser.setInput(inputStream, "UTF-8")
-
-            val result = StringBuilder()
-            var inNotesShape = false
-
-            while (parser.eventType != XmlPullParser.END_DOCUMENT) {
-                when (parser.eventType) {
-                    XmlPullParser.START_TAG -> {
-                        when (parser.name) {
-                            "sp" -> {
-                                // Check if this is a notes text shape (not the slide preview)
-                                inNotesShape = isNotesTextShape(parser)
-                                if (inNotesShape) {
-                                    extractShapeText(parser, result)
-                                }
-                            }
-                        }
-                    }
-                }
-                parser.next()
-            }
-
-            result.toString().trim()
-        } catch (e: Exception) {
-            ""
-        }
-    }
-
-    private fun isNotesTextShape(parser: XmlPullParser): Boolean {
-        // Notes text typically has ph type="body"
-        val currentDepth = parser.depth
-        val originalPosition = parser
-
+    private fun extractTextBody(parser: XmlPullParser): String {
+        val bodyStartDepth = parser.depth
+        val result = StringBuilder()
         while (parser.next() != XmlPullParser.END_DOCUMENT) {
             when (parser.eventType) {
                 XmlPullParser.START_TAG -> {
-                    if (parser.name == "ph") {
-                        val type = parser.getAttributeValue(null, "type")
-                        return type == "body"
+                    if (parser.name == "p") {
+                        processParagraph(parser, result)
                     }
                 }
 
                 XmlPullParser.END_TAG -> {
-                    if (parser.depth <= currentDepth) {
-                        return false
-                    }
-                }
-            }
-        }
-        return false
-    }
-
-    private fun extractShapeText(parser: XmlPullParser, result: StringBuilder) {
-        val shapeStartDepth = parser.depth
-
-        while (parser.next() != XmlPullParser.END_DOCUMENT) {
-            when (parser.eventType) {
-                XmlPullParser.START_TAG -> {
-                    if (parser.name == "t") {
-                        parser.next()
-                        if (parser.eventType == XmlPullParser.TEXT) {
-                            result.append(parser.text ?: "")
-                        }
-                    }
-                }
-
-                XmlPullParser.END_TAG -> {
-                    if (parser.name == "sp" && parser.depth == shapeStartDepth) {
+                    if (parser.name == "txBody" && parser.depth == bodyStartDepth) {
                         break
                     }
-                    if (parser.name == "p") {
-                        result.append("\n")
-                    }
                 }
             }
         }
+        return result.toString().trim()
     }
 }

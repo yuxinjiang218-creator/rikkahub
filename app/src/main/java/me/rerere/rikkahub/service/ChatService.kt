@@ -51,11 +51,15 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.RouteActivity
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
+import me.rerere.rikkahub.data.ai.buildKnowledgeBaseGuidancePrompt
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.ai.tools.LocalTools
+import me.rerere.rikkahub.data.ai.tools.buildListKnowledgeBaseDocumentsTool
+import me.rerere.rikkahub.data.ai.tools.buildReadKnowledgeBaseChunksTool
 import me.rerere.rikkahub.data.ai.tools.buildReadSourceTool
 import me.rerere.rikkahub.data.ai.tools.buildRecallMemoryTool
+import me.rerere.rikkahub.data.ai.tools.buildSearchKnowledgeBaseTool
 import me.rerere.rikkahub.data.ai.tools.buildSearchSourceTool
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.files.SkillManager
@@ -220,6 +224,7 @@ class ChatService(
     private val filesManager: FilesManager,
     private val skillManager: SkillManager,
     private val skillsRepository: SkillsRepository,
+    private val knowledgeBaseService: KnowledgeBaseService,
 ) {
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
@@ -307,19 +312,32 @@ class ChatService(
         if (effectiveAssistant.localTools.contains(LocalToolOption.Container)) {
             skillsRepository.refresh()
         }
+        val kbToolAvailable = knowledgeBaseService.isSearchToolAvailable(
+            assistant = effectiveAssistant,
+            model = model,
+            settings = effectiveSettings,
+        )
+        val knowledgeBasePrompt = if (kbToolAvailable) {
+            buildKnowledgeBaseGuidancePrompt()
+        } else {
+            ""
+        }
         val skillPrompt = buildSkillsCatalogPrompt(
             assistant = effectiveAssistant,
             model = model,
             catalog = skillsRepository.state.value,
-        )
-        val assistantForGeneration = if (skillPrompt.isNullOrBlank()) {
+        )?.trim().orEmpty()
+        val baseSystemPrompt = effectiveAssistant.systemPrompt.trim()
+        val mergedSystemPrompt = listOf(
+            baseSystemPrompt,
+            skillPrompt,
+            knowledgeBasePrompt.trim(),
+        ).filter { it.isNotBlank() }.joinToString("\n\n")
+        val assistantForGeneration = if (mergedSystemPrompt == baseSystemPrompt) {
             effectiveAssistant
         } else {
             effectiveAssistant.copy(
-                systemPrompt = listOf(
-                    effectiveAssistant.systemPrompt.trim(),
-                    skillPrompt.trim()
-                ).filter { it.isNotBlank() }.joinToString("\n\n")
+                systemPrompt = mergedSystemPrompt
             )
         }
 
@@ -390,6 +408,31 @@ class ChatService(
                         }
                     )
                 }
+                if (kbToolAvailable) {
+                    add(
+                        buildListKnowledgeBaseDocumentsTool(json = JsonInstant) {
+                            knowledgeBaseService.listKnowledgeBaseDocuments(assistantForGeneration.id)
+                        }
+                    )
+                    add(
+                        buildSearchKnowledgeBaseTool(json = JsonInstant) { query, documentIds ->
+                            knowledgeBaseService.searchKnowledgeBase(
+                                assistantId = assistantForGeneration.id,
+                                query = query,
+                                documentIds = documentIds,
+                            )
+                        }
+                    )
+                    add(
+                        buildReadKnowledgeBaseChunksTool(json = JsonInstant) { documentId, chunkOrders ->
+                            knowledgeBaseService.readKnowledgeBaseChunks(
+                                assistantId = assistantForGeneration.id,
+                                documentId = documentId,
+                                chunkOrders = chunkOrders,
+                            )
+                        }
+                    )
+                }
                 addAll(
                     localTools.getTools(
                         options = assistantForGeneration.localTools,
@@ -413,7 +456,7 @@ class ChatService(
 
         val finalMessage = generatedMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
             ?: throw IllegalStateException("Scheduled task did not generate an assistant reply")
-        val replyText = finalMessage.toText()?.trim().orEmpty()
+        val replyText = finalMessage.toText().trim()
         if (replyText.isBlank()) {
             throw IllegalStateException("Scheduled task generated an empty reply")
         }
@@ -738,6 +781,8 @@ class ChatService(
         runCatching {
             var conversation = getConversationFlow(conversationId).value
             val assistant = settings.getCurrentAssistant()
+            val hasKnowledgeBaseDocuments = assistant.enableKnowledgeBaseTool &&
+                knowledgeBaseService.hasDocuments(assistant.id)
 
             // reset suggestions
             updateConversation(conversationId, conversation.copy(chatSuggestions = emptyList()))
@@ -747,6 +792,7 @@ class ChatService(
                 val toolRequired = settings.enableWebSearch ||
                     assistant.enableMemory ||
                     assistant.enableRecentChatsReference ||
+                    hasKnowledgeBaseDocuments ||
                     assistant.enabledSkills.isNotEmpty() ||
                     assistant.localTools.isNotEmpty() ||
                     mcpManager.getAllAvailableTools().isNotEmpty()
@@ -827,19 +873,32 @@ class ChatService(
             if (assistant.localTools.contains(LocalToolOption.Container)) {
                 skillsRepository.refresh()
             }
+            val kbToolAvailable = knowledgeBaseService.isSearchToolAvailable(
+                assistant = assistant,
+                model = model,
+                settings = settings,
+            )
+            val knowledgeBasePrompt = if (kbToolAvailable) {
+                buildKnowledgeBaseGuidancePrompt()
+            } else {
+                ""
+            }
             val skillPrompt = buildSkillsCatalogPrompt(
                 assistant = assistant,
                 model = model,
                 catalog = skillsRepository.state.value,
-            )
-            val assistantForGeneration = if (skillPrompt.isNullOrBlank()) {
+            )?.trim().orEmpty()
+            val baseSystemPrompt = assistant.systemPrompt.trim()
+            val mergedSystemPrompt = listOf(
+                baseSystemPrompt,
+                skillPrompt,
+                knowledgeBasePrompt.trim(),
+            ).filter { it.isNotBlank() }.joinToString("\n\n")
+            val assistantForGeneration = if (mergedSystemPrompt == baseSystemPrompt) {
                 assistant
             } else {
                 assistant.copy(
-                    systemPrompt = listOf(
-                        assistant.systemPrompt.trim(),
-                        skillPrompt.trim(),
-                    ).filter { it.isNotBlank() }.joinToString("\n\n")
+                    systemPrompt = mergedSystemPrompt
                 )
             }
 
@@ -907,6 +966,31 @@ class ChatService(
                                 readSource(
                                     assistantId = assistantForGeneration.id,
                                     sourceRef = sourceRef
+                                )
+                            }
+                        )
+                    }
+                    if (kbToolAvailable) {
+                        add(
+                            buildListKnowledgeBaseDocumentsTool(json = JsonInstant) {
+                                knowledgeBaseService.listKnowledgeBaseDocuments(assistantForGeneration.id)
+                            }
+                        )
+                        add(
+                            buildSearchKnowledgeBaseTool(json = JsonInstant) { query, documentIds ->
+                                knowledgeBaseService.searchKnowledgeBase(
+                                    assistantId = assistantForGeneration.id,
+                                    query = query,
+                                    documentIds = documentIds,
+                                )
+                            }
+                        )
+                        add(
+                            buildReadKnowledgeBaseChunksTool(json = JsonInstant) { documentId, chunkOrders ->
+                                knowledgeBaseService.readKnowledgeBaseChunks(
+                                    assistantId = assistantForGeneration.id,
+                                    documentId = documentId,
+                                    chunkOrders = chunkOrders,
                                 )
                             }
                         )

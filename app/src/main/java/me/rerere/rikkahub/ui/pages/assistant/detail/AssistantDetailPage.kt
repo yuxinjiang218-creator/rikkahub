@@ -5,6 +5,7 @@ import me.rerere.hugeicons.stroke.BookOpen01
 import me.rerere.hugeicons.stroke.Brain02
 import me.rerere.hugeicons.stroke.ArrowRight01
 import me.rerere.hugeicons.stroke.Code
+import me.rerere.hugeicons.stroke.Database02
 import me.rerere.hugeicons.stroke.Message02
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Puzzle
@@ -140,6 +141,13 @@ fun AssistantDetailPage(id: String) {
                         leadingContent = { Icon(HugeIcons.BookOpen01, null) },
                         supportingContent = { Text(stringResource(R.string.assistant_detail_local_tools_desc)) },
                         headlineContent = { Text(stringResource(R.string.assistant_page_tab_local_tools)) },
+                        trailingContent = { Icon(HugeIcons.ArrowRight01, null) },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.AssistantKnowledgeBase(id)) },
+                        leadingContent = { Icon(HugeIcons.Database02, null) },
+                        supportingContent = { Text("上传文档并构建该助手的专属检索索引") },
+                        headlineContent = { Text("知识库") },
                         trailingContent = { Icon(HugeIcons.ArrowRight01, null) },
                     )
                 }

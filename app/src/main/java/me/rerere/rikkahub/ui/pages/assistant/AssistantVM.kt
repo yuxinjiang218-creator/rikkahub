@@ -14,12 +14,14 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
+import me.rerere.rikkahub.service.KnowledgeBaseService
 
 class AssistantVM(
     private val settingsStore: SettingsStore,
     private val memoryRepository: MemoryRepository,
     private val conversationRepo: ConversationRepository,
     private val filesManager: FilesManager,
+    private val knowledgeBaseService: KnowledgeBaseService,
 ) : ViewModel() {
     val settings: StateFlow<Settings> = settingsStore.settingsFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, Settings.dummy())
@@ -53,6 +55,7 @@ class AssistantVM(
             )
             memoryRepository.deleteMemoriesOfAssistant(assistant.id.toString())
             conversationRepo.deleteConversationOfAssistant(assistant.id)
+            knowledgeBaseService.deleteDocumentsOfAssistant(assistant.id)
         }
     }
 

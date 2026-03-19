@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.ui.pages.assistant.detail
 
 import android.util.Log
+import android.net.Uri
 import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -17,9 +18,11 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantMemory
 import me.rerere.rikkahub.data.model.Avatar
+import me.rerere.rikkahub.data.model.KnowledgeBaseDocument
 import me.rerere.rikkahub.data.model.Tag
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.skills.SkillsRepository
+import me.rerere.rikkahub.service.KnowledgeBaseService
 import kotlin.uuid.Uuid
 
 private const val TAG = "AssistantDetailVM"
@@ -30,6 +33,7 @@ class AssistantDetailVM(
     private val memoryRepository: MemoryRepository,
     private val filesManager: FilesManager,
     private val skillsRepository: SkillsRepository,
+    private val knowledgeBaseService: KnowledgeBaseService,
 ) : ViewModel() {
     private val assistantId = Uuid.parse(id)
 
@@ -72,6 +76,17 @@ class AssistantDetailVM(
         }.stateIn(
             scope = viewModelScope, started = SharingStarted.Eagerly, initialValue = emptyList()
         )
+
+    val knowledgeBaseDocuments: StateFlow<List<KnowledgeBaseDocument>> = knowledgeBaseService
+        .observeDocuments(assistantId)
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = emptyList()
+        )
+
+    val knowledgeBaseIndexState: StateFlow<me.rerere.rikkahub.data.model.KnowledgeBaseIndexState> =
+        knowledgeBaseService.indexState
 
     val tags = settingsStore
         .settingsFlow
@@ -184,6 +199,53 @@ class AssistantDetailVM(
     fun deleteMemory(memory: AssistantMemory) {
         viewModelScope.launch {
             memoryRepository.deleteMemory(id = memory.id)
+        }
+    }
+
+    fun uploadKnowledgeBaseDocuments(
+        uris: List<Uri>,
+        onResult: (Result<Int>) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            val result = runCatching {
+                knowledgeBaseService.importDocuments(assistantId, uris)
+            }
+            onResult(result)
+        }
+    }
+
+    fun reindexKnowledgeBaseDocument(
+        documentId: Long,
+        onResult: (Result<Unit>) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            val result = runCatching {
+                knowledgeBaseService.reindexDocument(documentId)
+            }
+            onResult(result)
+        }
+    }
+
+    fun reindexAllKnowledgeBase(
+        onResult: (Result<Int>) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            val result = runCatching {
+                knowledgeBaseService.reindexAllDocuments(assistantId)
+            }
+            onResult(result)
+        }
+    }
+
+    fun deleteKnowledgeBaseDocument(
+        documentId: Long,
+        onResult: (Result<Boolean>) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            val result = runCatching {
+                knowledgeBaseService.deleteDocument(documentId)
+            }
+            onResult(result)
         }
     }
 
