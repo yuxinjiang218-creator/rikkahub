@@ -1729,11 +1729,18 @@ class ChatService(
         settings: me.rerere.rikkahub.data.datastore.Settings,
         showSuccessNotice: Boolean,
     ): Conversation {
+        val startedAt = System.currentTimeMillis()
+        logLedgerStep(conversationId, "index", "memory index rebuild started")
         return try {
             rebuildConversationIndexes(
                 conversationId = conversationId,
                 conversation = conversation,
                 settings = settings,
+            )
+            logLedgerStep(
+                conversationId,
+                "index",
+                "memory index rebuild finished in ${System.currentTimeMillis() - startedAt}ms"
             )
             if (showSuccessNotice) {
                 addSuccessNotice(
@@ -1751,6 +1758,12 @@ class ChatService(
                 )
             )
             saveConversation(conversationId, failedConversation)
+            logLedgerStep(
+                conversationId,
+                "index",
+                "memory index rebuild failed after ${System.currentTimeMillis() - startedAt}ms",
+                error
+            )
             addError(
                 error = error,
                 conversationId = conversationId,
@@ -1771,9 +1784,24 @@ class ChatService(
     ): Conversation {
         var currentConversation = conversation
         val processableBatches = pendingLedgerBatchRepository.getProcessableOfConversation(conversationId)
-        if (processableBatches.isEmpty()) return currentConversation
+        if (processableBatches.isEmpty()) {
+            logLedgerStep(conversationId, trigger, "no pending ledger batches")
+            return currentConversation
+        }
+
+        logLedgerStep(
+            conversationId,
+            trigger,
+            "processing ${processableBatches.size} pending ledger batch(es)"
+        )
 
         processableBatches.forEach { batch ->
+            val batchStartedAt = System.currentTimeMillis()
+            logLedgerStep(
+                conversationId,
+                trigger,
+                "batch ${batch.id} range=${batch.startIndex}..${batch.endIndex} attempt=${batch.attemptCount + 1} started"
+            )
             val runningBatch = pendingLedgerBatchRepository.updateStatus(
                 batch = batch,
                 status = "running",
@@ -1797,12 +1825,37 @@ class ChatService(
                     attemptCount = runningBatch.attemptCount,
                     lastError = "",
                 )
+                logLedgerStep(
+                    conversationId,
+                    trigger,
+                    "batch ${batch.id} finished in ${System.currentTimeMillis() - batchStartedAt}ms"
+                )
+            } catch (error: CancellationException) {
+                pendingLedgerBatchRepository.updateStatus(
+                    batch = runningBatch,
+                    status = "pending",
+                    attemptCount = batch.attemptCount,
+                    lastError = "cancelled",
+                )
+                logLedgerStep(
+                    conversationId,
+                    trigger,
+                    "batch ${batch.id} cancelled after ${System.currentTimeMillis() - batchStartedAt}ms",
+                    error
+                )
+                throw error
             } catch (error: Throwable) {
                 pendingLedgerBatchRepository.updateStatus(
                     batch = runningBatch,
                     status = "failed",
                     attemptCount = runningBatch.attemptCount,
                     lastError = error.message.orEmpty(),
+                )
+                logLedgerStep(
+                    conversationId,
+                    trigger,
+                    "batch ${batch.id} failed after ${System.currentTimeMillis() - batchStartedAt}ms",
+                    error
                 )
                 currentConversation = currentConversation.copy(
                     compressionState = currentConversation.compressionState.copy(
@@ -1835,6 +1888,7 @@ class ChatService(
     ): Conversation {
         val event = conversation.compressionEvents.firstOrNull { it.id == batch.eventId }
             ?: throw IllegalStateException("Compression event ${batch.eventId} not found for pending ledger batch")
+        val ledgerStartedAt = System.currentTimeMillis()
         val currentRollingSummary = conversation.compressionState.rollingSummaryJson.ifBlank {
             event.baseLedgerJson.ifBlank { event.baseSummaryJson.ifBlank { "{}" } }
         }
@@ -1858,6 +1912,12 @@ class ChatService(
         }
 
         suspend fun runPatchPrompt(): String {
+            val patchStartedAt = System.currentTimeMillis()
+            logLedgerStep(
+                conversationId,
+                trigger,
+                "batch ${batch.id} patch request started inputChars=${batch.incrementalMessages.length}"
+            )
             val prompt = DEFAULT_MEMORY_LEDGER_PATCH_PROMPT.applyPlaceholders(
                 "rolling_summary_json" to currentRollingSummary,
                 "incremental_messages" to batch.incrementalMessages,
@@ -1869,10 +1929,22 @@ class ChatService(
                 messages = listOf(UIMessage.user(prompt)),
                 params = compressionGenerationParams(model = model),
             )
-            return normalizeCompressionJsonText(result.choices.firstOrNull()?.message?.toText().orEmpty())
+            val normalized = normalizeCompressionJsonText(result.choices.firstOrNull()?.message?.toText().orEmpty())
+            logLedgerStep(
+                conversationId,
+                trigger,
+                "batch ${batch.id} patch request finished in ${System.currentTimeMillis() - patchStartedAt}ms outputChars=${normalized.length}"
+            )
+            return normalized
         }
 
         suspend fun runLedgerRewrite(): String {
+            val rewriteStartedAt = System.currentTimeMillis()
+            logLedgerStep(
+                conversationId,
+                trigger,
+                "batch ${batch.id} full ledger rewrite started inputChars=${batch.incrementalMessages.length}"
+            )
             val prompt = DEFAULT_MEMORY_LEDGER_PROMPT.applyPlaceholders(
                 "rolling_summary_json" to currentRollingSummary,
                 "incremental_messages" to batch.incrementalMessages,
@@ -1894,16 +1966,23 @@ class ChatService(
             if (rawSummary.isBlank()) {
                 throw IllegalStateException("Failed to generate memory ledger")
             }
-            return normalizeRollingSummaryJson(
+            val normalized = normalizeRollingSummaryJson(
                 rawSummary = rawSummary,
                 summaryTurn = batch.endIndex + 1,
                 updatedAt = Instant.now()
             )
+            logLedgerStep(
+                conversationId,
+                trigger,
+                "batch ${batch.id} full ledger rewrite finished in ${System.currentTimeMillis() - rewriteStartedAt}ms outputChars=${normalized.length}"
+            )
+            return normalized
         }
 
         val nextRollingSummaryJson = runCatching {
             // Patch is only a fast path. If it fails, fall back to a full ledger rewrite
             // rather than forcing a lower-quality partial result into the persisted ledger.
+            logLedgerStep(conversationId, trigger, "batch ${batch.id} attempting patch fast path")
             val patchDocument: LedgerPatchDocument = parseLedgerPatchDocument(runPatchPrompt())
             val baseDocument = parseRollingSummaryDocument(currentRollingSummary)
             applyLedgerPatchDocument(
@@ -1913,6 +1992,12 @@ class ChatService(
                 updatedAt = Instant.now()
             ).toJson()
         }.getOrElse {
+            logLedgerStep(
+                conversationId,
+                trigger,
+                "batch ${batch.id} patch fast path failed, falling back to full rewrite",
+                it
+            )
             runLedgerRewrite()
         }
 
@@ -1940,6 +2025,11 @@ class ChatService(
             chatSuggestions = emptyList(),
         )
         saveConversation(conversationId, updatedConversation)
+        logLedgerStep(
+            conversationId,
+            trigger,
+            "batch ${batch.id} persisted in ${System.currentTimeMillis() - ledgerStartedAt}ms snapshotChars=${ledgerSnapshot.length}"
+        )
         return updatedConversation
     }
 
@@ -1951,6 +2041,22 @@ class ChatService(
             .take(3)
             .joinToString(" | ")
             .take(220)
+    }
+
+    private fun logLedgerStep(
+        conversationId: Uuid,
+        trigger: String,
+        message: String,
+        error: Throwable? = null,
+    ) {
+        val text = "[ledger][$conversationId][$trigger] $message"
+        if (error == null) {
+            Log.d(TAG, text)
+            Logging.log(TAG, text)
+        } else {
+            Log.e(TAG, text, error)
+            Logging.log(TAG, "$text :: ${error.stackTraceToString()}")
+        }
     }
 
     private fun normalizeCompressionPlainText(rawText: String): String {
