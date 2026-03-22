@@ -1,6 +1,6 @@
 ---
 name: rikkahub-upstream-port
-description: Standardize upstream tracking for this RikkaHub fork. Use when syncing upstream updates into this repo, creating port-* migration branches, resolving conflicts with upstream-first plus mod-feature backfill, verifying web/static/runtime integrity, building release APKs, and publishing GitHub releases.
+description: Standardize upstream tracking for this RikkaHub fork. Use when syncing upstream updates into this repo, creating port-* migration branches, preserving every mod feature while absorbing upstream optimizations, resolving obvious conflicts with explicit user confirmation, verifying web/static/runtime integrity, building release APKs, and publishing GitHub releases.
 ---
 
 # RikkaHub Upstream Port
@@ -17,9 +17,44 @@ Use this skill to execute a repeatable, low-risk upstream merge for this reposit
 ## Safety Rules
 
 - Stop and ask if unrelated unexpected changes appear.
+- Stop and ask before resolving any obvious product-behavior conflict in a mod-owned file.
 - Never force-push `main` or `master`.
 - Never resolve conflicts by deleting logic only to pass compilation.
 - Keep upstream structure whenever mod behavior does not require divergence.
+- Preserve mod behavior completely. Treat small UX details as release-blocking, not optional polish.
+- Do not silently drop a mod feature just because upstream touched the same area.
+- If both upstream and mod behavior can coexist, keep both.
+
+## Mod Preservation Contract
+
+During every upstream port, explicitly preserve all current `master`-only behavior unless the user approves removal.
+
+Minimum preserved feature surface:
+
+- Sandbox file tools and assistant-level file management UI
+- PRoot container runtime, background process support, container Python, and background keep-alive
+- Workflow TODO, Workflow Control, workflow side panel/handle, and conversation-bound workflow state
+- SubAgent tool integration
+- Local Skills directory and built-in skill runtime
+- Dual-track compaction: primary dialogue summary plus independent memory ledger
+- Auto compression, manual compression, and separate regeneration of latest dialogue summary or memory ledger
+- Shared progress dialogs and cancellable regeneration/compression flows
+- Compression completion auto-scroll back to the generated compaction card
+- Memory index rebuild, Indexed History Recall, and source-readback flow
+- Assistant-level knowledge base, document indexing, and the list/search/read tool chain
+- Conversation branch sandbox copy behavior
+- Multi-key provider editors and persistent key rotation cursor
+- Fork-owned release/update channel behavior
+
+Treat the following interaction details as must-keep unless the user explicitly says otherwise:
+
+- Regenerating summary after second confirmation still shows the shared progress dialog
+- Finishing compression still scrolls back to the generated summary card
+- Index completion / rebuild completion system feedback still appears
+- Cancel buttons in progress dialogs still cancel the real running job
+- Manual compression options that the user toggles must stay persisted if they were persisted before
+
+If any preserved behavior becomes uncertain during conflict resolution, stop and ask the user instead of guessing.
 
 ## Step 1: Sync Upstream Mirror
 
@@ -59,6 +94,7 @@ Prefer upstream for:
 - Navigation/page structure updates
 - Non-mod provider updates
 - Web API/static framework changes from upstream
+- Neutral refactors that do not change mod behavior
 
 Backfill mod features for:
 
@@ -66,17 +102,34 @@ Backfill mod features for:
 - Firebase-disabled behavior
 - Container/proot runtime and sandbox integration
 - Workflow entry/toggle/overlay behavior
-- Chaquopy local tool integration
+- SubAgent and local Skills runtime behavior
+- Dual-track compaction, memory ledger, Indexed History Recall, and source readback flow
+- Knowledge base pages, services, indexing, and tool integration
+- Conversation branch sandbox copy behavior
 - Tavily key-rotation and custom search strategy
+- Fork-owned update/release channel behavior
+
+Ask the user before deciding a conflict when:
+
+- Upstream and mod both changed the same user-visible flow and one side would have to lose behavior
+- A conflict touches compaction, memory retrieval, knowledge base, workflow, container runtime, or update channel logic
+- The only apparent resolution is to simplify or remove existing mod behavior
 
 Inspect high-risk files every merge:
 
 - `app/build.gradle.kts`
 - `app/src/main/java/me/rerere/rikkahub/ui/components/ai/ChatInput.kt`
+- `app/src/main/java/me/rerere/rikkahub/ui/components/ai/CompressContextDialog.kt`
+- `app/src/main/java/me/rerere/rikkahub/ui/components/ai/LedgerGenerationDialog.kt`
 - `app/src/main/java/me/rerere/rikkahub/ui/pages/chat/ChatPage.kt`
+- `app/src/main/java/me/rerere/rikkahub/ui/pages/chat/ChatList.kt`
 - `app/src/main/java/me/rerere/rikkahub/ui/pages/chat/ChatVM.kt`
+- `app/src/main/java/me/rerere/rikkahub/service/ChatService.kt`
+- `app/src/main/java/me/rerere/rikkahub/service/KnowledgeBaseService.kt`
+- `app/src/main/java/me/rerere/rikkahub/service/KnowledgeBaseIndexForegroundService.kt`
 - `app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingProviderPage.kt`
 - `app/src/main/java/me/rerere/rikkahub/ui/pages/setting/SettingSearchPage.kt`
+- `app/src/main/java/me/rerere/rikkahub/ui/pages/assistant/detail/AssistantKnowledgeBasePage.kt`
 - `search/src/main/java/me/rerere/search/SearchService.kt`
 - `search/src/main/java/me/rerere/search/TavilySearchService.kt`
 - `app/src/main/java/me/rerere/rikkahub/service/WebServerService.kt`
@@ -106,6 +159,22 @@ Verify web static assets are packaged:
 
 - Ensure `:app:buildWebUiClient` and `:app:syncWebUiStatic` are executed.
 - Confirm `web/src/main/resources/static/index.html` exists.
+
+Run a mod-preservation review before merge back:
+
+- Compare the finished `port-*` branch against pre-merge `master`, not just against upstream.
+- Read the current `README.md` and use it as a feature checklist for public mod functionality.
+- Explicitly review compaction, memory recall, knowledge base, workflow, sandbox/container, provider settings, and update-channel behavior.
+- Search for conflict leftovers and accidental deletions with:
+
+```bash
+git diff --stat master...HEAD
+git diff --name-only master...HEAD
+rg -n "TODO|FIXME|TEMP|兼容|回退|fallback" app search web ai
+```
+
+- If a feature moved files during upstream refactor, port the behavior to the new structure instead of restoring old structure blindly.
+- If validation passes but a user-visible mod behavior is no longer obviously present, stop and inspect before merge.
 
 ## Step 5: Merge Port Branch Back to Master
 
@@ -163,6 +232,8 @@ Poll every few seconds, print log tail, and stop on timeout if needed.
 - `:app:compileDebugKotlin` succeeds
 - `:app:assembleRelease -x lintVitalRelease` succeeds
 - Web static is present and not regressed
+- Public mod features described in `README.md` still exist without known regressions
+- High-impact UX details around compaction, recall, knowledge base, workflow, and update flow are explicitly checked
 - `origin/master` pushed
 - Finished `port-*` branch deleted locally
 - Release published with correct tag and asset
