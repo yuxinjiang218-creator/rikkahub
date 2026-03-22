@@ -33,6 +33,7 @@ import me.rerere.rikkahub.service.KnowledgeBaseService
 import me.rerere.rikkahub.service.ScheduledPromptManager
 import me.rerere.rikkahub.service.ScheduledTaskKeepAliveService
 import me.rerere.rikkahub.service.WebServerService
+import me.rerere.rikkahub.utils.CrashHandler
 import me.rerere.rikkahub.utils.DatabaseUtil
 import org.koin.android.ext.android.get
 import org.koin.android.ext.koin.androidContext
@@ -62,6 +63,9 @@ class RikkaHubApp : Application() {
 
         // set cursor window size to 32MB
         DatabaseUtil.setCursorWindowSize(32 * 1024 * 1024)
+
+        // install crash handler
+        CrashHandler.install(this)
 
         // delete temp files
         deleteTempFiles()

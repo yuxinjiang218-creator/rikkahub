@@ -141,6 +141,49 @@ sealed class TTSProviderSetting {
         }
     }
 
+    @Serializable
+    @SerialName("xai")
+    data class XAI(
+        override var id: Uuid = Uuid.random(),
+        override var name: String = "xAI TTS",
+        val apiKey: String = "",
+        val baseUrl: String = "https://api.x.ai/v1",
+        val voiceId: String = "eve",
+        val language: String = "auto"
+    ) : TTSProviderSetting() {
+        override fun copyProvider(
+            id: Uuid,
+            name: String,
+        ): TTSProviderSetting {
+            return this.copy(
+                id = id,
+                name = name,
+            )
+        }
+    }
+
+    @Serializable
+    @SerialName("mimo")
+    // 默认值仅用于快捷起步 可在设置页任意修改
+    data class MiMo(
+        override var id: Uuid = Uuid.random(),
+        override var name: String = "MiMo TTS",
+        val apiKey: String = "",
+        val baseUrl: String = "https://api.xiaomimimo.com/v1",
+        val model: String = "mimo-v2-tts",
+        val voice: String = "mimo_default"
+    ) : TTSProviderSetting() {
+        override fun copyProvider(
+            id: Uuid,
+            name: String,
+        ): TTSProviderSetting {
+            return this.copy(
+                id = id,
+                name = name,
+            )
+        }
+    }
+
     companion object {
         val Types by lazy {
             listOf(
@@ -150,6 +193,8 @@ sealed class TTSProviderSetting {
                 MiniMax::class,
                 Qwen::class,
                 Groq::class,
+                XAI::class,
+                MiMo::class,
             )
         }
     }

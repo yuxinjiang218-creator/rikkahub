@@ -42,14 +42,17 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.Delete01
+import me.rerere.hugeicons.stroke.Download01
 import me.rerere.hugeicons.stroke.FileImport
 import me.rerere.hugeicons.stroke.PencilEdit01
 import me.rerere.hugeicons.stroke.Puzzle
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.skills.SkillCatalogEntry
 import me.rerere.rikkahub.data.skills.SkillEditorDocument
 import me.rerere.rikkahub.data.skills.SkillInvalidEntry
 import me.rerere.rikkahub.ui.components.nav.BackButton
+import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.plus
@@ -57,6 +60,7 @@ import org.koin.androidx.compose.koinViewModel
 
 @Composable
 fun SkillsPage() {
+    val navController = LocalNavController.current
     val vm = koinViewModel<SkillsVM>()
     val state by vm.state.collectAsStateWithLifecycle()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -67,6 +71,7 @@ fun SkillsPage() {
     }
 
     var showCreateDialog by remember { mutableStateOf(false) }
+    var showGitHubImportDialog by remember { mutableStateOf(false) }
     var editDocument by remember { mutableStateOf<SkillEditorDocument?>(null) }
     var deleteTarget by remember { mutableStateOf<SkillCatalogEntry?>(null) }
 
@@ -92,6 +97,11 @@ fun SkillsPage() {
         },
         floatingActionButton = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SmallFloatingActionButton(
+                    onClick = { showGitHubImportDialog = true },
+                ) {
+                    Icon(HugeIcons.Download01, contentDescription = "Import from GitHub")
+                }
                 SmallFloatingActionButton(
                     onClick = { zipImporter.launch(arrayOf("application/zip", "application/x-zip-compressed")) },
                 ) {
@@ -168,6 +178,7 @@ fun SkillsPage() {
                 items(state.entries, key = { it.directoryName }) { entry ->
                     SkillEntryCard(
                         entry = entry,
+                        onClick = { navController.navigate(Screen.SkillDetail(entry.directoryName)) },
                         onEdit = {
                             vm.loadSkillDocument(entry) { result ->
                                 result.fold(
@@ -218,6 +229,22 @@ fun SkillsPage() {
                         },
                         onFailure = { toaster.show(it.message ?: "创建 Skill 失败") },
                     )
+                }
+            },
+        )
+    }
+
+    if (showGitHubImportDialog) {
+        ImportSkillDialog(
+            onDismiss = { showGitHubImportDialog = false },
+            onConfirm = { repoUrl ->
+                vm.importSkillFromGitHub(repoUrl) { success, message ->
+                    showGitHubImportDialog = false
+                    if (success) {
+                        toaster.show("Imported Skill: $message")
+                    } else {
+                        toaster.show(message)
+                    }
                 }
             },
         )
@@ -310,10 +337,14 @@ private fun SkillInfoCard(
 @Composable
 private fun SkillEntryCard(
     entry: SkillCatalogEntry,
+    onClick: () -> Unit,
     onEdit: () -> Unit,
     onDelete: (() -> Unit)?,
 ) {
-    Card(colors = CustomColors.cardColorsOnSurfaceContainer) {
+    Card(
+        onClick = onClick,
+        colors = CustomColors.cardColorsOnSurfaceContainer,
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -346,6 +377,47 @@ private fun SkillEntryCard(
             }
         }
     }
+}
+
+@Composable
+private fun ImportSkillDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (repoUrl: String) -> Unit,
+) {
+    var url by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.skills_page_import_from_github)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = stringResource(R.string.skills_page_import_description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text(stringResource(R.string.skills_page_repo_url_label)) },
+                    placeholder = { Text("https://github.com/owner/repo") },
+                    supportingText = { Text(stringResource(R.string.skills_page_repo_url_hint)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(url) }, enabled = url.isNotBlank()) {
+                Text(stringResource(R.string.skills_page_import_confirm))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
 }
 
 @Composable

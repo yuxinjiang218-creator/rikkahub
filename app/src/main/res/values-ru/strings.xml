@@ -959,5 +959,26 @@
   <string name="quick_messages_page_empty_hint">Нажмите кнопку + в правом нижнем углу, чтобы добавить быстрое сообщение</string>
   <string name="quick_messages_page_untitled">Без названия</string>
   <string name="extensions_page_quick_messages_desc">Управление общими шаблонами быстрых сообщений</string>
+  <string name="safe_mode_title">Безопасный режим</string>
+  <string name="safe_mode_description">При последнем запуске приложение завершилось с ошибкой. Вы можете переключиться на другого ассистента, чтобы решить проблему.</string>
+  <string name="safe_mode_current_assistant">Текущий ассистент: %s</string>
+  <string name="safe_mode_default_assistant">Ассистент по умолчанию</string>
+  <string name="safe_mode_switch_assistant">Переключить помощника</string>
+  <string name="safe_mode_crash_report">Отчёт о сбое</string>
+  <string name="safe_mode_copy">Копировать</string>
+  <string name="safe_mode_assistants">Помощники</string>
+  <string name="setting_display_page_chat_font_family_title">Шрифт чата</string>
+  <string name="setting_display_page_chat_font_family_default">По умолчанию</string>
+  <string name="setting_display_page_chat_font_family_serif">С засечками</string>
+  <string name="setting_display_page_chat_font_family_monospace">Моноширинный</string>
+  <string name="skill_detail_page_delete_file">Удалить файл</string>
+  <string name="skill_detail_page_delete_failed">Не удалось удалить</string>
+  <string name="skill_detail_page_delete_confirm">Вы уверены, что хотите удалить файл "%s"?</string>
+  <string name="skill_detail_page_content">Контент</string>
+  <string name="skill_detail_page_save">Сохранить</string>
+  <string name="skill_detail_page_new_file">Новый файл</string>
+  <string name="skill_detail_page_file_name">Имя файла</string>
+  <string name="skill_detail_page_file_name_invalid">Неверное имя файла</string>
+  <string name="skill_detail_page_create">Создать</string>
 </resources>
 

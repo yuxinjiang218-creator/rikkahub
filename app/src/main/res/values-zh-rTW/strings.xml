@@ -376,7 +376,7 @@
   <string name="setting_display_page_developer_mode_desc">顯示更多偵錯功能，不建議一般使用者開啟。</string>
   <string name="setting_display_page_enable_message_generation_haptic_effect_desc">訊息生成時啟用觸覺回饋效果</string>
   <string name="setting_display_page_enable_message_generation_haptic_effect_title">訊息生成觸覺回饋</string>
-  <string name="setting_display_page_font_size_preview">這是一個**示例**的聊天文本</string>
+  <string name="setting_display_page_font_size_preview">凌晨四點鐘，看到海棠花未眠。我常常這樣，在無人的夜裡獨自醒著，想，若有人此刻也在想我，那就好了。</string>
   <string name="setting_display_page_font_size_title">聊天字體大小</string>
   <string name="setting_display_page_message_jumper_position_desc">將訊息跳轉按鈕移至左側</string>
   <string name="setting_display_page_message_jumper_position_title">訊息跳轉位置</string>
@@ -964,5 +964,26 @@
   <string name="quick_messages_page_empty_hint">點擊右下角的 + 按鈕來新增快速訊息</string>
   <string name="quick_messages_page_untitled">未命名</string>
   <string name="extensions_page_quick_messages_desc">管理共用的快速訊息範本</string>
+  <string name="safe_mode_title">安全模式</string>
+  <string name="safe_mode_description">應用程式在上次啟動時崩潰。您可以切換到其他助理來解決此問題。</string>
+  <string name="safe_mode_current_assistant">目前助理：%s</string>
+  <string name="safe_mode_default_assistant">預設助理</string>
+  <string name="safe_mode_switch_assistant">切換助理</string>
+  <string name="safe_mode_crash_report">當機報告</string>
+  <string name="safe_mode_copy">複製</string>
+  <string name="safe_mode_assistants">助理</string>
+  <string name="setting_display_page_chat_font_family_title">聊天字型</string>
+  <string name="setting_display_page_chat_font_family_default">預設</string>
+  <string name="setting_display_page_chat_font_family_serif">Serif</string>
+  <string name="setting_display_page_chat_font_family_monospace">等寬字體</string>
+  <string name="skill_detail_page_delete_file">刪除檔案</string>
+  <string name="skill_detail_page_delete_failed">刪除失敗</string>
+  <string name="skill_detail_page_delete_confirm">確定要刪除檔案「%s」嗎？</string>
+  <string name="skill_detail_page_content">內容</string>
+  <string name="skill_detail_page_save">儲存</string>
+  <string name="skill_detail_page_new_file">新增檔案</string>
+  <string name="skill_detail_page_file_name">檔案名稱</string>
+  <string name="skill_detail_page_file_name_invalid">檔案名稱無效</string>
+  <string name="skill_detail_page_create">建立</string>
 </resources>
 
