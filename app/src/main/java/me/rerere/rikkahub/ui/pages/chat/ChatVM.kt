@@ -332,6 +332,18 @@ class ChatVM(
         chatService.regenerateAtMessage(_conversationId, message, regenerateAssistantMsg)
     }
 
+    fun editLatestDialogueSummary(summaryText: String) {
+        viewModelScope.launch {
+            chatService.editLatestDialogueSummary(_conversationId, summaryText).onFailure {
+                chatService.addError(
+                    it,
+                    conversationId = _conversationId,
+                    title = context.getString(R.string.error_title_operation)
+                )
+            }
+        }
+    }
+
     fun handleToolApproval(
         toolCallId: String,
         approved: Boolean,

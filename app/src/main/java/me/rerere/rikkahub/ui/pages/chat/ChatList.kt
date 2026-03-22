@@ -23,6 +23,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -52,6 +54,7 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -73,6 +76,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalScrollCaptureInProgress
 import androidx.compose.ui.res.stringResource
@@ -137,6 +141,7 @@ fun ChatList(
     onDismissError: (Uuid) -> Unit = {},
     onClearAllErrors: () -> Unit = {},
     onRegenerateLatestCompression: (CompressionRegenerationTarget) -> Unit = {},
+    onEditLatestDialogueSummary: (String) -> Unit = {},
     onRegenerate: (UIMessage) -> Unit = {},
     onEdit: (UIMessage) -> Unit = {},
     onForkMessage: (UIMessage) -> Unit = {},
@@ -178,6 +183,7 @@ fun ChatList(
                 onDismissError = onDismissError,
                 onClearAllErrors = onClearAllErrors,
                 onRegenerateLatestCompression = onRegenerateLatestCompression,
+                onEditLatestDialogueSummary = onEditLatestDialogueSummary,
                 onRegenerate = onRegenerate,
                 onEdit = onEdit,
                 onForkMessage = onForkMessage,
@@ -207,6 +213,7 @@ private fun ChatListNormal(
     onDismissError: (Uuid) -> Unit,
     onClearAllErrors: () -> Unit,
     onRegenerateLatestCompression: (CompressionRegenerationTarget) -> Unit,
+    onEditLatestDialogueSummary: (String) -> Unit,
     onRegenerate: (UIMessage) -> Unit,
     onEdit: (UIMessage) -> Unit,
     onForkMessage: (UIMessage) -> Unit,
@@ -269,6 +276,8 @@ private fun ChatListNormal(
     var latestCompressionPage by rememberSaveable(conversation.id) {
         mutableStateOf(CompressionCardPage.DialogueSummary)
     }
+    var showEditLatestSummaryDialog by rememberSaveable(conversation.id) { mutableStateOf(false) }
+    var editingLatestSummaryText by rememberSaveable(conversation.id) { mutableStateOf("") }
     val eventsByBoundary = remember(normalizedCompressionEvents) {
         normalizedCompressionEvents.groupBy { it.boundaryIndex }
     }
@@ -301,6 +310,42 @@ private fun ChatListNormal(
                 }
             ),
             onConfirmRegenerate = { onRegenerateLatestCompression(regenerateTarget) }
+        )
+    }
+    if (showEditLatestSummaryDialog) {
+        AlertDialog(
+            onDismissRequest = { showEditLatestSummaryDialog = false },
+            title = {
+                Text(text = "编辑主摘要")
+            },
+            text = {
+                OutlinedTextField(
+                    value = editingLatestSummaryText,
+                    onValueChange = { editingLatestSummaryText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 8,
+                    maxLines = 18,
+                    placeholder = {
+                        Text(text = "在这里直接修正主摘要内容")
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onEditLatestDialogueSummary(editingLatestSummaryText)
+                        showEditLatestSummaryDialog = false
+                    },
+                    enabled = editingLatestSummaryText.isNotBlank()
+                ) {
+                    Text(text = "保存")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditLatestSummaryDialog = false }) {
+                    Text(text = "取消")
+                }
+            }
         )
     }
 
@@ -374,6 +419,15 @@ private fun ChatListNormal(
                                         CompressionRegenerationTarget.MemoryLedger
                                     }
                                     showRegenerateConfirm = true
+                                }
+                            } else {
+                                null
+                            },
+                            onEditLatestDialogueSummary = if (event.id == latestCompressionEventId) {
+                                {
+                                    editingLatestSummaryText = event.dialogueSummaryText
+                                    latestCompressionPage = CompressionCardPage.DialogueSummary
+                                    showEditLatestSummaryDialog = true
                                 }
                             } else {
                                 null
@@ -466,6 +520,15 @@ private fun ChatListNormal(
                                     CompressionRegenerationTarget.MemoryLedger
                                 }
                                 showRegenerateConfirm = true
+                            }
+                        } else {
+                            null
+                        },
+                        onEditLatestDialogueSummary = if (event.id == latestCompressionEventId) {
+                            {
+                                editingLatestSummaryText = event.dialogueSummaryText
+                                latestCompressionPage = CompressionCardPage.DialogueSummary
+                                showEditLatestSummaryDialog = true
                             }
                         } else {
                             null
@@ -628,6 +691,7 @@ private fun CompressionBoundaryEvent(
     ledgerStatus: String?,
     ledgerError: String?,
     onRegenerate: (() -> Unit)?,
+    onEditLatestDialogueSummary: (() -> Unit)?,
     onPageChanged: (CompressionCardPage) -> Unit,
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
@@ -646,6 +710,14 @@ private fun CompressionBoundaryEvent(
             .ifBlank { dialogueSnapshot?.preview.orEmpty() }
             .ifBlank { event.dialogueSummaryText.trim().replace("\n", " ").take(220) }
     }
+    val density = LocalDensity.current
+    var dialoguePageHeightPx by remember(event.id) { mutableStateOf(0) }
+    // Keep the shared pager card anchored to the dialogue-summary page height.
+    // Without this, a short ledger status page collapses the card and makes the
+    // return swipe feel broken even though the summary page still has long content.
+    val sharedExpandedMinHeight = remember(dialoguePageHeightPx, density) {
+        with(density) { dialoguePageHeightPx.toDp() }
+    }
     Column(
         modifier = modifier.padding(vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -655,7 +727,16 @@ private fun CompressionBoundaryEvent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(18.dp))
-                    .clickable { onToggle() },
+                    .combinedClickable(
+                        onClick = onToggle,
+                        onLongClick = {
+                            // Only the latest summary is editable, and long-press should still
+                            // work from the collapsed preview because that card is summary-led.
+                            if (!expanded || latestPage == CompressionCardPage.DialogueSummary) {
+                                onEditLatestDialogueSummary?.invoke()
+                            }
+                        }
+                    ),
                 color = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp),
                 tonalElevation = 2.dp,
                 shadowElevation = 0.dp,
@@ -761,21 +842,37 @@ private fun CompressionBoundaryEvent(
 
                         HorizontalPager(
                             state = pagerState,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = sharedExpandedMinHeight)
                         ) { page ->
                             when (page) {
-                                0 -> DialogueSummaryPage(
-                                    summaryText = event.dialogueSummaryText,
-                                    fallbackSnapshotRaw = event.summarySnapshot,
-                                    fallbackSnapshot = dialogueSnapshot,
-                                )
+                                0 -> Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .onSizeChanged { size ->
+                                            dialoguePageHeightPx = kotlin.math.max(dialoguePageHeightPx, size.height)
+                                        }
+                                ) {
+                                    DialogueSummaryPage(
+                                        summaryText = event.dialogueSummaryText,
+                                        fallbackSnapshotRaw = event.summarySnapshot,
+                                        fallbackSnapshot = dialogueSnapshot,
+                                    )
+                                }
 
-                                else -> MemoryLedgerPage(
-                                    snapshotRaw = ledgerSnapshotRaw,
-                                    snapshot = ledgerSnapshot,
-                                    ledgerStatus = ledgerStatus,
-                                    ledgerError = ledgerError,
-                                )
+                                else -> Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = sharedExpandedMinHeight)
+                                ) {
+                                    MemoryLedgerPage(
+                                        snapshotRaw = ledgerSnapshotRaw,
+                                        snapshot = ledgerSnapshot,
+                                        ledgerStatus = ledgerStatus,
+                                        ledgerError = ledgerError,
+                                    )
+                                }
                             }
                         }
                     }

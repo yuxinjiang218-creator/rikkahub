@@ -449,6 +449,7 @@ private fun ChatPageContent(
                 onDismissError = onDismissError,
                 onClearAllErrors = onClearAllErrors,
                 onRegenerateLatestCompression = { target -> vm.regenerateLatestCompression(target) },
+                onEditLatestDialogueSummary = { summary -> vm.editLatestDialogueSummary(summary) },
                 onRegenerate = {
                     vm.regenerateAtMessage(it)
                 },

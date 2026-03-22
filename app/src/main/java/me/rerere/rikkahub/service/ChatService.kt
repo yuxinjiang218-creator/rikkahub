@@ -138,6 +138,7 @@ import kotlin.math.max
 import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
+internal const val DIALOGUE_SUMMARY_MAX_OUTPUT_TOKENS = 65_536
 private const val ROLLING_SUMMARY_MIN_OUTPUT_TOKENS = 1_200
 private const val ROLLING_SUMMARY_TARGET_OUTPUT_TOKENS = 2_500
 private const val ROLLING_SUMMARY_HARD_CAP_TOKENS = 30_000
@@ -1501,6 +1502,48 @@ class ChatService(
         }
     }
 
+    suspend fun editLatestDialogueSummary(
+        conversationId: Uuid,
+        editedSummaryText: String,
+    ): Result<Unit> {
+        return runCatching {
+            val normalizedSummary = normalizeCompressionPlainText(editedSummaryText)
+            if (normalizedSummary.isBlank()) {
+                throw IllegalStateException("Dialogue summary cannot be blank")
+            }
+
+            val conversation = conversationRepo.getConversationById(conversationId)
+                ?: throw IllegalStateException("Conversation not found")
+            val latestEvent = conversation.compressionEvents.latestCompressionEvent()
+                ?: throw IllegalStateException(context.getString(R.string.chat_page_compress_no_latest_summary))
+            val now = Instant.now()
+            val tokenEstimate = estimateTokenCount(
+                text = normalizedSummary,
+                charsPerToken = settingsStore.settingsFlow.first().tokenEstimatorCharsPerToken
+            )
+            val updatedEvent = latestEvent.copy(
+                dialogueSummaryText = normalizedSummary,
+                dialogueSummaryPreview = buildDialogueSummaryPreview(normalizedSummary),
+            )
+            conversationRepo.updateCompressionEvent(updatedEvent, conversationId)
+            val updatedConversation = conversation.copy(
+                compressionState = conversation.compressionState.copy(
+                    // Manual edits become the source of truth for future compaction.
+                    // The next summary pass must continue from what the user kept here.
+                    dialogueSummaryText = normalizedSummary,
+                    dialogueSummaryTokenEstimate = tokenEstimate,
+                    dialogueSummaryUpdatedAt = now,
+                    updatedAt = now,
+                ),
+                compressionEvents = conversation.compressionEvents
+                    .map { event -> if (event.id == updatedEvent.id) updatedEvent else event }
+                    .sortedWith(compressionEventOrder),
+                chatSuggestions = emptyList(),
+            )
+            saveConversation(conversationId, updatedConversation)
+        }
+    }
+
     private suspend fun compressConversationInternal(
         conversationId: Uuid,
         conversation: Conversation,
@@ -1566,10 +1609,6 @@ class ChatService(
                 ?: conversation.compressionState.dialogueSummaryText
             val currentRollingSummary = baseRollingSummaryJsonOverride
                 ?: conversation.compressionState.rollingSummaryJson.ifBlank { "{}" }
-            val compressionBudget = calculateCompressionBudget(
-                incrementalMessages = incrementalMessages,
-                charsPerToken = settings.tokenEstimatorCharsPerToken
-            )
             val dialogueAdditionalContext = buildString {
                 if (additionalPrompt.isNotBlank()) {
                     append("Additional instructions from user: ")
@@ -1587,9 +1626,6 @@ class ChatService(
                 return settings.dialogueCompressPrompt.applyPlaceholders(
                     "dialogue_summary_text" to currentDialogueSummary,
                     "incremental_messages" to incrementalMessages,
-                    "incremental_input_tokens" to compressionBudget.incrementalInputTokens.toString(),
-                    "target_output_tokens" to compressionBudget.targetOutputTokens.toString(),
-                    "hard_cap_tokens" to compressionBudget.hardCapTokens.toString(),
                     "additional_context" to extraContext,
                     "locale" to Locale.getDefault().displayName
                 )
@@ -1601,7 +1637,9 @@ class ChatService(
                     messages = listOf(UIMessage.user(prompt)),
                     params = compressionGenerationParams(
                         model = model,
-                        maxTokens = compressionBudget.hardCapTokens
+                        // Keep summary budgeting hidden from the model. The wide cap here is
+                        // only a safety fuse against accidental truncation inside the app.
+                        maxTokens = DIALOGUE_SUMMARY_MAX_OUTPUT_TOKENS
                     ),
                 )
                 val summary = normalizeCompressionPlainText(
@@ -1618,19 +1656,6 @@ class ChatService(
                 text = nextDialogueSummary,
                 charsPerToken = settings.tokenEstimatorCharsPerToken
             )
-
-            if (dialogueSummaryTokenEstimate > compressionBudget.hardCapTokens) {
-                nextDialogueSummary = runDialogueSummary(
-                    buildDialoguePrompt(
-                        extraContext = dialogueAdditionalContext +
-                            "\nForce convergence: keep the current state, live constraints, unresolved questions, recent progress, next step, and the highest-value anchors within the hard cap."
-                    )
-                )
-                dialogueSummaryTokenEstimate = estimateTokenCount(
-                    text = nextDialogueSummary,
-                    charsPerToken = settings.tokenEstimatorCharsPerToken
-                )
-            }
 
             val boundaryIndex = (compressEndIndex + 1).coerceIn(0, conversation.messageNodes.size)
             val event = conversationRepo.addCompressionEvent(

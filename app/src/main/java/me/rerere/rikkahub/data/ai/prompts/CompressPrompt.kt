@@ -62,10 +62,8 @@ internal val DEFAULT_DIALOGUE_COMPRESS_PROMPT = """
     - 如果是深度聊天，优先保留：稳定偏好、边界、核心观点、情绪语境、未完线索、需要回调的具体表达。
     - 如果多种场景并存，以“最直接影响下一轮回复的内容”为最高优先级，同时给其他仍会继续影响后续的部分保留最小必要锚点。
 
-    预算提醒只用于帮助你做删减顺序判断，不是要求你机械追求长度：
-    - incremental_input_tokens: {incremental_input_tokens}
-    - target_output_tokens: {target_output_tokens}
-    - hard_cap_tokens: {hard_cap_tokens}
+    补充提醒：
+    在不与新增消息冲突的前提下，尽量保留旧摘要里仍有效的细节，不要为了流畅性整篇重写。
 
     {additional_context}
 
