@@ -20,8 +20,8 @@ android {
         applicationId = "me.rerere.rikkahub.dev"
         minSdk = 26
         targetSdk = 28
-        versionCode = 146
-        versionName = "2.13"
+        versionCode = 149
+        versionName = "2.1.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -58,7 +58,8 @@ android {
     buildTypes {
         release {
             applicationIdSuffix = ".mod"
-            signingConfig = signingConfigs.getByName("debug")
+            // Release builds must use the locally managed private keystore from ignored local.properties.
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

@@ -143,6 +143,15 @@ rg -n "^(<<<<<<<|=======|>>>>>>>)" -S .
 
 ## Step 4: Validate Before Merge Back
 
+Before release validation, ensure the release signing inputs are loaded from the local private signing config, not the debug keystore.
+Use this local-only flow:
+
+1. Read `%USERPROFILE%\\.codex\\secrets\\rikkahub-release.properties`
+2. Copy or sync its `storeFile/storePassword/keyAlias/keyPassword` values into ignored `local.properties`
+3. Confirm `app/build.gradle.kts` release build type uses `signingConfigs.getByName("release")`
+
+Never commit signing credentials, keystore files, or `local.properties`.
+
 Compile with constrained memory:
 
 ```bash
@@ -202,6 +211,16 @@ git branch -d port-upstream-<yyyymmdd>-<version>
 
 Use upstream version tag format directly (no custom prefix/suffix).
 Only build and publish the `arm64-v8a` APK. Do not keep or upload `x86_64` or universal APKs.
+
+Never hardcode GitHub tokens in this skill, the repository, or any committed file.
+For release publishing, first resolve a GitHub token from one of these local-only sources:
+
+1. `GH_TOKEN` environment variable
+2. `GITHUB_TOKEN` environment variable
+3. `%USERPROFILE%\\.codex\\secrets\\github_token.txt`
+
+If a token file is used, read it locally at runtime and never copy its contents into tracked files, skill files, commit messages, or release notes.
+Prefer GitHub API / upload API with the resolved token when `gh` CLI is unavailable.
 
 Example:
 
