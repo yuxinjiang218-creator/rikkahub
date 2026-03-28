@@ -42,7 +42,7 @@ class IndexVectorStore(
     }
 
     suspend fun ensureReady() {
-        withPinnedConnection("ensure_ready") { }
+        withPinnedConnection("ensure_ready", writeTransaction = false) { }
     }
 
     suspend fun insertKnowledgeBaseVectors(
@@ -50,7 +50,7 @@ class IndexVectorStore(
         records: List<VectorInsertRecord>,
     ) {
         if (records.isEmpty() || dimension <= 0) return
-        withPinnedConnection("insert_knowledge_base_vectors_d$dimension") { db ->
+        withPinnedConnection("insert_knowledge_base_vectors_d$dimension", writeTransaction = true) { db ->
             val tableName = buildKnowledgeBaseVectorTableName(dimension)
             ensureVectorTable(db, tableName, dimension, "knowledge_base_chunk")
             insertVectorRows(db, tableName, records)
@@ -62,7 +62,7 @@ class IndexVectorStore(
         records: List<VectorInsertRecord>,
     ) {
         if (records.isEmpty() || dimension <= 0) return
-        withPinnedConnection("insert_memory_vectors_d$dimension") { db ->
+        withPinnedConnection("insert_memory_vectors_d$dimension", writeTransaction = true) { db ->
             val tableName = buildMemoryVectorTableName(dimension)
             ensureVectorTable(db, tableName, dimension, "memory_index_chunk")
             insertVectorRows(db, tableName, records)
@@ -110,7 +110,7 @@ class IndexVectorStore(
     }
 
     suspend fun clearAllVectorTables() {
-        withPinnedConnection("clear_all_vector_tables") { db ->
+        withPinnedConnection("clear_all_vector_tables", writeTransaction = true) { db ->
             val cursor = db.query(
                 """
                 SELECT name
@@ -150,20 +150,41 @@ class IndexVectorStore(
 
     internal suspend fun <T> withPinnedConnection(
         operation: String,
+        writeTransaction: Boolean = false,
         block: (SupportSQLiteDatabase) -> T,
     ): T = withContext(Dispatchers.IO) {
         operationMutex.withLock {
-            val db = getOrOpenDatabase()
-            db.beginTransaction()
+            val db = runCatching { getOrOpenDatabase() }.getOrElse { error ->
+                throw buildStageError(
+                    stage = "open_database",
+                    tableName = "__raw_connection__",
+                    detail = "operation=$operation",
+                    cause = error,
+                )
+            }
+            if (writeTransaction) {
+                runCatching { db.beginTransaction() }.getOrElse { error ->
+                    throw buildStageError(
+                        stage = "begin_transaction",
+                        tableName = "__raw_connection__",
+                        detail = "operation=$operation,write=true",
+                        cause = error,
+                    )
+                }
+            }
             try {
                 val result = block(db)
-                db.setTransactionSuccessful()
+                if (writeTransaction) {
+                    db.setTransactionSuccessful()
+                }
                 result
             } catch (error: Throwable) {
                 Log.e(TAG, "Index vector operation failed: op=$operation path=$databasePath", error)
                 throw error
             } finally {
-                db.endTransaction()
+                if (writeTransaction && db.inTransaction()) {
+                    db.endTransaction()
+                }
             }
         }
     }
@@ -186,7 +207,7 @@ class IndexVectorStore(
     ): Map<Long, Double> {
         val uniqueIds = candidateIds.distinct()
         if (uniqueIds.isEmpty()) return emptyMap()
-        return withPinnedConnection("${operation}_search_d$dimension") { db ->
+        return withPinnedConnection("${operation}_search_d$dimension", writeTransaction = false) { db ->
             if (!hasTable(db, tableName)) {
                 throw VectorSearchExecutionException(
                     operation = operation,
@@ -226,7 +247,7 @@ class IndexVectorStore(
         chunkIdsByDimension: Map<Int, List<Long>>,
     ) {
         if (chunkIdsByDimension.isEmpty()) return
-        withPinnedConnection(operation) { db ->
+        withPinnedConnection(operation, writeTransaction = true) { db ->
             chunkIdsByDimension.forEach { (dimension, chunkIds) ->
                 if (dimension <= 0 || chunkIds.isEmpty()) return@forEach
                 val tableName = tableNameBuilder(dimension)
@@ -258,6 +279,7 @@ class IndexVectorStore(
             )
         }
         return SQLiteDatabase.openDatabase(configuration, null, null).also { opened ->
+            opened.execSQL("PRAGMA busy_timeout=5000")
             opened.execSQL("PRAGMA journal_mode=DELETE")
             opened.execSQL("PRAGMA synchronous=NORMAL")
             opened.execSQL("PRAGMA foreign_keys=ON")

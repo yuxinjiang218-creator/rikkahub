@@ -28,12 +28,6 @@ class IndexVectorTableManager(
         dimension: Int,
         limit: Int,
     ): Map<Long, Double> {
-        vectorBackendVerifier.assertHealthy(
-            operation = "knowledge_base",
-            tableName = buildKnowledgeBaseVectorTableName(dimension),
-            dimension = dimension,
-            candidateCount = candidateIds.size,
-        )
         return runCatching {
             vectorStore.searchKnowledgeBaseDistances(
                 candidateIds = candidateIds,
@@ -59,12 +53,6 @@ class IndexVectorTableManager(
         dimension: Int,
         limit: Int,
     ): Map<Long, Double> {
-        vectorBackendVerifier.assertHealthy(
-            operation = "memory",
-            tableName = buildMemoryVectorTableName(dimension),
-            dimension = dimension,
-            candidateCount = candidateIds.size,
-        )
         return runCatching {
             vectorStore.searchMemoryDistances(
                 candidateIds = candidateIds,
