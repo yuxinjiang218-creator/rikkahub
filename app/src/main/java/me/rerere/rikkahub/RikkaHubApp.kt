@@ -128,8 +128,8 @@ class RikkaHubApp : Application() {
         get<AppScope>().launch(Dispatchers.IO) {
             runCatching {
                 val prootManager = get<PRootManager>()
-                if (prootManager.checkInitializationStatus()) {
-                    prootManager.restoreState()
+                if (!prootManager.restoreState()) {
+                    Log.w(TAG, "restoreContainerState skipped because container runtime was unavailable")
                 }
             }.onFailure {
                 Log.e(TAG, "restoreContainerState failed", it)

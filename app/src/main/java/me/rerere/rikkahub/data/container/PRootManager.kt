@@ -20,6 +20,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Singleton
 import me.rerere.rikkahub.data.files.FileFolders
@@ -107,25 +111,228 @@ class PRootManager(
     @Volatile
     private var currentEnableContainerRuntime = false
 
+    private enum class RootfsHealthStatus {
+        VALID,
+        MISSING_PROOT,
+        MISSING_ROOTFS,
+        MISSING_BUSYBOX,
+        MISSING_REQUIRED_ENTRY,
+        LEGACY_ABSOLUTE_BUSYBOX_SYMLINK,
+        BROKEN_SYMLINK,
+    }
+
+    private enum class RootfsEntryType {
+        MISSING,
+        FILE,
+        DIRECTORY,
+        SYMLINK_RELATIVE,
+        SYMLINK_ABSOLUTE,
+        BROKEN_SYMLINK,
+        OTHER,
+    }
+
+    private data class RootfsEntryInfo(
+        val path: String,
+        val type: RootfsEntryType,
+        val target: String? = null,
+    ) {
+        fun summary(): String = when (type) {
+            RootfsEntryType.SYMLINK_RELATIVE,
+            RootfsEntryType.SYMLINK_ABSOLUTE,
+            RootfsEntryType.BROKEN_SYMLINK -> "${type.name}(${target ?: "?"})"
+            else -> type.name
+        }
+    }
+
+    private data class RootfsHealthReport(
+        val status: RootfsHealthStatus,
+        val prootExists: Boolean,
+        val rootfsExists: Boolean,
+        val hasContainerArtifacts: Boolean,
+        val busyboxEntry: RootfsEntryInfo,
+        val shEntry: RootfsEntryInfo,
+        val archEntry: RootfsEntryInfo,
+        val envEntry: RootfsEntryInfo,
+        val hasLegacyBusyboxSymlink: Boolean,
+        val hasBrokenRequiredEntry: Boolean,
+        val hasMissingOrUnexpectedRequiredEntry: Boolean,
+        val rootfsVersion: String?,
+    ) {
+        val isUsable: Boolean
+            get() = status == RootfsHealthStatus.VALID
+
+        val requiresRepair: Boolean
+            get() = hasContainerArtifacts && status != RootfsHealthStatus.VALID
+
+        val requiresRootfsRebuild: Boolean
+            get() = !rootfsExists ||
+                busyboxEntry.type != RootfsEntryType.FILE ||
+                hasLegacyBusyboxSymlink ||
+                hasBrokenRequiredEntry ||
+                hasMissingOrUnexpectedRequiredEntry
+    }
+
+    private fun resolveRootfsPath(relativePath: String): Path {
+        return relativePath
+            .split("/")
+            .filter { it.isNotBlank() }
+            .fold(rootfsDir.toPath()) { current, segment -> current.resolve(segment) }
+    }
+
+    private fun resolveRootfsSymlinkTarget(parent: Path, target: String): Path? {
+        if (target.isBlank()) return null
+        val resolved = if (target.startsWith("/")) {
+            rootfsDir.toPath().resolve(target.removePrefix("/"))
+        } else {
+            parent.resolve(target)
+        }.normalize()
+        return resolved.takeIf { it.startsWith(rootfsDir.toPath()) }
+    }
+
+    private fun inspectRootfsEntry(relativePath: String): RootfsEntryInfo {
+        val path = resolveRootfsPath(relativePath)
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+            return RootfsEntryInfo(path = relativePath, type = RootfsEntryType.MISSING)
+        }
+
+        return try {
+            val attributes = Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+            when {
+                attributes.isRegularFile -> RootfsEntryInfo(path = relativePath, type = RootfsEntryType.FILE)
+                attributes.isDirectory -> RootfsEntryInfo(path = relativePath, type = RootfsEntryType.DIRECTORY)
+                attributes.isSymbolicLink -> {
+                    val target = Files.readSymbolicLink(path).toString()
+                    val resolvedTarget = resolveRootfsSymlinkTarget(path.parent, target)
+                    val targetExists = resolvedTarget != null && Files.exists(resolvedTarget, LinkOption.NOFOLLOW_LINKS)
+                    val type = when {
+                        target.isBlank() -> RootfsEntryType.BROKEN_SYMLINK
+                        !targetExists -> RootfsEntryType.BROKEN_SYMLINK
+                        target.startsWith("/") -> RootfsEntryType.SYMLINK_ABSOLUTE
+                        else -> RootfsEntryType.SYMLINK_RELATIVE
+                    }
+                    RootfsEntryInfo(path = relativePath, type = type, target = target)
+                }
+                else -> RootfsEntryInfo(path = relativePath, type = RootfsEntryType.OTHER)
+            }
+        } catch (error: Throwable) {
+            Log.w(TAG, "Failed to inspect rootfs entry: $relativePath", error)
+            RootfsEntryInfo(path = relativePath, type = RootfsEntryType.BROKEN_SYMLINK)
+        }
+    }
+
+    private fun readRootfsVersionOrNull(): String? {
+        val versionFile = File(rootfsDir, ROOTFS_VERSION_FILE)
+        if (!versionFile.exists()) return null
+        return runCatching { versionFile.readText().trim().takeIf { it.isNotBlank() } }.getOrNull()
+    }
+
+    private fun inspectRootfsHealth(): RootfsHealthReport {
+        val prootBinary = File(prootDir, "proot")
+        val upperDir = File(containerDir, "upper")
+        val prootExists = prootBinary.exists() && prootBinary.isFile && prootBinary.length() > 0L
+        val rootfsExists = rootfsDir.exists() && rootfsDir.listFiles()?.isNotEmpty() == true
+        val hasContainerArtifacts = prootDir.exists() || rootfsDir.exists() || upperDir.exists()
+        val busyboxEntry = if (rootfsExists) inspectRootfsEntry("bin/busybox") else RootfsEntryInfo("bin/busybox", RootfsEntryType.MISSING)
+        val shEntry = if (rootfsExists) inspectRootfsEntry("bin/sh") else RootfsEntryInfo("bin/sh", RootfsEntryType.MISSING)
+        val archEntry = if (rootfsExists) inspectRootfsEntry("bin/arch") else RootfsEntryInfo("bin/arch", RootfsEntryType.MISSING)
+        val envEntry = if (rootfsExists) inspectRootfsEntry("usr/bin/env") else RootfsEntryInfo("usr/bin/env", RootfsEntryType.MISSING)
+        val requiredEntries = listOf(shEntry, archEntry, envEntry)
+        val validEntryTypes = setOf(
+            RootfsEntryType.FILE,
+            RootfsEntryType.SYMLINK_RELATIVE,
+            RootfsEntryType.SYMLINK_ABSOLUTE,
+        )
+        val hasLegacyBusyboxSymlink = requiredEntries.any { entry ->
+            entry.type == RootfsEntryType.SYMLINK_ABSOLUTE && entry.target == "/bin/busybox"
+        }
+        val hasBrokenSymlink = requiredEntries.any { it.type == RootfsEntryType.BROKEN_SYMLINK }
+        val hasMissingOrUnexpectedRequiredEntry = requiredEntries.any { it.type !in validEntryTypes }
+        val status = when {
+            !rootfsExists -> RootfsHealthStatus.MISSING_ROOTFS
+            !prootExists -> RootfsHealthStatus.MISSING_PROOT
+            busyboxEntry.type != RootfsEntryType.FILE -> RootfsHealthStatus.MISSING_BUSYBOX
+            hasBrokenSymlink -> RootfsHealthStatus.BROKEN_SYMLINK
+            hasLegacyBusyboxSymlink -> RootfsHealthStatus.LEGACY_ABSOLUTE_BUSYBOX_SYMLINK
+            hasMissingOrUnexpectedRequiredEntry -> RootfsHealthStatus.MISSING_REQUIRED_ENTRY
+            else -> RootfsHealthStatus.VALID
+        }
+
+        return RootfsHealthReport(
+            status = status,
+            prootExists = prootExists,
+            rootfsExists = rootfsExists,
+            hasContainerArtifacts = hasContainerArtifacts,
+            busyboxEntry = busyboxEntry,
+            shEntry = shEntry,
+            archEntry = archEntry,
+            envEntry = envEntry,
+            hasLegacyBusyboxSymlink = hasLegacyBusyboxSymlink,
+            hasBrokenRequiredEntry = hasBrokenSymlink,
+            hasMissingOrUnexpectedRequiredEntry = hasMissingOrUnexpectedRequiredEntry,
+            rootfsVersion = readRootfsVersionOrNull(),
+        )
+    }
+
+    private fun logRootfsDiagnostics(stage: String, report: RootfsHealthReport, repairState: String) {
+        Log.i(
+            TAG,
+            "[$stage] rootfs_status=${report.status} " +
+                "proot_exists=${report.prootExists} " +
+                "rootfs_exists=${report.rootfsExists} " +
+                "busybox=${report.busyboxEntry.summary()} " +
+                "sh=${report.shEntry.summary()} " +
+                "arch=${report.archEntry.summary()} " +
+                "env=${report.envEntry.summary()} " +
+                "rootfs_version=${report.rootfsVersion ?: "missing"} " +
+                "repair=$repairState"
+        )
+    }
+
+    private suspend fun repairRootfsIfNeeded(trigger: String): RootfsHealthReport = withContext(Dispatchers.IO) {
+        val initialReport = inspectRootfsHealth()
+        val repairState = if (initialReport.requiresRepair) "triggered" else "skipped"
+        logRootfsDiagnostics("$trigger.preflight", initialReport, repairState)
+
+        if (!initialReport.requiresRepair) {
+            return@withContext initialReport
+        }
+
+        try {
+            prootDir.mkdirs()
+            containerDir.mkdirs()
+
+            if (!initialReport.prootExists) {
+                Log.w(TAG, "[$trigger] Missing PRoot binary, re-extracting")
+                extractPRootBinary()
+            }
+
+            if (initialReport.requiresRootfsRebuild) {
+                Log.w(TAG, "[$trigger] Rebuilding rootfs due to ${initialReport.status}")
+                if (rootfsDir.exists()) {
+                    rootfsDir.deleteRecursively()
+                }
+                extractAlpineRootfs(forceRebuild = true)
+            }
+        } catch (error: Throwable) {
+            Log.e(TAG, "[$trigger] Failed to repair rootfs", error)
+            _containerState.value = ContainerStateEnum.Error("Container rootfs repair failed")
+        }
+
+        val repairedReport = inspectRootfsHealth()
+        logRootfsDiagnostics("$trigger.post_repair", repairedReport, repairState)
+        if (!repairedReport.isUsable && repairedReport.hasContainerArtifacts) {
+            _containerState.value = ContainerStateEnum.Error("Container rootfs unhealthy: ${repairedReport.status}")
+        }
+        repairedReport
+    }
+
     /**
      * 检查是否需要初始化（资源文件是否存在且有效）
      */
     fun checkInitializationStatus(): Boolean {
-        val prootBinary = File(prootDir, "proot")
-        val rootfsValid = rootfsDir.exists()
-                && rootfsDir.listFiles()?.isNotEmpty() == true
-                && File(rootfsDir, "bin/sh").exists()
-                && File(rootfsDir, "bin/sh").length() > 0
-
-        if (prootBinary.exists() && rootfsDir.exists()) {
-            val shFile = File(rootfsDir, "bin/sh")
-            Log.d(TAG, "Checking rootfs: exists=${rootfsDir.exists()}, " +
-                    "hasFiles=${rootfsDir.listFiles()?.isNotEmpty()}, " +
-                    "shExists=${shFile.exists()}, " +
-                    "shSize=${if (shFile.exists()) shFile.length() else 0}")
-        }
-
-        return prootBinary.exists() && rootfsValid
+        val report = inspectRootfsHealth()
+        logRootfsDiagnostics("checkInitializationStatus", report, repairState = "skipped")
+        return report.isUsable
     }
 
     /**
@@ -159,6 +366,11 @@ class PRootManager(
             // 解压 Alpine rootfs
             Log.d(TAG, "Extracting Alpine rootfs...")
             extractAlpineRootfs()
+            val rootfsReport = inspectRootfsHealth()
+            logRootfsDiagnostics("initialize", rootfsReport, repairState = "skipped")
+            check(rootfsReport.isUsable) {
+                "Container rootfs is not healthy after initialization: ${rootfsReport.status}"
+            }
             Log.d(TAG, "Alpine rootfs extracted successfully")
             
             _containerState.value = ContainerStateEnum.Initializing(0.8f)
@@ -677,6 +889,12 @@ fi
                     return@withContext initialize()
                 }
                 is ContainerStateEnum.Stopped -> {
+                    val rootfsReport = repairRootfsIfNeeded("start")
+                    if (!rootfsReport.isUsable) {
+                        return@withContext Result.failure(
+                            IllegalStateException("Container rootfs unavailable: ${rootfsReport.status}")
+                        )
+                    }
                     // 从停止状态恢复
                     if (globalContainer == null) {
                         createGlobalContainer()
@@ -1462,7 +1680,7 @@ fi
 
     private suspend fun extractPRootBinary() = withContext(Dispatchers.IO) {
         val prootBinary = File(prootDir, "proot")
-        if (!prootBinary.exists()) {
+        if (!prootBinary.exists() || prootBinary.length() == 0L) {
             val arch = getDeviceArchitecture()
             val assetPath = "proot/proot-$arch"
             Log.d(TAG, "Extracting PRoot binary for architecture: $arch from $assetPath")
@@ -1493,12 +1711,14 @@ fi
         }
     }
 
-    private suspend fun extractAlpineRootfs() = withContext(Dispatchers.IO) {
+    private suspend fun extractAlpineRootfs(forceRebuild: Boolean = false) = withContext(Dispatchers.IO) {
         // 检查是否需要更新 rootfs（版本控制）
         val needUpdate = checkRootfsNeedsUpdate()
+        val rootfsReport = inspectRootfsHealth()
+        val needsRepair = rootfsReport.requiresRootfsRebuild
 
-        if (!rootfsDir.exists() || rootfsDir.listFiles()?.isEmpty() == true || needUpdate) {
-            if (needUpdate && rootfsDir.exists()) {
+        if (!rootfsDir.exists() || rootfsDir.listFiles()?.isEmpty() == true || needUpdate || forceRebuild || needsRepair) {
+            if ((needUpdate || forceRebuild || needsRepair) && rootfsDir.exists()) {
                 Log.d(TAG, "Rootfs version mismatch or update required, deleting old rootfs...")
                 rootfsDir.deleteRecursively()
             }
@@ -1623,6 +1843,14 @@ fi
     /**
      * 解压纯 tar 格式
      */
+    private fun normalizeExtractedSymlinkTarget(targetDir: File, entryName: String, linkName: String): String {
+        if (linkName != "/bin/busybox") return linkName
+        val entryFile = File(targetDir, entryName)
+        val parentPath = entryFile.parentFile?.toPath() ?: targetDir.toPath()
+        val busyboxPath = File(targetDir, "bin/busybox").toPath()
+        return parentPath.relativize(busyboxPath).toString().replace(File.separatorChar, '/')
+    }
+
     private fun extractTar(input: java.io.InputStream, targetDir: File) {
         val buffer = ByteArray(8192)
 
@@ -1699,7 +1927,21 @@ fi
                     // 符号链接目标在 tar 头部的 157-256 字节（linkname 字段）
                     val linkNameBytes = header.copyOfRange(157, 257)
                     val linkName = String(linkNameBytes, Charsets.UTF_8).trimEnd('\u0000')
-                    if (linkName.isNotEmpty()) {
+                    check(linkName.isNotEmpty()) { "Symlink entry missing target: $name" }
+                    file.parentFile?.mkdirs()
+                    val normalizedLinkName = normalizeExtractedSymlinkTarget(targetDir, name, linkName)
+                    try {
+                        file.delete()
+                        android.system.Os.symlink(normalizedLinkName, file.absolutePath)
+                        Log.d(TAG, "Created symlink: ${file.absolutePath} -> $normalizedLinkName")
+                    } catch (e: Exception) {
+                        throw RuntimeException(
+                            "Failed to create symlink: ${file.absolutePath} -> $normalizedLinkName",
+                            e
+                        )
+                    }
+                    continue
+                    if (false) {
                         file.parentFile?.mkdirs()
                         try {
                             android.system.Os.symlink(linkName, file.absolutePath)
@@ -1767,8 +2009,14 @@ fi
     suspend fun restoreState(): Boolean = withContext(Dispatchers.IO) {
         try {
             // 检查 rootfs 是否已初始化
-            if (!checkInitializationStatus()) {
-                Log.d(TAG, "[RestoreState] Rootfs not initialized, cannot restore state")
+            val rootfsReport = repairRootfsIfNeeded("restoreState")
+            if (!rootfsReport.isUsable) {
+                if (rootfsReport.hasContainerArtifacts) {
+                    _containerState.value = ContainerStateEnum.Error("Container rootfs unhealthy: ${rootfsReport.status}")
+                } else {
+                    _containerState.value = ContainerStateEnum.NotInitialized
+                }
+                Log.w(TAG, "[RestoreState] Skipping container restore because rootfs is ${rootfsReport.status}")
                 return@withContext false
             }
 
@@ -1803,8 +2051,8 @@ fi
                 // 创建 upper 目录并设置为 Running（兼容旧逻辑）
                 Log.d(TAG, "[RestoreState] Rootfs initialized but no upper dir, creating fresh container")
                 createGlobalContainer()
-                _containerState.value = ContainerStateEnum.Running
-                Log.d(TAG, "[RestoreState] Fresh container created and set to Running")
+                _containerState.value = ContainerStateEnum.Stopped
+                Log.d(TAG, "[RestoreState] Fresh container created and set to Stopped")
                 true
             }
         } catch (e: Exception) {
@@ -1849,17 +2097,18 @@ fi
                                 is ContainerStateEnum.Stopped -> {
                                     Log.d(TAG, "[AutoManage] Auto-starting container from Stopped state")
                                     GlobalScope.launch(Dispatchers.IO) {
+                                        val rootfsReport = inspectRootfsHealth()
+                                        if (!rootfsReport.isUsable) {
+                                            logRootfsDiagnostics("auto_manage.on_start", rootfsReport, repairState = "skipped")
+                                            Log.w(TAG, "[AutoManage] Skip auto-start because rootfs is ${rootfsReport.status}")
+                                            return@launch
+                                        }
                                         val result = start()
                                         Log.d(TAG, "[AutoManage] Auto-start result: $result")
                                     }
                                 }
                                 is ContainerStateEnum.NotInitialized -> {
-                                    Log.d(TAG, "[AutoManage] Container not initialized, auto-initializing...")
-                                    GlobalScope.launch(Dispatchers.IO) {
-                                        Log.d(TAG, "[AutoManage] Calling initialize()...")
-                                        val result = initialize()
-                                        Log.d(TAG, "[AutoManage] Auto-initialize result: $result")
-                                    }
+                                    Log.d(TAG, "[AutoManage] Container not initialized, skipping auto-initialize on startup")
                                 }
                                 else -> {
                                     Log.d(TAG, "Container state: ${_containerState.value}, no action needed")
