@@ -59,3 +59,9 @@
 -dontwarn java.awt.geom.**
 -dontwarn java.awt.image.**
 -dontwarn javax.imageio.**
+
+# ObjectBox vector search native code resolves these result wrapper classes by
+# their original JVM names at runtime. R8 may otherwise strip them because the
+# Java-side references are mostly erased generics.
+-keep class io.objectbox.query.ObjectWithScore { *; }
+-keep class io.objectbox.query.IdWithScore { *; }
