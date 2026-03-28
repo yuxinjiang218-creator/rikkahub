@@ -279,12 +279,28 @@ class IndexVectorStore(
             )
         }
         return SQLiteDatabase.openDatabase(configuration, null, null).also { opened ->
-            opened.execSQL("PRAGMA busy_timeout=5000")
-            opened.query("PRAGMA journal_mode=DELETE").use { }
-            opened.execSQL("PRAGMA synchronous=NORMAL")
-            opened.execSQL("PRAGMA foreign_keys=ON")
+            applyOpenPragma(opened, stage = "set_busy_timeout", sql = "PRAGMA busy_timeout=5000")
+            applyOpenPragma(opened, stage = "set_journal_mode", sql = "PRAGMA journal_mode=DELETE")
+            applyOpenPragma(opened, stage = "set_synchronous", sql = "PRAGMA synchronous=NORMAL")
             Log.i(TAG, "Opened raw sqlite-vector database at $databasePath with WAL disabled")
             database = opened
+        }
+    }
+
+    private fun applyOpenPragma(
+        db: SQLiteDatabase,
+        stage: String,
+        sql: String,
+    ) {
+        runCatching {
+            db.query(sql).use { }
+        }.getOrElse { error ->
+            throw buildStageError(
+                stage = stage,
+                tableName = "__raw_connection__",
+                detail = sql,
+                cause = error,
+            )
         }
     }
 
