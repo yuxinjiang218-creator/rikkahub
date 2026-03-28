@@ -272,17 +272,10 @@ class GenerationHandler(
                             executedTools += tool.copy(output = result)
                         }.onFailure { error ->
                             Log.e(TAG, "generateText: tool ${tool.toolName} failed", error)
-                            val shortMessage = error.message?.take(240)?.ifBlank { null }
-                                ?: "tool execution failed"
                             executedTools += tool.copy(
                                 output = listOf(
                                     UIMessagePart.Text(
-                                        json.encodeToString(
-                                            buildJsonObject {
-                                                put("error", JsonPrimitive(shortMessage))
-                                                put("error_code", JsonPrimitive("TOOL_EXECUTION_FAILED"))
-                                            }
-                                        )
+                                        json.encodeToString(buildToolExecutionFailurePayload(error))
                                     )
                                 )
                             )
