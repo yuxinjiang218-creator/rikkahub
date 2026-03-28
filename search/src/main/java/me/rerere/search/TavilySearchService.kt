@@ -97,8 +97,8 @@ object TavilySearchService : SearchService<SearchServiceOptions.TavilyOptions> {
                 put("max_results", commonOptions.resultSize)
                 put("search_depth", serviceOptions.depth.ifEmpty { "advanced" })
                 put("topic", topic)
+                put("include_answer", "advanced")
             }
-
             val request = Request.Builder()
                 .url("https://api.tavily.com/search")
                 .post(body.toString().toRequestBody())
@@ -112,6 +112,7 @@ object TavilySearchService : SearchService<SearchServiceOptions.TavilyOptions> {
 
                 return@withContext Result.success(
                     SearchResult(
+                        answer = response.answer,
                         items = response.results.map {
                             SearchResultItem(
                                 title = it.title,
@@ -201,7 +202,7 @@ object TavilySearchService : SearchService<SearchServiceOptions.TavilyOptions> {
                 cursorStore = TavilyKeyCursorStore(context.applicationContext)
             ).also { keyRoulette = it }
         }
-        return roulette.next("search:tavily:${options.id}", options.apiKey)
+        return roulette.next(options.apiKey, "search:tavily:${options.id}")
     }
 }
 

@@ -757,6 +757,9 @@
   <string name="setting_display_page_tts_only_read_quoted_desc">When enabled, TTS will only read content within quotation marks</string>
   <string name="setting_display_page_auto_play_tts_title">Auto-play TTS After Generation</string>
   <string name="setting_display_page_auto_play_tts_desc">Automatically play TTS after assistant message generation completes</string>
+  <string name="setting_display_page_volume_key_scroll_title">Scroll With Volume Keys</string>
+  <string name="setting_display_page_volume_key_scroll_desc">Use the volume keys to scroll through chat content</string>
+  <string name="setting_display_page_volume_key_scroll_ratio">Scroll Distance</string>
   <string name="regenerate_confirm_message">Are you sure you want to regenerate this message?</string>
   <string name="chat_page_compress_context">Compress History</string>
   <string name="chat_page_compress_context_title">Compress Conversation History</string>

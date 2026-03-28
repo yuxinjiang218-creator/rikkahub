@@ -1,5 +1,4 @@
 package me.rerere.ai.provider.providers
-
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -66,10 +65,7 @@ class ClaudeProvider(
         withContext(Dispatchers.IO) {
             val request = Request.Builder()
                 .url("${providerSetting.baseUrl}/models")
-                .addHeader(
-                    "x-api-key",
-                    keyRoulette.next(providerSetting.id.toString(), providerSetting.apiKey)
-                )
+                .addHeader("x-api-key", keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString()))
                 .addHeader("anthropic-version", ANTHROPIC_VERSION)
                 .get()
                 .build()
@@ -112,10 +108,7 @@ class ClaudeProvider(
             .url("${providerSetting.baseUrl}/messages")
             .headers(params.customHeaders.toHeaders())
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
-            .addHeader(
-                "x-api-key",
-                keyRoulette.next(providerSetting.id.toString(), providerSetting.apiKey)
-            )
+            .addHeader("x-api-key", keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString()))
             .addHeader("anthropic-version", ANTHROPIC_VERSION)
             .configureReferHeaders(providerSetting.baseUrl)
             .build()
@@ -162,10 +155,7 @@ class ClaudeProvider(
             .url("${providerSetting.baseUrl}/messages")
             .headers(params.customHeaders.toHeaders())
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
-            .addHeader(
-                "x-api-key",
-                keyRoulette.next(providerSetting.id.toString(), providerSetting.apiKey)
-            )
+            .addHeader("x-api-key", keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString()))
             .addHeader("anthropic-version", ANTHROPIC_VERSION)
             .addHeader("Content-Type", "application/json")
             .configureReferHeaders(providerSetting.baseUrl)

@@ -10,16 +10,17 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -32,9 +33,10 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import me.rerere.rikkahub.R
 import kotlinx.coroutines.launch
+import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
+import me.rerere.rikkahub.data.skills.SkillCatalogEntry
 import me.rerere.rikkahub.ui.components.ai.ExtensionEmptyState
 import me.rerere.rikkahub.ui.components.ai.LorebooksContent
 import me.rerere.rikkahub.ui.components.ai.ModeInjectionsContent
@@ -42,7 +44,6 @@ import me.rerere.rikkahub.ui.components.ai.QuickMessagesContent
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.theme.CustomColors
-import me.rerere.rikkahub.data.skills.SkillCatalogEntry
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
 
@@ -119,15 +120,24 @@ fun AssistantExtensionsPage(id: String) {
                                 onAction = { navController.navigate(Screen.QuickMessages) },
                             )
                         } else {
-                            QuickMessagesContent(
-                                quickMessages = settings.quickMessages,
-                                selectedIds = assistant.quickMessageIds,
-                                onToggle = { quickMessageId, checked ->
-                                    val newIds = if (checked) assistant.quickMessageIds + quickMessageId
-                                    else assistant.quickMessageIds - quickMessageId
-                                    vm.update(assistant.copy(quickMessageIds = newIds))
-                                },
-                            )
+                            Column {
+                                QuickMessagesContent(
+                                    modifier = Modifier.weight(1f),
+                                    quickMessages = settings.quickMessages,
+                                    selectedIds = assistant.quickMessageIds,
+                                    onToggle = { quickMessageId, checked ->
+                                        val newIds = if (checked) assistant.quickMessageIds + quickMessageId
+                                        else assistant.quickMessageIds - quickMessageId
+                                        vm.update(assistant.copy(quickMessageIds = newIds))
+                                    },
+                                )
+                                TextButton(
+                                    onClick = { navController.navigate(Screen.QuickMessages) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(stringResource(R.string.assistant_extensions_page_goto_extensions))
+                                }
+                            }
                         }
                     }
 
@@ -139,15 +149,24 @@ fun AssistantExtensionsPage(id: String) {
                                 onAction = { navController.navigate(Screen.Prompts) },
                             )
                         } else {
-                            ModeInjectionsContent(
-                                modeInjections = settings.modeInjections,
-                                selectedIds = assistant.modeInjectionIds,
-                                onToggle = { injId, checked ->
-                                    val newIds = if (checked) assistant.modeInjectionIds + injId
-                                    else assistant.modeInjectionIds - injId
-                                    vm.update(assistant.copy(modeInjectionIds = newIds))
-                                },
-                            )
+                            Column {
+                                ModeInjectionsContent(
+                                    modifier = Modifier.weight(1f),
+                                    modeInjections = settings.modeInjections,
+                                    selectedIds = assistant.modeInjectionIds,
+                                    onToggle = { injId, checked ->
+                                        val newIds = if (checked) assistant.modeInjectionIds + injId
+                                        else assistant.modeInjectionIds - injId
+                                        vm.update(assistant.copy(modeInjectionIds = newIds))
+                                    },
+                                )
+                                TextButton(
+                                    onClick = { navController.navigate(Screen.Prompts) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(stringResource(R.string.assistant_extensions_page_goto_prompts))
+                                }
+                            }
                         }
                     }
 
@@ -159,15 +178,24 @@ fun AssistantExtensionsPage(id: String) {
                                 onAction = { navController.navigate(Screen.Prompts) },
                             )
                         } else {
-                            LorebooksContent(
-                                lorebooks = settings.lorebooks,
-                                selectedIds = assistant.lorebookIds,
-                                onToggle = { injId, checked ->
-                                    val newIds = if (checked) assistant.lorebookIds + injId
-                                    else assistant.lorebookIds - injId
-                                    vm.update(assistant.copy(lorebookIds = newIds))
-                                },
-                            )
+                            Column {
+                                LorebooksContent(
+                                    modifier = Modifier.weight(1f),
+                                    lorebooks = settings.lorebooks,
+                                    selectedIds = assistant.lorebookIds,
+                                    onToggle = { injId, checked ->
+                                        val newIds = if (checked) assistant.lorebookIds + injId
+                                        else assistant.lorebookIds - injId
+                                        vm.update(assistant.copy(lorebookIds = newIds))
+                                    },
+                                )
+                                TextButton(
+                                    onClick = { navController.navigate(Screen.Prompts) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(stringResource(R.string.assistant_extensions_page_goto_prompts))
+                                }
+                            }
                         }
                     }
 
@@ -220,19 +248,19 @@ private fun AssistantSkillsSelectionContent(
     ) {
         item("manage") {
             ListItem(
-                headlineContent = { Text("管理 Skills") },
+                headlineContent = { Text("Manage Skills") },
                 supportingContent = {
                     Text(
                         text = if (invalidCount > 0) {
-                            "进入技能页可创建、编辑、导入技能，并查看 $invalidCount 个无效 skill。"
+                            "Go to the skills page to create, edit, import, and review $invalidCount invalid skills."
                         } else {
-                            "进入技能页可创建、编辑、导入技能。"
+                            "Go to the skills page to create, edit, and import skills."
                         }
                     )
                 },
                 trailingContent = {
                     Text(
-                        text = "前往",
+                        text = "Open",
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.clickable(onClick = onManage),
                     )

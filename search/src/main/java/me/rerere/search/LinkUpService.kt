@@ -79,7 +79,6 @@ object LinkUpService : SearchService<SearchServiceOptions.LinkUpOptions> {
                 put("outputType", JsonPrimitive("sourcedAnswer"))
                 put("includeImages", JsonPrimitive("false"))
             }
-
             val request = Request.Builder()
                 .url("https://api.linkup.so/v1/search")
                 .post(body.toString().toRequestBody())
@@ -127,7 +126,6 @@ object LinkUpService : SearchService<SearchServiceOptions.LinkUpOptions> {
                 put("renderJs", JsonPrimitive(false))
                 put("extractImages", JsonPrimitive(false))
             }
-
             val request = Request.Builder()
                 .url("https://api.linkup.so/v1/fetch")
                 .post(body.toString().toRequestBody())
@@ -181,7 +179,7 @@ object LinkUpService : SearchService<SearchServiceOptions.LinkUpOptions> {
                 cursorStore = LinkUpKeyCursorStore(context.applicationContext)
             ).also { keyRoulette = it }
         }
-        return roulette.next("search:linkup:${options.id}", options.apiKey)
+        return roulette.next(options.apiKey, "search:linkup:${options.id}")
     }
 }
 

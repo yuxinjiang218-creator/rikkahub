@@ -359,7 +359,7 @@ val dataSourceModule = module {
             .addInterceptor(HttpLoggingInterceptor().apply {
                 level = HttpLoggingInterceptor.Level.HEADERS
             })
-            .build().also { SearchService.init(it) }
+            .build().also { SearchService.init(it, get()) }
     }
 
     single {

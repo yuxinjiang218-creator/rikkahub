@@ -1,5 +1,4 @@
 package me.rerere.ai.provider.providers
-
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -99,7 +98,7 @@ class GoogleProvider(
                 .addHeader("Authorization", "Bearer $accessToken")
                 .build()
         } else {
-            val key = keyRoulette.next(providerSetting.id.toString(), providerSetting.apiKey)
+            val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
             request.newBuilder()
                 .addHeader("x-goog-api-key", key)
                 .build()

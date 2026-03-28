@@ -1,5 +1,4 @@
 package me.rerere.ai.provider.providers
-
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -46,7 +45,7 @@ class OpenAIProvider(
 
     override suspend fun listModels(providerSetting: ProviderSetting.OpenAI): List<Model> =
         withContext(Dispatchers.IO) {
-            val key = keyRoulette.next(providerSetting.id.toString(), providerSetting.apiKey)
+            val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
             val request = Request.Builder()
                 .url("${providerSetting.baseUrl}/models")
                 .addHeader("Authorization", "Bearer $key")
@@ -74,7 +73,7 @@ class OpenAIProvider(
         }
 
     override suspend fun getBalance(providerSetting: ProviderSetting.OpenAI): String = withContext(Dispatchers.IO) {
-        val key = keyRoulette.next(providerSetting.id.toString(), providerSetting.apiKey)
+        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
         val url = if (providerSetting.balanceOption.apiPath.startsWith("http")) {
             providerSetting.balanceOption.apiPath
         } else {
@@ -143,7 +142,7 @@ class OpenAIProvider(
     ): EmbeddingGenerationResult = withContext(Dispatchers.IO) {
         require(params.input.isNotEmpty()) { "Embedding input cannot be empty" }
 
-        val key = keyRoulette.next(providerSetting.apiKey)
+        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
         val requestBody = json.encodeToString(
             buildJsonObject {
                 put("model", params.model.modelId)
@@ -196,7 +195,7 @@ class OpenAIProvider(
             "Expected OpenAI provider setting"
         }
 
-        val key = keyRoulette.next(providerSetting.id.toString(), providerSetting.apiKey)
+        val key = keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())
 
         val requestBody = json.encodeToString(
             buildJsonObject {
