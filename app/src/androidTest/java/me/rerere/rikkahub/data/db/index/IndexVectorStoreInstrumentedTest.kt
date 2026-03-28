@@ -158,4 +158,33 @@ class IndexVectorStoreInstrumentedTest {
             assertEquals(listOf(31L, 32L), distances.keys.toList())
         }
     }
+
+    @Test
+    fun largeDimensionMemorySearchWorks() = runBlocking {
+        val vectorStore = newStore()
+        vectorStore.withPinnedConnection("test_schema_setup") { db ->
+            db.execSQL("CREATE TABLE IF NOT EXISTS knowledge_base_chunk (id INTEGER PRIMARY KEY NOT NULL)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS memory_index_chunk (id INTEGER PRIMARY KEY NOT NULL)")
+        }
+
+        val firstVector = List(1024) { index -> if (index == 0) 1.0f else 0.0f }
+        val secondVector = List(1024) { index -> if (index == 1) 1.0f else 0.0f }
+        val queryVector = firstVector.joinToString(prefix = "[", postfix = "]")
+        vectorStore.insertMemoryVectors(
+            dimension = 1024,
+            records = listOf(
+                VectorInsertRecord(chunkId = 41L, embeddingJson = firstVector.joinToString(prefix = "[", postfix = "]")),
+                VectorInsertRecord(chunkId = 42L, embeddingJson = secondVector.joinToString(prefix = "[", postfix = "]")),
+            )
+        )
+
+        val distances = vectorStore.searchMemoryDistances(
+            candidateIds = listOf(41L, 42L),
+            queryEmbeddingJson = queryVector,
+            dimension = 1024,
+            limit = 2,
+        )
+
+        assertEquals(listOf(41L, 42L), distances.keys.toList())
+    }
 }

@@ -34,9 +34,14 @@ class IndexVectorStore(
         detail: String,
         cause: Throwable? = null,
     ): IllegalStateException {
-        val baseMessage = "sqlite-vector stage failed: $stage [db=$databasePath, table=$tableName, detail=$detail]"
+        val causeText = cause?.message?.take(240).orEmpty()
+        val baseMessage = if (causeText.isBlank()) {
+            "sqlite-vector stage failed: $stage [db=$databasePath, table=$tableName, detail=$detail]"
+        } else {
+            "sqlite-vector stage failed: $stage: $causeText [db=$databasePath, table=$tableName, detail=$detail]"
+        }
         return IllegalStateException(
-            if (cause == null || cause.message.isNullOrBlank()) baseMessage else "$baseMessage: ${cause.message}",
+            baseMessage,
             cause
         )
     }
@@ -223,16 +228,14 @@ class IndexVectorStore(
                 return@withPinnedConnection emptyMap()
             }
             val candidateIdSet = uniqueIds.toHashSet()
-            val result = queryDistanceMap(
+            val result = queryDistanceMapWithFallback(
                 db = db,
-                sql = buildTopKDistanceQuery(tableName),
-                args = listOf(queryEmbeddingJson, totalVectorRows),
                 tableName = tableName,
-            ).asSequence()
-                .filter { (rowId, _) -> candidateIdSet.contains(rowId) }
-                .sortedBy { it.value }
-                .take(limit)
-                .associate { it.key to it.value }
+                queryEmbeddingJson = queryEmbeddingJson,
+                totalVectorRows = totalVectorRows,
+                candidateIdSet = candidateIdSet,
+                limit = limit,
+            )
             Log.i(
                 TAG,
                 "sqlite-vector $operation search succeeded for $tableName with ${result.size} hits from ${uniqueIds.size} candidates"
@@ -373,11 +376,64 @@ class IndexVectorStore(
         }
     }
 
+    private fun queryDistanceMapWithFallback(
+        db: SupportSQLiteDatabase,
+        tableName: String,
+        queryEmbeddingJson: String,
+        totalVectorRows: Int,
+        candidateIdSet: Set<Long>,
+        limit: Int,
+    ): Map<Long, Double> {
+        val topKAttempt = runCatching {
+            queryDistanceMap(
+                db = db,
+                sql = buildTopKDistanceQuery(tableName),
+                args = listOf(queryEmbeddingJson, totalVectorRows),
+                tableName = tableName,
+                detail = "mode=top_k,k=$totalVectorRows"
+            )
+        }
+        topKAttempt.getOrNull()?.let { distances ->
+            return distances.asSequence()
+                .filter { (rowId, _) -> candidateIdSet.contains(rowId) }
+                .sortedBy { it.value }
+                .take(limit)
+                .associate { it.key to it.value }
+        }
+
+        val streamingAttempt = runCatching {
+            queryDistanceMap(
+                db = db,
+                sql = buildStreamingDistanceQuery(tableName),
+                args = listOf(queryEmbeddingJson),
+                tableName = tableName,
+                detail = "mode=streaming"
+            )
+        }
+        streamingAttempt.getOrNull()?.let { distances ->
+            return distances.asSequence()
+                .filter { (rowId, _) -> candidateIdSet.contains(rowId) }
+                .sortedBy { it.value }
+                .take(limit)
+                .associate { it.key to it.value }
+        }
+
+        val topKError = topKAttempt.exceptionOrNull()
+        val streamingError = streamingAttempt.exceptionOrNull()
+        throw buildStageError(
+            stage = "vector_full_scan",
+            tableName = tableName,
+            detail = "top_k_failed=${topKError?.message.orEmpty().take(180)}; streaming_failed=${streamingError?.message.orEmpty().take(180)}",
+            cause = streamingError ?: topKError,
+        )
+    }
+
     private fun queryDistanceMap(
         db: SupportSQLiteDatabase,
         sql: String,
         args: List<Any>,
         tableName: String,
+        detail: String,
     ): Map<Long, Double> {
         val result = linkedMapOf<Long, Double>()
         runCatching {
@@ -390,7 +446,7 @@ class IndexVectorStore(
             throw buildStageError(
                 stage = "vector_full_scan",
                 tableName = tableName,
-                detail = "sql=${sql.replace('\n', ' ')}, args=${args.joinToString()}",
+                detail = detail,
                 cause = error,
             )
         }
@@ -400,7 +456,14 @@ class IndexVectorStore(
     private fun buildTopKDistanceQuery(tableName: String): String {
         return """
             SELECT rowid, distance
-            FROM vector_full_scan('$tableName', 'embedding', ?, ?)
+            FROM vector_full_scan('$tableName', 'embedding', vector_as_f32(?), ?)
+        """.trimIndent()
+    }
+
+    private fun buildStreamingDistanceQuery(tableName: String): String {
+        return """
+            SELECT rowid, distance
+            FROM vector_full_scan('$tableName', 'embedding', vector_as_f32(?))
         """.trimIndent()
     }
 
