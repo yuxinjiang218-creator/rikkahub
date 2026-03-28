@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.first
 import com.dokar.sonner.ToastType
 import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.Job
@@ -160,6 +161,8 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
     val chatListState = rememberLazyListState()
     LaunchedEffect(vm, conversation.messageNodes.size) {
         if (nodeId == null && !vm.chatListInitialized && conversation.messageNodes.isNotEmpty()) {
+            snapshotFlow { chatListState.layoutInfo.totalItemsCount }
+                .first { it > 0 }
             chatListState.scrollToItem(chatListState.layoutInfo.totalItemsCount)
             vm.chatListInitialized = true
         }
@@ -169,6 +172,8 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
         if (nodeId != null && conversation.messageNodes.isNotEmpty() && !vm.chatListInitialized) {
             val index = conversation.messageNodes.indexOfFirst { it.id == nodeId }
             if (index >= 0) {
+                snapshotFlow { chatListState.layoutInfo.totalItemsCount }
+                    .first { it > index }
                 chatListState.scrollToItem(index)
             }
             vm.chatListInitialized = true

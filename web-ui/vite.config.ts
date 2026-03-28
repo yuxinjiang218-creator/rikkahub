@@ -1,3 +1,4 @@
+import path from "node:path";
 import { reactRouter } from "@react-router/dev/vite";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
@@ -6,6 +7,12 @@ import svgr from "vite-plugin-svgr";
 
 export default defineConfig({
   plugins: [tailwindcss(), reactRouter(), tsconfigPaths(), svgr()],
+  resolve: {
+    alias: {
+      "~": path.resolve(__dirname, "app"),
+    },
+    preserveSymlinks: true,
+  },
   server: {
     proxy: {
       "/api": {

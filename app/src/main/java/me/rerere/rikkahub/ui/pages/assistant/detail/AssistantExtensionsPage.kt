@@ -248,19 +248,19 @@ private fun AssistantSkillsSelectionContent(
     ) {
         item("manage") {
             ListItem(
-                headlineContent = { Text("Manage Skills") },
+                headlineContent = { Text("管理 Skills") },
                 supportingContent = {
                     Text(
                         text = if (invalidCount > 0) {
-                            "Go to the skills page to create, edit, import, and review $invalidCount invalid skills."
+                            "进入技能页可创建、编辑、导入技能，并查看 $invalidCount 个无效 skill。"
                         } else {
-                            "Go to the skills page to create, edit, and import skills."
+                            "进入技能页可创建、编辑、导入技能。"
                         }
                     )
                 },
                 trailingContent = {
                     Text(
-                        text = "Open",
+                        text = "前往",
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.clickable(onClick = onManage),
                     )
