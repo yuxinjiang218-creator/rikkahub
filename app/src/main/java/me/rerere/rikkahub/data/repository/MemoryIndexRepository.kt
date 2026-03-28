@@ -113,7 +113,9 @@ class MemoryIndexRepository(
         queryEmbedding: List<Float>,
         limit: Int,
     ): Map<Long, Double> {
-        if (!indexMigrationManager.shouldUseIndexBackend()) return emptyMap()
+        check(indexMigrationManager.shouldUseIndexBackend()) {
+            "Memory vector search requires the migrated index backend"
+        }
         return vectorTableManager.searchMemoryDistances(
             candidateIds = candidateChunkIds,
             queryEmbeddingJson = JsonInstant.encodeToString(queryEmbedding),

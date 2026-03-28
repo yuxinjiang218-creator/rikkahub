@@ -2579,10 +2579,18 @@ class ChatService(
                 vectorTopK = RECALL_VECTOR_RERANK_K
             )
         } else {
+            Log.i(
+                TAG,
+                "recallMemory: running sqlite-vector search for assistant=$assistantId chunks=${indexedChunks.size} dimension=${queryEmbedding.size}"
+            )
             val vectorDistances = memoryIndexRepository.searchVectorDistances(
                 candidateChunkIds = indexedChunks.map { it.chunk.id },
                 queryEmbedding = queryEmbedding,
                 limit = RECALL_VECTOR_RERANK_K,
+            )
+            Log.i(
+                TAG,
+                "recallMemory: sqlite-vector search returned ${vectorDistances.size} hits for assistant=$assistantId"
             )
             val vectorScoresByIndex = indexedChunks.mapIndexedNotNull { index, item ->
                 vectorDistances[item.chunk.id]?.let { distance ->

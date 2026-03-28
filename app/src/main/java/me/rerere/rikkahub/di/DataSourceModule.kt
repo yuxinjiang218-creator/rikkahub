@@ -33,6 +33,7 @@ import me.rerere.rikkahub.data.db.index.INDEX_DB_NAME
 import me.rerere.rikkahub.data.db.index.IndexDatabase
 import me.rerere.rikkahub.data.db.index.IndexMigrationManager
 import me.rerere.rikkahub.data.db.index.IndexVectorTableManager
+import me.rerere.rikkahub.data.db.index.VectorBackendVerifier
 import me.rerere.rikkahub.data.db.index.createKnowledgeBaseFtsTable
 import me.rerere.rikkahub.data.db.index.initializeExistingVectorTables
 import me.rerere.rikkahub.data.db.migrations.Migration_11_12
@@ -273,7 +274,14 @@ val dataSourceModule = module {
     }
 
     single {
-        IndexVectorTableManager(get())
+        VectorBackendVerifier(get())
+    }
+
+    single {
+        IndexVectorTableManager(
+            database = get(),
+            vectorBackendVerifier = get(),
+        )
     }
 
     single {

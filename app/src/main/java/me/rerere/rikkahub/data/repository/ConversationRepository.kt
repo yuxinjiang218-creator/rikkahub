@@ -26,6 +26,7 @@ import me.rerere.rikkahub.data.db.entity.ConversationCompressionPayloadEntity
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.db.fts.MessageFtsManager
+import me.rerere.rikkahub.data.db.index.IndexMigrationManager
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.CompressionEvent
 import me.rerere.rikkahub.data.model.CompressionEventPayload
@@ -52,6 +53,7 @@ class ConversationRepository(
     private val filesManager: FilesManager,
     private val context: Context,
     private val messageFtsManager: MessageFtsManager,
+    private val indexMigrationManager: IndexMigrationManager,
 ) {
     companion object {
         private const val PAGE_SIZE = 20
@@ -278,6 +280,7 @@ class ConversationRepository(
             conversationDAO.delete(conversationToConversationEntity(conversation))
             compressionEventDAO.deleteByConversation(conversation.id.toString())
         }
+        indexMigrationManager.deleteConversationScopedData(conversation.id.toString())
         filesManager.deleteChatFiles(fullConversation.files)
         SandboxEngine.deleteSandbox(context, fullConversation.id.toString())
     }

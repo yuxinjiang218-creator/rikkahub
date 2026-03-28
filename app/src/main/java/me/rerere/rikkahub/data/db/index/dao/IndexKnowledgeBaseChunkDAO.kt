@@ -6,6 +6,12 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import me.rerere.rikkahub.data.db.index.entity.IndexKnowledgeBaseChunkEntity
 
+data class IndexKnowledgeBaseChunkScopeRow(
+    val id: Long,
+    val documentId: Long,
+    val generation: Int,
+)
+
 @Dao
 interface IndexKnowledgeBaseChunkDAO {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -38,6 +44,30 @@ interface IndexKnowledgeBaseChunkDAO {
         assistantId: String,
         documentIds: List<Long>,
     ): List<IndexKnowledgeBaseChunkEntity>
+
+    @Query(
+        """
+        SELECT id, document_id AS documentId, generation
+        FROM knowledge_base_chunk
+        WHERE assistant_id = :assistantId
+        """
+    )
+    suspend fun getChunkScopeOfAssistant(
+        assistantId: String,
+    ): List<IndexKnowledgeBaseChunkScopeRow>
+
+    @Query(
+        """
+        SELECT id, document_id AS documentId, generation
+        FROM knowledge_base_chunk
+        WHERE assistant_id = :assistantId
+            AND document_id IN (:documentIds)
+        """
+    )
+    suspend fun getChunkScopeOfAssistantDocuments(
+        assistantId: String,
+        documentIds: List<Long>,
+    ): List<IndexKnowledgeBaseChunkScopeRow>
 
     @Query(
         """

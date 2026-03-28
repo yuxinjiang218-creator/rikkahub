@@ -2,6 +2,7 @@ package me.rerere.rikkahub.service
 
 import android.app.Application
 import android.net.Uri
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -52,11 +53,13 @@ import kotlin.uuid.Uuid
 
 private const val KB_TOP_K = 6
 private const val KB_MAX_RETURN_TOKENS = 2_400
-private const val KB_FTS_CANDIDATE_LIMIT = 200
-private const val KB_MIN_CANDIDATE_COUNT = 12
+private const val KB_FTS_CANDIDATE_LIMIT = 96
+private const val KB_VECTOR_CANDIDATE_LIMIT = 96
+private const val KB_FUSED_CANDIDATE_LIMIT = 160
 private const val KB_EMBEDDING_BATCH_SIZE = 8
 private const val KB_EMBEDDING_RETRY_COUNT = 3
 private const val KB_STALE_INDEX_MINUTES = 10L
+private const val TAG = "KnowledgeBaseService"
 
 class KnowledgeBaseService(
     private val context: Application,
@@ -283,6 +286,7 @@ class KnowledgeBaseService(
         documentIds: List<Long> = emptyList(),
     ): KnowledgeBaseSearchResult {
         val normalizedQuery = query.trim()
+        val normalizedDocumentIds = documentIds.distinct()
         if (normalizedQuery.isBlank()) {
             return KnowledgeBaseSearchResult(
                 query = query,
@@ -293,18 +297,11 @@ class KnowledgeBaseService(
         }
 
         ensureFtsReady()
-        val candidateIds = knowledgeBaseFtsManager.searchChunkIds(
-            assistantId = assistantId.toString(),
-            query = normalizedQuery,
-            limit = KB_FTS_CANDIDATE_LIMIT,
-            documentIds = documentIds.distinct(),
-        )
-        val candidateChunks = buildCandidateChunkPool(
+        val searchScopeChunkIds = knowledgeBaseRepository.getSearchScopeChunkIds(
             assistantId = assistantId,
-            candidateIds = candidateIds,
-            documentIds = documentIds,
+            documentIds = normalizedDocumentIds,
         )
-        if (candidateChunks.isEmpty()) {
+        if (searchScopeChunkIds.isEmpty()) {
             return KnowledgeBaseSearchResult(
                 query = query,
                 quality = KnowledgeBaseResultQuality.EMPTY,
@@ -312,6 +309,12 @@ class KnowledgeBaseService(
                 chunks = emptyList()
             )
         }
+        val lexicalCandidateIds = knowledgeBaseFtsManager.searchChunkIds(
+            assistantId = assistantId.toString(),
+            query = normalizedQuery,
+            limit = KB_FTS_CANDIDATE_LIMIT,
+            documentIds = normalizedDocumentIds,
+        )
 
         val settings = settingsStore.settingsFlowRaw.first()
         val embeddingModel = settings.getEmbeddingModel()
@@ -335,13 +338,50 @@ class KnowledgeBaseService(
                 model = embeddingModel,
                 input = listOf(normalizedQuery)
             )
-        ).embeddings.firstOrNull()
+            ).embeddings.firstOrNull()
             ?: return KnowledgeBaseSearchResult(
                 query = query,
                 quality = KnowledgeBaseResultQuality.EMPTY,
                 returnedCount = 0,
                 chunks = emptyList()
             )
+
+        val vectorDistances = knowledgeBaseRepository.searchVectorDistances(
+            candidateChunkIds = searchScopeChunkIds,
+            queryEmbedding = queryEmbedding,
+            limit = KB_VECTOR_CANDIDATE_LIMIT,
+        )
+        Log.i(
+            TAG,
+            "searchKnowledgeBase: sqlite-vector returned ${vectorDistances.size} hits from ${searchScopeChunkIds.size} scope chunks"
+        )
+        val fusedCandidateIds = linkedSetOf<Long>().apply {
+            addAll(vectorDistances.keys)
+            addAll(lexicalCandidateIds)
+        }.take(KB_FUSED_CANDIDATE_LIMIT)
+
+        if (fusedCandidateIds.isEmpty()) {
+            return KnowledgeBaseSearchResult(
+                query = query,
+                quality = KnowledgeBaseResultQuality.EMPTY,
+                returnedCount = 0,
+                chunks = emptyList()
+            )
+        }
+
+        val candidateChunkMap = knowledgeBaseRepository.getChunksByIds(
+            assistantId = assistantId,
+            chunkIds = fusedCandidateIds,
+        ).associateBy { it.chunk.id }
+        val candidateChunks = fusedCandidateIds.mapNotNull(candidateChunkMap::get)
+        if (candidateChunks.isEmpty()) {
+            return KnowledgeBaseSearchResult(
+                query = query,
+                quality = KnowledgeBaseResultQuality.EMPTY,
+                returnedCount = 0,
+                chunks = emptyList()
+            )
+        }
 
         val ranked = if (candidateChunks.any { it.chunk.embedding.isNotEmpty() }) {
             rankKnowledgeBaseChunks(
@@ -355,12 +395,6 @@ class KnowledgeBaseService(
                 queryEmbedding = queryEmbedding,
             )
         } else {
-            val vectorDistances = knowledgeBaseRepository.searchVectorDistances(
-                assistantId = assistantId,
-                candidateChunkIds = candidateChunks.map { it.chunk.id },
-                queryEmbedding = queryEmbedding,
-                limit = KB_FTS_CANDIDATE_LIMIT,
-            )
             val vectorScoresByIndex = candidateChunks.mapIndexedNotNull { index, candidate ->
                 vectorDistances[candidate.chunk.id]?.let { distance ->
                     index to (1.0 / (1.0 + distance.coerceAtLeast(0.0)))
@@ -415,31 +449,6 @@ class KnowledgeBaseService(
             returnedCount = selected.size,
             chunks = selected,
         )
-    }
-
-    private suspend fun buildCandidateChunkPool(
-        assistantId: Uuid,
-        candidateIds: List<Long>,
-        documentIds: List<Long>,
-    ): List<me.rerere.rikkahub.data.repository.KnowledgeBaseChunkWithDocument> {
-        val baseCandidates = knowledgeBaseRepository.getChunksByIds(assistantId, candidateIds)
-        if (documentIds.isEmpty()) {
-            return baseCandidates
-        }
-        if (baseCandidates.size >= KB_MIN_CANDIDATE_COUNT) {
-            return baseCandidates
-        }
-        val fallbackCandidates = knowledgeBaseRepository.getReadyChunksOfAssistant(
-            assistantId = assistantId,
-            documentIds = documentIds.distinct(),
-        )
-        if (fallbackCandidates.isEmpty()) {
-            return baseCandidates
-        }
-        return (baseCandidates + fallbackCandidates)
-            .associateBy { it.chunk.id }
-            .values
-            .toList()
     }
 
     suspend fun refreshIndexState() {

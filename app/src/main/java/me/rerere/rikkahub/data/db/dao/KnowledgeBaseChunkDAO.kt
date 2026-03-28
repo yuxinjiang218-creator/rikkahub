@@ -27,6 +27,12 @@ data class KnowledgeBaseChunkFtsRow(
     val content: String,
 )
 
+data class KnowledgeBaseChunkScopeRow(
+    val chunkId: Long,
+    val documentId: Long,
+    val generation: Int,
+)
+
 @Dao
 interface KnowledgeBaseChunkDAO {
     @Insert
@@ -97,6 +103,42 @@ interface KnowledgeBaseChunkDAO {
         assistantId: String,
         documentIds: List<Long>,
     ): List<KnowledgeBaseChunkWithDocumentRow>
+
+    @Query(
+        """
+        SELECT
+            c.id AS chunkId,
+            c.document_id AS documentId,
+            c.generation AS generation
+        FROM knowledge_base_chunk c
+        INNER JOIN knowledge_base_document d ON d.id = c.document_id
+        WHERE c.assistant_id = :assistantId
+            AND d.published_generation > 0
+            AND c.generation = d.published_generation
+        """
+    )
+    suspend fun getReadyChunkScopeOfAssistant(
+        assistantId: String,
+    ): List<KnowledgeBaseChunkScopeRow>
+
+    @Query(
+        """
+        SELECT
+            c.id AS chunkId,
+            c.document_id AS documentId,
+            c.generation AS generation
+        FROM knowledge_base_chunk c
+        INNER JOIN knowledge_base_document d ON d.id = c.document_id
+        WHERE c.assistant_id = :assistantId
+            AND c.document_id IN (:documentIds)
+            AND d.published_generation > 0
+            AND c.generation = d.published_generation
+        """
+    )
+    suspend fun getReadyChunkScopeOfAssistantDocuments(
+        assistantId: String,
+        documentIds: List<Long>,
+    ): List<KnowledgeBaseChunkScopeRow>
 
     @Query(
         """

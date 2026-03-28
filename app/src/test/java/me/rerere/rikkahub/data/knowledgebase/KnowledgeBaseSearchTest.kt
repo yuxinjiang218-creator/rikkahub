@@ -52,6 +52,26 @@ class KnowledgeBaseSearchTest {
     }
 
     @Test
+    fun `rankKnowledgeBaseChunksByVectorScores boosts exact identifiers`() {
+        val ranked = rankKnowledgeBaseChunksByVectorScores(
+            query = "api/v1/derivative/formula",
+            chunkContents = listOf(
+                "General calculus overview and derivative concepts",
+                "Reference path api/v1/derivative/formula with exact endpoint details",
+            ),
+            vectorScoresByIndex = mapOf(
+                0 to 0.82,
+                1 to 0.79,
+            ),
+            bm25TopK = 10,
+            vectorTopK = 10,
+        )
+
+        assertTrue(ranked.isNotEmpty())
+        assertEquals(1, ranked.first().index)
+    }
+
+    @Test
     fun `filterRankedKnowledgeBaseChunks removes weak tail results`() {
         val filtered = filterRankedKnowledgeBaseChunks(
             ranked = listOf(

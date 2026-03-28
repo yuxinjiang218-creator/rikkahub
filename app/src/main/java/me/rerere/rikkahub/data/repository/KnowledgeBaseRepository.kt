@@ -290,6 +290,39 @@ class KnowledgeBaseRepository(
         }
     }
 
+    suspend fun getSearchScopeChunkIds(
+        assistantId: Uuid,
+        documentIds: List<Long> = emptyList(),
+    ): List<Long> {
+        if (!indexMigrationManager.shouldUseIndexBackend()) {
+            val rows = if (documentIds.isEmpty()) {
+                legacyChunkDAO.getReadyChunkScopeOfAssistant(assistantId.toString())
+            } else {
+                legacyChunkDAO.getReadyChunkScopeOfAssistantDocuments(
+                    assistantId = assistantId.toString(),
+                    documentIds = documentIds,
+                )
+            }
+            return rows.map { it.chunkId }
+        }
+
+        val documents = getCurrentDocumentMap(assistantId, documentIds)
+        if (documents.isEmpty()) return emptyList()
+        val rows = if (documentIds.isEmpty()) {
+            indexChunkDAO.getChunkScopeOfAssistant(assistantId.toString())
+        } else {
+            indexChunkDAO.getChunkScopeOfAssistantDocuments(
+                assistantId = assistantId.toString(),
+                documentIds = documents.keys.toList(),
+            )
+        }
+        return rows.mapNotNull { row ->
+            val document = documents[row.documentId] ?: return@mapNotNull null
+            if (row.generation != document.publishedGeneration) return@mapNotNull null
+            row.id
+        }
+    }
+
     suspend fun getChunksByDocumentAndOrders(
         assistantId: Uuid,
         documentId: Long,
@@ -336,12 +369,13 @@ class KnowledgeBaseRepository(
     }
 
     suspend fun searchVectorDistances(
-        assistantId: Uuid,
         candidateChunkIds: List<Long>,
         queryEmbedding: List<Float>,
         limit: Int,
     ): Map<Long, Double> {
-        if (!indexMigrationManager.shouldUseIndexBackend()) return emptyMap()
+        check(indexMigrationManager.shouldUseIndexBackend()) {
+            "Knowledge base vector search requires the migrated index backend"
+        }
         val dimension = queryEmbedding.size
         return vectorTableManager.searchKnowledgeBaseDistances(
             candidateIds = candidateChunkIds,

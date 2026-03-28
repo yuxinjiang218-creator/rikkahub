@@ -95,12 +95,27 @@ class KnowledgeBaseFtsManager(
     }
 
     private fun buildMatchQuery(query: String): String {
-        val tokens = Regex("[\\p{L}\\p{N}_-]+")
-            .findAll(query)
-            .map { it.value.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-            .toList()
+        val normalized = query.lowercase()
+        val tokens = linkedSetOf<String>()
+
+        Regex("[\\p{L}\\p{N}_./:-]+").findAll(normalized).forEach { match ->
+            val raw = match.value.trim('.', '/', '_', '-', ':')
+            if (raw.length >= 2) {
+                tokens += raw
+            }
+            raw.split(Regex("[/_:.-]+"))
+                .map { it.trim() }
+                .filter { it.length >= 2 }
+                .forEach(tokens::add)
+        }
+
+        Regex("[\\p{IsHan}\\p{IsHiragana}\\p{IsKatakana}\\p{IsHangul}]+").findAll(normalized).forEach { match ->
+            val segment = match.value.trim()
+            if (segment.isNotEmpty()) {
+                tokens += segment
+            }
+        }
+
         if (tokens.isEmpty()) return ""
         return tokens.joinToString(" OR ") { token ->
             "\"${token.replace("\"", "\"\"")}\""

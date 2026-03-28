@@ -28,6 +28,7 @@ import me.rerere.rikkahub.di.repositoryModule
 import me.rerere.rikkahub.di.viewModelModule
 import me.rerere.rikkahub.data.container.PRootManager
 import me.rerere.rikkahub.data.db.index.IndexMigrationManager
+import me.rerere.rikkahub.data.db.index.VectorBackendVerifier
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.service.KnowledgeBaseIndexForegroundService
@@ -254,6 +255,11 @@ class RikkaHubApp : Application() {
                 migrationManager.migrateIfNeeded()
                 check(migrationManager.shouldUseIndexBackend()) {
                     "Index migration did not cut over to the sqlite-vector backend"
+                }
+                runCatching {
+                    get<VectorBackendVerifier>().verifyBackendHealth(force = true)
+                }.onFailure { error ->
+                    Log.e(TAG, "sqlite-vector startup health check failed", error)
                 }
             } catch (error: Throwable) {
                 Log.e(TAG, "startIndexMigrationIfNeeded failed", error)

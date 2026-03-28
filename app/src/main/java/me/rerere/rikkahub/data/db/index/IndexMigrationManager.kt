@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.db.index
 
 import android.util.Log
+import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -47,6 +48,7 @@ class IndexMigrationManager(
             val state = migrationStateDAO.getState() ?: IndexMigrationStateEntity()
             cutoverComplete = state.cutoverComplete
             if (state.cutoverComplete) {
+                pruneOrphanedConversationScopedData()
                 if (!state.legacyPruned) {
                     pruneLegacyTables(state)
                 }
@@ -87,6 +89,12 @@ class IndexMigrationManager(
                     )
                 )
             }
+        }
+    }
+
+    suspend fun deleteConversationScopedData(conversationId: String) = withContext(Dispatchers.IO) {
+        migrationMutex.withLock {
+            deleteConversationScopedDataLocked(conversationId)
         }
     }
 
@@ -366,6 +374,112 @@ class IndexMigrationManager(
                 )
             )
         }
+    }
+
+    private suspend fun pruneOrphanedConversationScopedData() {
+        runCatching {
+            val liveConversationIds = appDatabase.openHelper.writableDatabase.query(
+                "SELECT id FROM conversationentity"
+            ).use { cursor ->
+                buildSet {
+                    while (cursor.moveToNext()) {
+                        add(cursor.getString(0))
+                    }
+                }
+            }
+            val orphanConversationIds = indexDatabase.openHelper.writableDatabase.query(
+                """
+                SELECT conversation_id FROM memory_index_chunk
+                UNION
+                SELECT conversation_id FROM source_preview_chunk
+                UNION
+                SELECT conversation_id FROM pending_ledger_batch
+                """.trimIndent()
+            ).use { cursor ->
+                buildList {
+                    while (cursor.moveToNext()) {
+                        val conversationId = cursor.getString(0)
+                        if (!liveConversationIds.contains(conversationId)) {
+                            add(conversationId)
+                        }
+                    }
+                }
+            }
+            if (orphanConversationIds.isEmpty()) return
+
+            Log.w(
+                TAG,
+                "Pruning ${orphanConversationIds.size} orphaned conversation-scoped index payloads"
+            )
+            orphanConversationIds.forEach { conversationId ->
+                deleteConversationScopedDataLocked(conversationId)
+            }
+            indexDatabase.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(TRUNCATE)").use { }
+            indexDatabase.openHelper.writableDatabase.execSQL("VACUUM")
+        }.onFailure { error ->
+            Log.e(TAG, "Orphaned conversation-scoped data prune failed", error)
+        }
+    }
+
+    private suspend fun deleteConversationScopedDataLocked(conversationId: String) {
+        appDatabase.withTransaction {
+            val legacyDb = appDatabase.openHelper.writableDatabase
+            deleteLegacyConversationScopedData(legacyDb, conversationId)
+        }
+        indexDatabase.withTransaction {
+            deleteIndexConversationScopedData(conversationId)
+        }
+    }
+
+    private fun deleteLegacyConversationScopedData(
+        db: SupportSQLiteDatabase,
+        conversationId: String,
+    ) {
+        db.execSQL(
+            "DELETE FROM memory_index_chunk WHERE conversation_id = ?",
+            arrayOf(conversationId)
+        )
+        db.execSQL(
+            "DELETE FROM source_preview_chunk WHERE conversation_id = ?",
+            arrayOf(conversationId)
+        )
+        db.execSQL(
+            "DELETE FROM pending_ledger_batch WHERE conversation_id = ?",
+            arrayOf(conversationId)
+        )
+    }
+
+    private suspend fun deleteIndexConversationScopedData(conversationId: String) {
+        val indexDb = indexDatabase.openHelper.writableDatabase
+        val memoryChunkIdsByDimension = linkedMapOf<Int, MutableList<Long>>()
+        indexDb.query(
+            """
+            SELECT id, embedding_dimension
+            FROM memory_index_chunk
+            WHERE conversation_id = ?
+            """.trimIndent(),
+            arrayOf(conversationId)
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val chunkId = cursor.getLong(0)
+                val dimension = cursor.getInt(1)
+                memoryChunkIdsByDimension.getOrPut(dimension) { mutableListOf() }.add(chunkId)
+            }
+        }
+
+        indexDb.execSQL(
+            "DELETE FROM memory_index_chunk WHERE conversation_id = ?",
+            arrayOf(conversationId)
+        )
+        indexDb.execSQL(
+            "DELETE FROM source_preview_chunk WHERE conversation_id = ?",
+            arrayOf(conversationId)
+        )
+        indexDb.execSQL(
+            "DELETE FROM pending_ledger_batch WHERE conversation_id = ?",
+            arrayOf(conversationId)
+        )
+        vectorTableManager.deleteMemoryVectors(memoryChunkIdsByDimension)
     }
 
     private fun countRows(
