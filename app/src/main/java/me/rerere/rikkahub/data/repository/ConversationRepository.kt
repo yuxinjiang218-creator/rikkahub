@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.repository
 
 import android.content.Context
 import android.database.sqlite.SQLiteBlobTooBigException
+import android.util.Log
 import androidx.paging.Pager
 import androidx.paging.PagingConfig
 import androidx.paging.PagingData
@@ -40,6 +41,7 @@ import me.rerere.rikkahub.data.model.withPayload
 import me.rerere.rikkahub.sandbox.SandboxEngine
 import me.rerere.rikkahub.utils.JsonInstant
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import kotlin.uuid.Uuid
 
 class ConversationRepository(
@@ -56,6 +58,7 @@ class ConversationRepository(
     private val indexMigrationManager: IndexMigrationManager,
 ) {
     companion object {
+        private const val TAG = "ConversationRepository"
         private const val PAGE_SIZE = 20
         private const val INITIAL_LOAD_SIZE = 40
     }
@@ -271,13 +274,18 @@ class ConversationRepository(
 
     suspend fun deleteConversation(conversation: Conversation) {
         val fullConversation = if (conversation.messageNodes.isEmpty()) {
-            getConversationById(conversation.id) ?: conversation
+            runCatching {
+                getConversationById(conversation.id)
+            }.onFailure { error ->
+                Log.w(TAG, "deleteConversation: failed to preload conversation ${conversation.id}, continuing", error)
+            }.getOrNull() ?: conversation
         } else {
             conversation
         }
         messageFtsManager.deleteConversation(conversation.id.toString())
         database.withTransaction {
-            conversationDAO.delete(conversationToConversationEntity(conversation))
+            messageNodeDAO.deleteByConversation(conversation.id.toString())
+            conversationDAO.deleteById(conversation.id.toString())
             compressionEventDAO.deleteByConversation(conversation.id.toString())
         }
         indexMigrationManager.deleteConversationScopedData(conversation.id.toString())
@@ -558,8 +566,56 @@ class ConversationRepository(
             while (true) {
                 val page = try {
                     messageNodeDAO.getNodesOfConversationPaged(conversationId, pageSize, offset)
-                } catch (_: SQLiteBlobTooBigException) {
-                    offset += pageSize
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    if (error !is SQLiteBlobTooBigException && error !is IllegalStateException) {
+                        throw error
+                    }
+                    Log.w(
+                        TAG,
+                        "loadMessageNodes: paged load failed for conversation=$conversationId offset=$offset, falling back to per-node loading",
+                        error,
+                    )
+                    val headers = messageNodeDAO.getNodeHeadersOfConversationPaged(conversationId, pageSize, offset)
+                    if (headers.isEmpty()) break
+                    headers.forEach { header ->
+                        val messagesJson = try {
+                            messageNodeDAO.getMessagesOfNode(header.id)
+                        } catch (nodeError: Exception) {
+                            if (nodeError is CancellationException) throw nodeError
+                            if (nodeError !is SQLiteBlobTooBigException && nodeError !is IllegalStateException) {
+                                throw nodeError
+                            }
+                            Log.w(
+                                TAG,
+                                "loadMessageNodes: skipped unreadable node ${header.id} in conversation=$conversationId",
+                                nodeError,
+                            )
+                            null
+                        } ?: return@forEach
+
+                        val messages = try {
+                            JsonInstant.decodeFromString<List<UIMessage>>(messagesJson)
+                        } catch (decodeError: Exception) {
+                            if (decodeError is CancellationException) throw decodeError
+                            Log.w(
+                                TAG,
+                                "loadMessageNodes: skipped malformed node ${header.id} in conversation=$conversationId",
+                                decodeError,
+                            )
+                            return@forEach
+                        }
+                        val nodeId = Uuid.parse(header.id)
+                        nodes.add(
+                            MessageNode(
+                                id = nodeId,
+                                messages = messages,
+                                selectIndex = header.selectIndex,
+                                isFavorite = favoriteNodeIds.contains(nodeId),
+                            )
+                        )
+                    }
+                    offset += headers.size
                     continue
                 }
                 if (page.isEmpty()) break

@@ -16,6 +16,16 @@ interface MessageNodeDAO {
     suspend fun getNodesOfConversation(conversationId: String): List<MessageNodeEntity>
 
     @Query(
+        "SELECT id, node_index AS nodeIndex, select_index AS selectIndex FROM message_node " +
+            "WHERE conversation_id = :conversationId ORDER BY node_index ASC LIMIT :limit OFFSET :offset"
+    )
+    suspend fun getNodeHeadersOfConversationPaged(
+        conversationId: String,
+        limit: Int,
+        offset: Int
+    ): List<MessageNodeHeader>
+
+    @Query(
         "SELECT * FROM message_node WHERE conversation_id = :conversationId " +
             "ORDER BY node_index ASC LIMIT :limit OFFSET :offset"
     )
@@ -33,6 +43,9 @@ interface MessageNodeDAO {
 
     @Update
     suspend fun update(node: MessageNodeEntity)
+
+    @Query("SELECT messages FROM message_node WHERE id = :nodeId")
+    suspend fun getMessagesOfNode(nodeId: String): String?
 
     @Query("DELETE FROM message_node WHERE conversation_id = :conversationId")
     suspend fun deleteByConversation(conversationId: String)
@@ -56,6 +69,12 @@ data class MessageTokenStats(
     val promptTokens: Long = 0,
     val completionTokens: Long = 0,
     val cachedTokens: Long = 0,
+)
+
+data class MessageNodeHeader(
+    val id: String,
+    val nodeIndex: Int,
+    val selectIndex: Int,
 )
 
 data class MessageDayCount(val day: String, val count: Int)
