@@ -251,12 +251,10 @@ class ChatService(
     private val skillManager: SkillManager,
     private val skillsRepository: SkillsRepository,
     private val knowledgeBaseService: KnowledgeBaseService,
+    private val runtimeService: ConversationRuntimeService,
+    private val persistenceService: ConversationPersistenceService,
+    private val artifactService: ConversationArtifactService,
 ) {
-    // 统一会话管理
-    private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
-    private val compressionArtifactWarmJobs = ConcurrentHashMap<Uuid, Job>()
-    private val _sessionsVersion = MutableStateFlow(0L)
-
     // 错误状态
     private val _errors = MutableStateFlow<List<ChatError>>(emptyList())
     val errors: StateFlow<List<ChatError>> = _errors.asStateFlow()
@@ -550,102 +548,50 @@ class ChatService(
 
     fun cleanup() = runCatching {
         ProcessLifecycleOwner.get().lifecycle.removeObserver(lifecycleObserver)
-        compressionArtifactWarmJobs.values.forEach { it.cancel() }
-        compressionArtifactWarmJobs.clear()
-        sessions.values.forEach { it.cleanup() }
-        sessions.clear()
+        artifactService.cleanup()
+        runtimeService.cleanup()
     }
 
     // ---- Session 管理 ----
 
-    private fun getOrCreateSession(conversationId: Uuid): ConversationSession {
-        return sessions.computeIfAbsent(conversationId) { id ->
-            val settings = settingsStore.settingsFlow.value
-            ConversationSession(
-                id = id,
-                initial = Conversation.ofId(
-                    id = id,
-                    assistantId = settings.getCurrentAssistant().id
-                ),
-                scope = appScope,
-                onIdle = { removeSession(it) }
-            ).also {
-                _sessionsVersion.value++
-                Log.i(TAG, "createSession: $id (total: ${sessions.size + 1})")
-            }
-        }
-    }
-
-    private fun removeSession(conversationId: Uuid) {
-        val session = sessions[conversationId] ?: return
-        if (session.isInUse) {
-            Log.d(TAG, "removeSession: skipped $conversationId (still in use)")
-            return
-        }
-        if (sessions.remove(conversationId, session)) {
-            session.cleanup()
-            _sessionsVersion.value++
-            Log.i(TAG, "removeSession: $conversationId (remaining: ${sessions.size})")
-        }
-    }
-
     // ---- 引用管理 ----
 
     fun addConversationReference(conversationId: Uuid) {
-        getOrCreateSession(conversationId).acquire()
+        runtimeService.addConversationReference(conversationId)
     }
 
     fun removeConversationReference(conversationId: Uuid) {
-        sessions[conversationId]?.release()
+        runtimeService.removeConversationReference(conversationId)
     }
 
     private fun launchWithConversationReference(
         conversationId: Uuid,
         block: suspend () -> Unit
-    ): Job = appScope.launch {
-        addConversationReference(conversationId)
-        try {
-            block()
-        } finally {
-            removeConversationReference(conversationId)
-        }
-    }
+    ): Job = runtimeService.launchWithConversationReference(conversationId, block)
 
     // ---- 对话状态访问 ----
 
     fun getConversationFlow(conversationId: Uuid): StateFlow<Conversation> {
-        return getOrCreateSession(conversationId).state
+        return runtimeService.getConversationFlow(conversationId)
     }
 
     fun getGenerationJobStateFlow(conversationId: Uuid): Flow<Job?> {
-        val session = sessions[conversationId] ?: return flowOf(null)
-        return session.generationJob
+        return runtimeService.getGenerationJobStateFlow(conversationId)
     }
 
     fun getConversationJobs(): Flow<Map<Uuid, Job?>> {
-        return _sessionsVersion.flatMapLatest {
-            val currentSessions = sessions.values.toList()
-            if (currentSessions.isEmpty()) {
-                flowOf(emptyMap())
-            } else {
-                combine(currentSessions.map { s ->
-                    s.generationJob.map { job -> s.id to job }
-                }) { pairs ->
-                    pairs.filter { it.second != null }.toMap()
-                }
-            }
-        }
+        return runtimeService.getConversationJobs()
     }
 
     // ---- 初始化对话 ----
 
     suspend fun initializeConversation(conversationId: Uuid) {
-        val session = getOrCreateSession(conversationId) // 确保 session 存在
+        val sessionConversation = getConversationFlow(conversationId).value
         val conversation = conversationRepo.getConversationById(conversationId)
         if (conversation != null) {
             val mergedConversation = mergeMissingCompressionArtifacts(
                 base = conversation,
-                fallback = session.state.value,
+                fallback = sessionConversation,
             )
             updateConversation(conversationId, mergedConversation)
             settingsStore.updateAssistant(mergedConversation.assistantId)
@@ -668,13 +614,12 @@ class ChatService(
     fun sendMessage(conversationId: Uuid, content: List<UIMessagePart>, answer: Boolean = true) {
         if (content.isEmptyInputMessage()) return
 
-        val session = getOrCreateSession(conversationId)
-        session.getJob()?.cancel()
+        runtimeService.cancelGenerationJob(conversationId)
         val processedContent = preprocessUserInputParts(content)
 
         val job = appScope.launch {
             try {
-                val currentConversation = session.state.value
+                val currentConversation = getConversationFlow(conversationId).value
 
                 // 添加消息到列表
                 val newConversation = currentConversation.copy(
@@ -696,7 +641,7 @@ class ChatService(
                 addError(e, conversationId, title = context.getString(R.string.error_title_send_message))
             }
         }
-        session.setJob(job)
+        runtimeService.setGenerationJob(conversationId, job)
     }
 
     private fun preprocessUserInputParts(parts: List<UIMessagePart>): List<UIMessagePart> {
@@ -725,12 +670,11 @@ class ChatService(
         message: UIMessage,
         regenerateAssistantMsg: Boolean = true
     ) {
-        val session = getOrCreateSession(conversationId)
-        session.getJob()?.cancel()
+        runtimeService.cancelGenerationJob(conversationId)
 
         val job = appScope.launch {
             try {
-                val conversation = session.state.value
+                val conversation = getConversationFlow(conversationId).value
 
                 if (message.role == MessageRole.USER) {
                     // 如果是用户消息，则截止到当前消息
@@ -757,7 +701,7 @@ class ChatService(
             }
         }
 
-        session.setJob(job)
+        runtimeService.setGenerationJob(conversationId, job)
     }
 
     // ---- 处理工具调用审批 ----
@@ -769,12 +713,11 @@ class ChatService(
         reason: String = "",
         answer: String? = null,
     ) {
-        val session = getOrCreateSession(conversationId)
-        session.getJob()?.cancel()
+        runtimeService.cancelGenerationJob(conversationId)
 
         val job = appScope.launch {
             try {
-                val conversation = session.state.value
+                val conversation = getConversationFlow(conversationId).value
                 val newApprovalState = when {
                     answer != null -> ToolApprovalState.Answered(answer)
                     approved -> ToolApprovalState.Approved
@@ -820,7 +763,7 @@ class ChatService(
             }
         }
 
-        session.setJob(job)
+        runtimeService.setGenerationJob(conversationId, job)
     }
 
     // ---- 处理消息补全 ----
@@ -1278,7 +1221,7 @@ class ChatService(
             )
 
             // 生成完，conversation可能不是最新了，因此需要重新获取
-            val sessionConversation = sessions[conversationId]?.state?.value
+            val sessionConversation = runtimeService.getCurrentConversationOrNull(conversationId)
             conversationRepo.getConversationById(conversation.id)?.let {
                 saveConversation(
                     conversationId,
@@ -1300,10 +1243,10 @@ class ChatService(
             val model = settings.findModelById(settings.suggestionModelId) ?: return
             val provider = model.findProvider(settings.providers) ?: return
 
-            sessions[conversationId]?.let { session ->
+            runtimeService.getCurrentConversationOrNull(conversationId)?.let { sessionConversation ->
                 updateConversation(
                     conversationId,
-                    session.state.value.copy(chatSuggestions = emptyList())
+                    sessionConversation.copy(chatSuggestions = emptyList())
                 )
             }
 
@@ -1327,7 +1270,7 @@ class ChatService(
                 result.choices[0].message?.toText()?.split("\n")?.map { it.trim() }
                     ?.filter { it.isNotBlank() } ?: emptyList()
 
-            val sessionConversation = sessions[conversationId]?.state?.value
+            val sessionConversation = runtimeService.getCurrentConversationOrNull(conversationId)
             val latestConversation = conversationRepo.getConversationById(conversationId)
                 ?.let { mergeMissingCompressionArtifacts(it, sessionConversation ?: it) }
                 ?: sessionConversation
@@ -2766,155 +2709,29 @@ class ChatService(
     }
 
     private fun normalizeCompressionState(conversation: Conversation): Conversation {
-        val maxIndex = conversation.messageNodes.lastIndex
-        val normalizedCompressedIndex = conversation.compressionState.lastCompressedMessageIndex
-            .coerceAtLeast(-1)
-            .coerceAtMost(maxIndex)
-        val normalizedEvents = conversation.compressionEvents.map { event ->
-            event.copy(boundaryIndex = event.boundaryIndex.coerceIn(0, conversation.messageNodes.size))
-        }
-        return conversation.copy(
-            compressionState = conversation.compressionState.copy(
-                lastCompressedMessageIndex = normalizedCompressedIndex
-            ),
-            compressionEvents = normalizedEvents,
-        )
+        return persistenceService.normalizeCompressionState(conversation)
     }
 
     private fun mergeMissingCompressionArtifacts(
         base: Conversation,
         fallback: Conversation,
     ): Conversation {
-        if (base.id != fallback.id) return base
-
-        val mergedCompressionState = base.compressionState.copy(
-            dialogueSummaryText = base.compressionState.dialogueSummaryText.ifBlank {
-                fallback.compressionState.dialogueSummaryText
-            },
-            rollingSummaryJson = base.compressionState.rollingSummaryJson.ifBlank {
-                fallback.compressionState.rollingSummaryJson
-            },
-        )
-        val mergedEvents = if (base.compressionEvents.isNotEmpty() || fallback.compressionEvents.isEmpty()) {
-            base.compressionEvents
-        } else {
-            fallback.compressionEvents
-        }
-
-        if (mergedCompressionState == base.compressionState && mergedEvents === base.compressionEvents) {
-            return base
-        }
-
-        return base.copy(
-            compressionState = mergedCompressionState,
-            compressionEvents = mergedEvents,
-        )
-    }
-
-    private fun needsCompressionArtifactWarmup(conversation: Conversation): Boolean {
-        val likelyHasPersistedArtifacts =
-            conversation.compressionState.lastCompressedMessageIndex >= 0 ||
-                conversation.compressionState.dialogueSummaryTokenEstimate > 0 ||
-                conversation.compressionState.rollingSummaryTokenEstimate > 0 ||
-                conversation.compressionState.memoryLedgerStatus != "idle"
-        if (!likelyHasPersistedArtifacts) return false
-
-        return !conversation.compressionState.hasSummary || conversation.compressionEvents.isEmpty()
-    }
-
-    private fun applyCompressionArtifacts(
-        conversation: Conversation,
-        payload: me.rerere.rikkahub.data.model.ConversationCompressionPayload?,
-        events: List<CompressionEvent>,
-    ): Conversation {
-        val withPayload = if (payload != null) {
-            conversation.withCompressionPayload(payload)
-        } else {
-            conversation
-        }
-        return if (events.isEmpty()) {
-            withPayload
-        } else {
-            withPayload.copy(compressionEvents = events.sortedWith(compressionEventOrder))
-        }
+        return artifactService.mergeMissingCompressionArtifacts(base, fallback)
     }
 
     private fun warmCompressionArtifactsAsync(conversationId: Uuid, conversation: Conversation) {
-        if (!needsCompressionArtifactWarmup(conversation)) return
-        val existingJob = compressionArtifactWarmJobs[conversationId]
-        if (existingJob?.isActive == true) return
-
-        val job = launchWithConversationReference(conversationId) {
-            runCatching {
-                val current = getConversationFlow(conversationId).value
-                if (!needsCompressionArtifactWarmup(current)) return@runCatching
-
-                val payload = if (current.compressionState.hasSummary) {
-                    null
-                } else {
-                    conversationRepo.getCompressionPayload(conversationId)
-                }
-                val events = if (current.compressionEvents.isEmpty()) {
-                    conversationRepo.getCompressionEvents(conversationId)
-                } else {
-                    emptyList()
-                }
-                if (payload == null && events.isEmpty()) return@runCatching
-
-                val latest = getConversationFlow(conversationId).value
-                updateConversation(
-                    conversationId,
-                    applyCompressionArtifacts(latest, payload, events)
-                )
-            }.onFailure { error ->
-                Log.w(TAG, "warmCompressionArtifactsAsync failed for $conversationId", error)
-            }
-        }
-        compressionArtifactWarmJobs[conversationId] = job
-        job.invokeOnCompletion {
-            compressionArtifactWarmJobs.remove(conversationId, job)
-        }
+        artifactService.warmCompressionArtifactsAsync(conversationId, conversation)
     }
 
     private suspend fun hydrateCompressionPayload(
         conversationId: Uuid,
         conversation: Conversation,
     ): Conversation {
-        val mergedConversation = sessions[conversationId]?.state?.value
-            ?.let { mergeMissingCompressionArtifacts(conversation, it) }
-            ?: conversation
-        if (!needsCompressionArtifactWarmup(mergedConversation)) {
-            return mergedConversation
-        }
-
-        val payload = if (mergedConversation.compressionState.hasSummary) {
-            null
-        } else {
-            conversationRepo.getCompressionPayload(conversationId)
-        }
-        val events = if (mergedConversation.compressionEvents.isEmpty()) {
-            conversationRepo.getCompressionEvents(conversationId)
-        } else {
-            emptyList()
-        }
-        if (payload == null && events.isEmpty()) {
-            return mergedConversation
-        }
-
-        val hydratedConversation = applyCompressionArtifacts(
-            conversation = mergedConversation,
-            payload = payload,
-            events = events,
-        )
-        updateConversation(conversationId, hydratedConversation)
-        return hydratedConversation
+        return artifactService.hydrateCompressionPayload(conversationId, conversation)
     }
 
     private suspend fun getConversationWithCompressionArtifacts(conversationId: Uuid): Conversation? {
-        val conversation = conversationRepo.getConversationWithCompressionPayload(conversationId) ?: return null
-        return conversation.copy(
-            compressionEvents = conversationRepo.getCompressionEvents(conversationId)
-        )
+        return artifactService.getConversationWithCompressionArtifacts(conversationId)
     }
 
     private fun estimatePromptTokenUsage(
@@ -3083,46 +2900,15 @@ class ChatService(
     // ---- 对话状态更新 ----
 
     private fun updateConversation(conversationId: Uuid, conversation: Conversation) {
-        if (conversation.id != conversationId) return
-        val session = getOrCreateSession(conversationId)
-        checkFilesDelete(conversation, session.state.value)
-        session.state.value = conversation
+        runtimeService.updateConversation(conversationId, conversation)
     }
 
     fun updateConversationState(conversationId: Uuid, update: (Conversation) -> Conversation) {
-        val current = getConversationFlow(conversationId).value
-        updateConversation(conversationId, update(current))
-    }
-
-    private fun checkFilesDelete(newConversation: Conversation, oldConversation: Conversation) {
-        val newFiles = newConversation.files
-        val oldFiles = oldConversation.files
-        val deletedFiles = oldFiles.filter { file ->
-            newFiles.none { it == file }
-        }
-        if (deletedFiles.isNotEmpty()) {
-            filesManager.deleteChatFiles(deletedFiles)
-            Log.w(TAG, "checkFilesDelete: $deletedFiles")
-        }
+        runtimeService.updateConversationState(conversationId, update)
     }
 
     suspend fun saveConversation(conversationId: Uuid, conversation: Conversation) {
-        val exists = conversationRepo.existsConversationById(conversation.id)
-        if (!exists && conversation.title.isBlank() && conversation.messageNodes.isEmpty()) {
-            return // 新会话且为空时不保存
-        }
-
-        val updatedConversation = hydrateCompressionPayload(
-            conversationId = conversationId,
-            conversation = normalizeCompressionState(conversation.copy())
-        )
-        updateConversation(conversationId, updatedConversation)
-
-        if (!exists) {
-            conversationRepo.insertConversation(updatedConversation)
-        } else {
-            conversationRepo.updateConversation(updatedConversation)
-        }
+        persistenceService.saveConversation(conversationId, conversation)
     }
 
     // ---- 翻译消息 ----
@@ -3386,6 +3172,6 @@ class ChatService(
 
     // 停止当前会话生成任务（不清理会话缓存）
     fun stopGeneration(conversationId: Uuid) {
-        sessions[conversationId]?.getJob()?.cancel()
+        runtimeService.cancelGenerationJob(conversationId)
     }
 }

@@ -14,6 +14,9 @@ import me.rerere.rikkahub.data.container.BackgroundProcessManager
 import me.rerere.rikkahub.data.container.PRootManager
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.service.ChatService
+import me.rerere.rikkahub.service.ConversationArtifactService
+import me.rerere.rikkahub.service.ConversationPersistenceService
+import me.rerere.rikkahub.service.ConversationRuntimeService
 import me.rerere.rikkahub.service.KnowledgeBaseService
 import me.rerere.rikkahub.service.ScheduledPromptManager
 import me.rerere.rikkahub.service.ScheduledPromptWorker
@@ -113,6 +116,28 @@ val appModule = module {
     }
 
     single {
+        ConversationRuntimeService(
+            appScope = get(),
+            settingsStore = get(),
+            filesManager = get(),
+        )
+    }
+
+    single {
+        ConversationPersistenceService(
+            conversationRepo = get(),
+            runtimeService = get(),
+        )
+    }
+
+    single {
+        ConversationArtifactService(
+            conversationRepo = get(),
+            runtimeService = get(),
+        )
+    }
+
+    single {
         ChatService(
             context = get(),
             appScope = get(),
@@ -132,6 +157,9 @@ val appModule = module {
             ,
             skillsRepository = get(),
             knowledgeBaseService = get(),
+            runtimeService = get(),
+            persistenceService = get(),
+            artifactService = get(),
         )
     }
 
