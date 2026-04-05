@@ -1336,7 +1336,7 @@ class ChatService(
                             updatedAt = Instant.now()
                         )
                     )
-                    saveConversation(conversationId, rebuiltConversation)
+                    saveConversationMetadata(conversationId, rebuiltConversation)
                     val incrementalMessages = rebuiltConversation.currentMessages
                         .subList(latestEvent.compressStartIndex, latestEvent.compressEndIndex + 1)
                         .joinToString("\n\n") { message -> message.toCompressionText() }
@@ -1433,7 +1433,7 @@ class ChatService(
                     .sortedWith(compressionEventOrder),
                 chatSuggestions = emptyList(),
             )
-            saveConversation(conversationId, updatedConversation)
+            saveConversationMetadata(conversationId, updatedConversation)
         }
     }
 
@@ -1581,7 +1581,7 @@ class ChatService(
                 compressionEvents = (conversation.compressionEvents + event).sortedWith(compressionEventOrder),
                 chatSuggestions = emptyList(),
             )
-            saveConversation(conversationId, updatedConversation)
+            saveConversationMetadata(conversationId, updatedConversation)
             _compressionScrollEvents.tryEmit(conversationId to event.id)
 
             pendingLedgerBatchRepository.upsertPendingBatch(
@@ -1682,7 +1682,7 @@ class ChatService(
                     lastIndexError = error.message.orEmpty()
                 )
             )
-            saveConversation(conversationId, failedConversation)
+            saveConversationMetadata(conversationId, failedConversation)
             logLedgerStep(
                 conversationId,
                 "index",
@@ -1801,7 +1801,7 @@ class ChatService(
                         updatedAt = Instant.now()
                     )
                 )
-                saveConversation(conversationId, currentConversation)
+                saveConversationMetadata(conversationId, currentConversation)
                 addError(
                     error = error,
                     conversationId = conversationId,
@@ -1961,7 +1961,7 @@ class ChatService(
             }.sortedWith(compressionEventOrder),
             chatSuggestions = emptyList(),
         )
-        saveConversation(conversationId, updatedConversation)
+        saveConversationMetadata(conversationId, updatedConversation)
         logLedgerStep(
             conversationId,
             trigger,
@@ -1995,7 +1995,7 @@ class ChatService(
                     .filterNot { it.id == supersededEventId }
                     .sortedWith(compressionEventOrder),
         )
-        saveConversation(conversationId, cleanedConversation)
+        saveConversationMetadata(conversationId, cleanedConversation)
         return cleanedConversation
     }
 
@@ -2301,7 +2301,7 @@ class ChatService(
                 lastIndexError = ""
             )
         )
-        saveConversation(conversationId, refreshed)
+        saveConversationMetadata(conversationId, refreshed)
         return memoryRecords.size
     }
 
@@ -2837,6 +2837,10 @@ class ChatService(
 
     suspend fun saveConversation(conversationId: Uuid, conversation: Conversation) {
         persistenceService.saveConversation(conversationId, conversation)
+    }
+
+    private suspend fun saveConversationMetadata(conversationId: Uuid, conversation: Conversation) {
+        persistenceService.saveConversationMetadata(conversationId, conversation)
     }
 
     // ---- 翻译消息 ----
