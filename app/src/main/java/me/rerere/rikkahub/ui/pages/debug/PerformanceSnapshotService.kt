@@ -2,9 +2,17 @@ package me.rerere.rikkahub.ui.pages.debug
 
 import android.app.ActivityManager
 import android.app.Application
+import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
+import android.view.Choreographer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.container.BackgroundProcessManager
 import me.rerere.rikkahub.data.container.PRootManager
@@ -12,6 +20,8 @@ import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.service.ConversationDerivedWorkService
 import me.rerere.rikkahub.utils.JsonInstant
 import java.io.File
+import kotlin.coroutines.resume
+import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.uuid.Uuid
 
@@ -28,7 +38,7 @@ class PerformanceSnapshotService(
         mode: DetectionMode,
     ): PerformanceSnapshotReport {
         val captureStartedAt = System.currentTimeMillis()
-        val cpuSampleDurationMs = when (mode) {
+        val sampleDurationMs = when (mode) {
             DetectionMode.Snapshot -> 400L
             DetectionMode.Deep -> 3_500L
         }
@@ -36,32 +46,77 @@ class PerformanceSnapshotService(
             DetectionMode.Snapshot -> 80L
             DetectionMode.Deep -> 250L
         }
-        val threadSampleCount = when (mode) {
-            DetectionMode.Snapshot -> 4
-            DetectionMode.Deep -> 14
-        }
         val currentConversationId = route.conversationId
         val backgroundProcesses = backgroundProcessManager.getAllProcesses()
         val processPids = backgroundProcesses.mapNotNull { it.pid }.distinct()
+        val cpuSampleStartedAt = SystemClock.elapsedRealtime()
         val cpuStart = readCpuSnapshot(processPids)
-        val threadStats = sampleThreads(
-            sampleCount = threadSampleCount,
-            intervalMs = threadIntervalMs,
-        )
+        val threadCpuStart = readThreadCpuSnapshot()
+        lateinit var frameGapStats: FrameGapStats
+        lateinit var mainThreadSample: MainThreadSample
+
+        coroutineScope {
+            val mainThreadDeferred = async {
+                sampleMainThread(
+                    sampleDurationMs = sampleDurationMs,
+                    intervalMs = threadIntervalMs,
+                )
+            }
+            val frameGapSampleDeferred = async {
+                if (mode == DetectionMode.Deep && chatService.isForeground.value) {
+                    sampleFrameGaps(sampleDurationMs)
+                } else {
+                    FrameGapStats(
+                        sampled = false,
+                        frameCount = 0,
+                        maxGapMs = 0.0,
+                        slowFrameCount = 0,
+                        thresholdMs = FRAME_GAP_THRESHOLD_MS,
+                    )
+                }
+            }
+            mainThreadSample = mainThreadDeferred.await()
+            frameGapStats = frameGapSampleDeferred.await()
+        }
+
+        val actualSampleDurationMs = (SystemClock.elapsedRealtime() - cpuSampleStartedAt).coerceAtLeast(1L)
         val cpuEnd = readCpuSnapshot(processPids)
-        val cpuStats = buildCpuStats(cpuStart, cpuEnd, cpuSampleDurationMs)
+        val threadCpuEnd = readThreadCpuSnapshot()
+        val cpuStats = buildCpuStats(
+            start = cpuStart,
+            end = cpuEnd,
+            threadStart = threadCpuStart,
+            threadEnd = threadCpuEnd,
+            durationMs = actualSampleDurationMs,
+        )
+        val jvmThreads = captureJvmThreads()
+        val threadStats = buildThreadStats(
+            mainThreadSample = mainThreadSample,
+            cpuStats = cpuStats,
+            jvmThreads = jvmThreads,
+            frameGapStats = frameGapStats,
+        )
         val memoryStats = readMemoryStats(processPids)
-        val conversation = currentConversationId?.let { chatService.getConversationFlow(it).value }
-        val conversationJob = currentConversationId?.let { chatService.getConversationJobSnapshot(it) }
+        val conversation = currentConversationId?.let(chatService::getCurrentConversationSnapshotOrNull)
+        val sessionState = when {
+            currentConversationId == null -> "none"
+            conversation != null -> "loaded"
+            else -> "unloaded"
+        }
+        val conversationJob = currentConversationId?.let(chatService::getConversationJobSnapshot)
         val generationState = when {
             conversationJob == null -> "idle"
             conversationJob.isCancelled && !conversationJob.isCompleted -> "cancelling"
             conversationJob.isActive -> "generating"
             else -> "idle"
         }
+        val windowEvents = recorder.snapshot(
+            sinceMs = captureStartedAt,
+            limit = if (mode == DetectionMode.Deep) 240 else 96,
+        )
         val recentEvents = recorder.snapshot(
-            sinceMs = if (mode == DetectionMode.Deep) captureStartedAt else captureStartedAt - 30_000L,
-            limit = if (mode == DetectionMode.Deep) 120 else 40,
+            sinceMs = captureStartedAt - 30_000L,
+            limit = if (mode == DetectionMode.Deep) 200 else 80,
         )
         val recentUpdateSource = recentEvents
             .lastOrNull { it.conversationId == currentConversationId }
@@ -82,6 +137,11 @@ class PerformanceSnapshotService(
                 }
             }
         }
+        val chunkWindowStats = summarizeChunkWindow(
+            events = windowEvents,
+            conversationId = currentConversationId,
+            sampleDurationMs = actualSampleDurationMs,
+        )
         val compressionStates = chatService.getCompressionUiStatesSnapshot()
         val ledgerStates = chatService.getLedgerGenerationUiStatesSnapshot()
         val backgroundJobsCount = chatService.getConversationJobsSnapshot().size +
@@ -108,13 +168,16 @@ class PerformanceSnapshotService(
             snapshotCostMs = System.currentTimeMillis() - captureStartedAt,
             memory = memoryStats,
             cpu = CpuStats(
-                appCpuPercent = cpuStats.appCpuPercent,
+                appCpuGrossPercent = cpuStats.appCpuGrossPercent,
+                appCpuAdjustedPercent = cpuStats.appCpuAdjustedPercent,
+                diagnosticSelfCpuPercent = cpuStats.diagnosticSelfCpuPercent,
                 containerCpuPercent = cpuStats.containerCpuPercent,
-                sampleDurationMs = cpuSampleDurationMs,
+                sampleDurationMs = actualSampleDurationMs,
             ),
             threads = threadStats,
             chat = ChatStats(
                 conversationId = currentConversationId,
+                sessionState = sessionState,
                 messageNodes = conversation?.messageNodes?.size ?: 0,
                 currentMessages = conversation?.currentMessages?.size ?: 0,
                 lastMessageParts = lastMessage?.parts?.size ?: 0,
@@ -123,6 +186,13 @@ class PerformanceSnapshotService(
                 payloadEstimateBytes = payloadEstimateBytes,
                 recentUpdateSource = recentUpdateSource,
                 generationState = generationState,
+                chunkEvents = chunkWindowStats.chunkEvents,
+                chunkRatePerSecond = chunkWindowStats.chunkRatePerSecond,
+                chunkAvgCostMs = chunkWindowStats.chunkAvgCostMs,
+                chunkMaxCostMs = chunkWindowStats.chunkMaxCostMs,
+                lastChunkPhase = chunkWindowStats.lastChunkPhase,
+                chunkSaveInterleaved = chunkWindowStats.chunkSaveInterleaved,
+                chunkNotificationInterleaved = chunkWindowStats.chunkNotificationInterleaved,
             ),
             tasks = TaskStats(
                 compressionState = currentConversationId?.let(compressionStates::get),
@@ -143,79 +213,178 @@ class PerformanceSnapshotService(
         )
     }
 
-    private suspend fun sampleThreads(
-        sampleCount: Int,
+    private suspend fun sampleMainThread(
+        sampleDurationMs: Long,
         intervalMs: Long,
-    ): ThreadStats {
+    ): MainThreadSample {
         val mainThread = Looper.getMainLooper().thread
         val mainStateCounter = LinkedHashMap<String, Int>()
         val mainFrameCounter = LinkedHashMap<String, Int>()
-        val topThreads = LinkedHashMap<String, ThreadAccumulator>()
         var mainThreadStack = emptyList<String>()
+        val startedAt = SystemClock.elapsedRealtime()
 
-        repeat(sampleCount) { index ->
-            val stackTraces = Thread.getAllStackTraces()
-            stackTraces.forEach { (thread, stack) ->
-                if (!thread.isAlive) return@forEach
-                val state = thread.state.name
-                if (thread === mainThread) {
-                    mainStateCounter[state] = (mainStateCounter[state] ?: 0) + 1
-                    mainThreadStack = stack.take(12).map { frame ->
-                        "${frame.className}.${frame.methodName}:${frame.lineNumber}"
-                    }
-                    stack.take(4).forEach { frame ->
-                        val key = "${frame.className}.${frame.methodName}"
-                        mainFrameCounter[key] = (mainFrameCounter[key] ?: 0) + 1
-                    }
-                }
-
-                val activityScore = when (thread.state) {
-                    Thread.State.RUNNABLE -> 3
-                    Thread.State.BLOCKED -> 2
-                    Thread.State.WAITING,
-                    Thread.State.TIMED_WAITING -> 1
-                    else -> 0
-                }
-                if (activityScore == 0) return@forEach
-                val topFrame = stack.firstOrNull()?.let { frame ->
-                    "${frame.className}.${frame.methodName}:${frame.lineNumber}"
-                } ?: "<empty>"
-                val accumulator = topThreads.getOrPut(thread.name) {
-                    ThreadAccumulator(name = thread.name)
-                }
-                accumulator.state = state
-                accumulator.score += activityScore
-                accumulator.frames[topFrame] = (accumulator.frames[topFrame] ?: 0) + 1
+        while (true) {
+            val state = mainThread.state.name
+            mainStateCounter[state] = (mainStateCounter[state] ?: 0) + 1
+            val stack = mainThread.stackTrace.take(12).map { frame ->
+                "${frame.className}.${frame.methodName}:${frame.lineNumber}"
             }
-            if (index != sampleCount - 1) {
-                delay(intervalMs)
+            if (stack.isNotEmpty()) {
+                mainThreadStack = stack
+                stack.take(4).forEach { frame ->
+                    val key = frame.substringBeforeLast(':')
+                    mainFrameCounter[key] = (mainFrameCounter[key] ?: 0) + 1
+                }
             }
+            val elapsed = SystemClock.elapsedRealtime() - startedAt
+            if (elapsed >= sampleDurationMs) break
+            delay(minOf(intervalMs, max(1L, sampleDurationMs - elapsed)))
         }
 
-        val mainThreadState = mainStateCounter.maxByOrNull { it.value }?.key ?: mainThread.state.name
-        val mainThreadSummary = mainFrameCounter.entries
+        return MainThreadSample(
+            stateCounter = mainStateCounter,
+            frameCounter = mainFrameCounter,
+            mainThreadStack = mainThreadStack,
+        )
+    }
+
+    private suspend fun sampleFrameGaps(sampleDurationMs: Long): FrameGapStats {
+        return withContext(Dispatchers.Main.immediate) {
+            suspendCancellableCoroutine { continuation ->
+                val choreographer = Choreographer.getInstance()
+                val handler = Handler(Looper.getMainLooper())
+                val thresholdNs = FRAME_GAP_THRESHOLD_MS * 1_000_000L
+                var completed = false
+                var frameCount = 0
+                var lastFrameNs: Long? = null
+                var maxGapNs = 0L
+                var slowFrames = 0
+                lateinit var callback: Choreographer.FrameCallback
+
+                fun finish() {
+                    if (completed || !continuation.isActive) return
+                    completed = true
+                    choreographer.removeFrameCallback(callback)
+                    handler.removeCallbacksAndMessages(FRAME_GAP_TOKEN)
+                    continuation.resume(
+                        FrameGapStats(
+                            sampled = frameCount > 0,
+                            frameCount = frameCount,
+                            maxGapMs = maxGapNs / 1_000_000.0,
+                            slowFrameCount = slowFrames,
+                            thresholdMs = FRAME_GAP_THRESHOLD_MS,
+                        )
+                    )
+                }
+
+                callback = Choreographer.FrameCallback { frameTimeNanos ->
+                    frameCount++
+                    lastFrameNs?.let { previous ->
+                        val gapNs = frameTimeNanos - previous
+                        if (gapNs > maxGapNs) {
+                            maxGapNs = gapNs
+                        }
+                        if (gapNs >= thresholdNs) {
+                            slowFrames++
+                        }
+                    }
+                    lastFrameNs = frameTimeNanos
+                    if (!completed) {
+                        choreographer.postFrameCallback(callback)
+                    }
+                }
+
+                continuation.invokeOnCancellation {
+                    completed = true
+                    choreographer.removeFrameCallback(callback)
+                    handler.removeCallbacksAndMessages(FRAME_GAP_TOKEN)
+                }
+
+                choreographer.postFrameCallback(callback)
+                handler.postAtTime({ finish() }, FRAME_GAP_TOKEN, SystemClock.uptimeMillis() + sampleDurationMs)
+            }
+        }
+    }
+
+    private fun buildThreadStats(
+        mainThreadSample: MainThreadSample,
+        cpuStats: CpuComputationResult,
+        jvmThreads: List<JvmThreadSnapshot>,
+        frameGapStats: FrameGapStats,
+    ): ThreadStats {
+        val usedJvmThreadIndexes = mutableSetOf<Int>()
+        val mainThread = Looper.getMainLooper().thread
+        val mainThreadState = mainThreadSample.stateCounter.maxByOrNull { it.value }?.key ?: mainThread.state.name
+        val mainThreadSummary = mainThreadSample.frameCounter.entries
             .sortedByDescending { it.value }
             .take(3)
             .joinToString(" | ") { it.key }
             .ifBlank { "<no-samples>" }
-        val topBusyThreads = topThreads.values
-            .filter { it.name != mainThread.name }
-            .sortedByDescending { it.score }
-            .take(5)
-            .map { accumulator ->
+        val topCpuThreads = cpuStats.perThreadCpuPercent.entries
+            .filter { it.value > 0.0 }
+            .sortedByDescending { it.value }
+            .mapNotNull { (tid, cpuPercent) ->
+                val procThread = cpuStats.endThreadSnapshots[tid] ?: return@mapNotNull null
+                if (isDiagnosticsThread(procThread.name)) return@mapNotNull null
+                val matchedJvm = findMatchingJvmThread(
+                    procThreadName = procThread.name,
+                    jvmThreads = jvmThreads,
+                    usedIndexes = usedJvmThreadIndexes,
+                )
+                matchedJvm?.let { usedJvmThreadIndexes += it.first }
+                val jvmSnapshot = matchedJvm?.second
                 ThreadHotspot(
-                    name = accumulator.name,
-                    state = accumulator.state,
-                    activityScore = accumulator.score,
-                    topFrame = accumulator.frames.maxByOrNull { it.value }?.key ?: "<unknown>",
+                    tid = tid,
+                    name = jvmSnapshot?.name ?: procThread.name,
+                    state = jvmSnapshot?.state ?: procStateToLabel(procThread.stateCode),
+                    cpuPercent = cpuPercent.takeIf { it > 0.0 },
+                    topFrame = when {
+                        jvmSnapshot != null -> jvmSnapshot.topFrame
+                        procThread.name == mainThread.name -> mainThreadSample.mainThreadStack.firstOrNull() ?: "<empty>"
+                        else -> "<unknown>"
+                    },
                 )
             }
+            .take(5)
         return ThreadStats(
             mainThreadState = mainThreadState,
-            threadCount = Thread.getAllStackTraces().size,
+            threadCount = cpuStats.endThreadSnapshots.size,
             mainThreadSummary = mainThreadSummary,
-            mainThreadStack = mainThreadStack,
-            topBusyThreads = topBusyThreads,
+            mainThreadStack = mainThreadSample.mainThreadStack,
+            topCpuThreads = topCpuThreads,
+            frameGaps = frameGapStats,
+        )
+    }
+
+    private fun summarizeChunkWindow(
+        events: List<DiagnosticEvent>,
+        conversationId: Uuid?,
+        sampleDurationMs: Long,
+    ): ChunkWindowStats {
+        if (conversationId == null) {
+            return ChunkWindowStats()
+        }
+        val relevantEvents = events.filter { it.conversationId == conversationId }
+        val chunkEvents = relevantEvents.filter { it.category == "chunk-received" }
+        val phaseEvents = relevantEvents.filter {
+            it.category.startsWith("chunk-") || it.category == "generation-finish-save"
+        }
+        val chunkCosts = relevantEvents.mapNotNull { event ->
+            event.costMs?.takeIf {
+                event.category == "chunk-updateCurrentMessages" || event.category == "chunk-runtimeUpdate"
+            }
+        }
+        val seconds = sampleDurationMs / 1000.0
+        return ChunkWindowStats(
+            chunkEvents = chunkEvents.size,
+            chunkRatePerSecond = chunkEvents.size.takeIf { seconds > 0.0 }?.let { it / seconds },
+            chunkAvgCostMs = chunkCosts.takeIf { it.isNotEmpty() }?.average(),
+            chunkMaxCostMs = chunkCosts.maxOrNull(),
+            lastChunkPhase = phaseEvents.lastOrNull()?.phase
+                ?: phaseEvents.lastOrNull()?.category
+                ?: "none",
+            chunkSaveInterleaved = relevantEvents.any { it.category == "save" || it.category == "generation-finish-save" },
+            chunkNotificationInterleaved = relevantEvents.any { it.category == "chunk-liveNotification" },
         )
     }
 
@@ -246,26 +415,133 @@ class PerformanceSnapshotService(
         )
     }
 
+    private fun readThreadCpuSnapshot(): Map<Int, ProcThreadSnapshot> {
+        val taskDir = File("/proc/self/task")
+        val taskEntries = taskDir.listFiles().orEmpty()
+        return buildMap(taskEntries.size) {
+            taskEntries.forEach { entry ->
+                val tid = entry.name.toIntOrNull() ?: return@forEach
+                val snapshot = readProcThreadSnapshot(entry) ?: return@forEach
+                put(tid, snapshot)
+            }
+        }
+    }
+
     private fun buildCpuStats(
         start: CpuSample,
         end: CpuSample,
+        threadStart: Map<Int, ProcThreadSnapshot>,
+        threadEnd: Map<Int, ProcThreadSnapshot>,
         durationMs: Long,
     ): CpuComputationResult {
         val windowMs = durationMs.coerceAtLeast(1L).toDouble()
         val appDelta = (end.appCpuTimeMs - start.appCpuTimeMs).coerceAtLeast(0L)
-        val appCpu = (appDelta.toDouble() / windowMs) * 100.0
+        val grossAppCpu = if (appDelta > 0L) (appDelta.toDouble() / windowMs) * 100.0 else null
         val perProcess = end.processCpuTimesMs.mapValues { (pid, endTicks) ->
             val startTicks = start.processCpuTimesMs[pid] ?: 0L
             ((endTicks ?: 0L) - startTicks).coerceAtLeast(0L).let { delta ->
                 (delta.toDouble() / windowMs) * 100.0
             }
         }
+        val perThread = threadEnd.mapValues { (tid, endThread) ->
+            val startThread = threadStart[tid]
+            val delta = (endThread.cpuTimeMs - (startThread?.cpuTimeMs ?: 0L)).coerceAtLeast(0L)
+            (delta.toDouble() / windowMs) * 100.0
+        }
+        val diagnosticSelfCpu = threadEnd.values
+            .filter { isDiagnosticsThread(it.name) }
+            .sumOf { thread -> perThread[thread.tid] ?: 0.0 }
+            .takeIf { it > 0.0 }
+        val adjustedAppCpu = grossAppCpu?.let { gross ->
+            max(0.0, gross - (diagnosticSelfCpu ?: 0.0))
+        }
         return CpuComputationResult(
-            appCpuPercent = if (appDelta > 0L) appCpu else null,
+            appCpuGrossPercent = grossAppCpu,
+            appCpuAdjustedPercent = adjustedAppCpu,
+            diagnosticSelfCpuPercent = diagnosticSelfCpu,
             containerCpuPercent = perProcess.values.sum().takeIf { it > 0.0 },
             perProcessCpuPercent = perProcess,
-            sampleDurationMs = durationMs,
+            perThreadCpuPercent = perThread,
+            endThreadSnapshots = threadEnd,
         )
+    }
+
+    private fun captureJvmThreads(): List<JvmThreadSnapshot> {
+        return Thread.getAllStackTraces()
+            .map { (thread, stack) ->
+                JvmThreadSnapshot(
+                    name = thread.name,
+                    state = thread.state.name,
+                    topFrame = stack.firstOrNull()?.let { frame ->
+                        "${frame.className}.${frame.methodName}:${frame.lineNumber}"
+                    } ?: "<empty>",
+                )
+            }
+            .filterNot { isDiagnosticsThread(it.name) }
+    }
+
+    private fun findMatchingJvmThread(
+        procThreadName: String,
+        jvmThreads: List<JvmThreadSnapshot>,
+        usedIndexes: Set<Int>,
+    ): Pair<Int, JvmThreadSnapshot>? {
+        return jvmThreads.withIndex()
+            .filterNot { it.index in usedIndexes }
+            .filter { namesCompatible(procThreadName, it.value.name) }
+            .minByOrNull { candidate ->
+                when {
+                    candidate.value.name == procThreadName -> 0
+                    candidate.value.name.startsWith(procThreadName) -> 1
+                    procThreadName.startsWith(candidate.value.name) -> 2
+                    else -> 3
+                }
+            }
+            ?.let { it.index to it.value }
+    }
+
+    private fun namesCompatible(procThreadName: String, jvmThreadName: String): Boolean {
+        return procThreadName == jvmThreadName ||
+            jvmThreadName.startsWith(procThreadName) ||
+            procThreadName.startsWith(jvmThreadName)
+    }
+
+    private fun isDiagnosticsThread(name: String): Boolean {
+        return name.startsWith(DIAGNOSTIC_THREAD_PREFIX)
+    }
+
+    private fun readProcThreadSnapshot(taskEntry: File): ProcThreadSnapshot? {
+        return runCatching {
+            val content = taskEntry.resolve("stat").readText()
+            val nameStart = content.indexOf('(')
+            val nameEnd = content.lastIndexOf(") ")
+            if (nameStart == -1 || nameEnd == -1) return@runCatching null
+            val threadName = content.substring(nameStart + 1, nameEnd)
+            val suffix = content.substring(nameEnd + 2)
+            val fields = suffix.split(' ')
+            val stateCode = fields.getOrNull(0)?.firstOrNull() ?: '?'
+            val utime = fields.getOrNull(11)?.toLongOrNull() ?: return@runCatching null
+            val stime = fields.getOrNull(12)?.toLongOrNull() ?: return@runCatching null
+            ProcThreadSnapshot(
+                tid = taskEntry.name.toInt(),
+                name = threadName,
+                stateCode = stateCode,
+                cpuTimeMs = (utime + stime) * PROC_TICK_MS,
+            )
+        }.getOrNull()
+    }
+
+    private fun procStateToLabel(stateCode: Char): String = when (stateCode) {
+        'R' -> "RUNNABLE"
+        'S' -> "SLEEPING"
+        'D' -> "WAITING_IO"
+        'T' -> "STOPPED"
+        't' -> "TRACING"
+        'Z' -> "ZOMBIE"
+        'X', 'x' -> "DEAD"
+        'K' -> "WAKEKILL"
+        'W' -> "WAKING"
+        'P' -> "PARKED"
+        else -> stateCode.toString()
     }
 
     private fun readProcessCpuTimeMs(pid: Int): Long? {
@@ -275,8 +551,7 @@ class PerformanceSnapshotService(
             val fields = processSuffix.split(' ')
             val utime = fields.getOrNull(11)?.toLongOrNull() ?: return@runCatching null
             val stime = fields.getOrNull(12)?.toLongOrNull() ?: return@runCatching null
-            // proc stat units are clock ticks. Use a conservative 10ms per tick fallback.
-            ((utime + stime) * 10L)
+            (utime + stime) * PROC_TICK_MS
         }.getOrNull()
     }
 
@@ -286,22 +561,54 @@ class PerformanceSnapshotService(
         return rssLine.split(Regex("\\s+")).getOrNull(1)?.toLongOrNull()
     }
 
-    private data class ThreadAccumulator(
-        val name: String,
-        var state: String = "UNKNOWN",
-        var score: Int = 0,
-        val frames: MutableMap<String, Int> = LinkedHashMap(),
-    )
-
     private data class CpuSample(
         val appCpuTimeMs: Long,
         val processCpuTimesMs: Map<Int, Long?>,
     )
 
+    private data class ProcThreadSnapshot(
+        val tid: Int,
+        val name: String,
+        val stateCode: Char,
+        val cpuTimeMs: Long,
+    )
+
     private data class CpuComputationResult(
-        val appCpuPercent: Double?,
+        val appCpuGrossPercent: Double?,
+        val appCpuAdjustedPercent: Double?,
+        val diagnosticSelfCpuPercent: Double?,
         val containerCpuPercent: Double?,
         val perProcessCpuPercent: Map<Int, Double>,
-        val sampleDurationMs: Long,
+        val perThreadCpuPercent: Map<Int, Double>,
+        val endThreadSnapshots: Map<Int, ProcThreadSnapshot>,
     )
+
+    private data class JvmThreadSnapshot(
+        val name: String,
+        val state: String,
+        val topFrame: String,
+    )
+
+    private data class MainThreadSample(
+        val stateCounter: Map<String, Int>,
+        val frameCounter: Map<String, Int>,
+        val mainThreadStack: List<String>,
+    )
+
+    private data class ChunkWindowStats(
+        val chunkEvents: Int = 0,
+        val chunkRatePerSecond: Double? = null,
+        val chunkAvgCostMs: Double? = null,
+        val chunkMaxCostMs: Long? = null,
+        val lastChunkPhase: String = "none",
+        val chunkSaveInterleaved: Boolean = false,
+        val chunkNotificationInterleaved: Boolean = false,
+    )
+
+    companion object {
+        private const val PROC_TICK_MS = 10L
+        private const val DIAGNOSTIC_THREAD_PREFIX = "PerfDiag"
+        private const val FRAME_GAP_THRESHOLD_MS = 32L
+        private val FRAME_GAP_TOKEN = Any()
+    }
 }

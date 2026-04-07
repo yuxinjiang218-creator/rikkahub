@@ -24,6 +24,9 @@ class PerformanceDiagnosticsRecorder {
         category: String,
         detail: String,
         conversationId: Uuid? = null,
+        costMs: Long? = null,
+        phase: String? = null,
+        sizeHint: String? = null,
     ) {
         if (!enabled) return
         val event = DiagnosticEvent(
@@ -31,6 +34,9 @@ class PerformanceDiagnosticsRecorder {
             category = category,
             detail = detail,
             conversationId = conversationId,
+            costMs = costMs,
+            phase = phase,
+            sizeHint = sizeHint,
         )
         synchronized(events) {
             events.addLast(event)
@@ -52,6 +58,6 @@ class PerformanceDiagnosticsRecorder {
     }
 
     companion object {
-        private const val MAX_EVENTS = 240
+        private const val MAX_EVENTS = 640
     }
 }

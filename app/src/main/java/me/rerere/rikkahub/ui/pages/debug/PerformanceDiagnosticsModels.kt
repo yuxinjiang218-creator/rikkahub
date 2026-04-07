@@ -20,6 +20,9 @@ data class DiagnosticEvent(
     val category: String,
     val detail: String,
     val conversationId: Uuid? = null,
+    val costMs: Long? = null,
+    val phase: String? = null,
+    val sizeHint: String? = null,
 )
 
 data class FormattedDiagnosticsReport(
@@ -55,16 +58,27 @@ data class MemoryStats(
 )
 
 data class CpuStats(
-    val appCpuPercent: Double?,
+    val appCpuGrossPercent: Double?,
+    val appCpuAdjustedPercent: Double?,
+    val diagnosticSelfCpuPercent: Double?,
     val containerCpuPercent: Double?,
     val sampleDurationMs: Long,
 )
 
 data class ThreadHotspot(
+    val tid: Int?,
     val name: String,
     val state: String,
-    val activityScore: Int,
+    val cpuPercent: Double?,
     val topFrame: String,
+)
+
+data class FrameGapStats(
+    val sampled: Boolean,
+    val frameCount: Int,
+    val maxGapMs: Double,
+    val slowFrameCount: Int,
+    val thresholdMs: Long,
 )
 
 data class ThreadStats(
@@ -72,11 +86,13 @@ data class ThreadStats(
     val threadCount: Int,
     val mainThreadSummary: String,
     val mainThreadStack: List<String>,
-    val topBusyThreads: List<ThreadHotspot>,
+    val topCpuThreads: List<ThreadHotspot>,
+    val frameGaps: FrameGapStats,
 )
 
 data class ChatStats(
     val conversationId: Uuid?,
+    val sessionState: String,
     val messageNodes: Int,
     val currentMessages: Int,
     val lastMessageParts: Int,
@@ -85,6 +101,13 @@ data class ChatStats(
     val payloadEstimateBytes: Int,
     val recentUpdateSource: String,
     val generationState: String,
+    val chunkEvents: Int,
+    val chunkRatePerSecond: Double?,
+    val chunkAvgCostMs: Double?,
+    val chunkMaxCostMs: Long?,
+    val lastChunkPhase: String,
+    val chunkSaveInterleaved: Boolean,
+    val chunkNotificationInterleaved: Boolean,
 )
 
 data class TaskStats(

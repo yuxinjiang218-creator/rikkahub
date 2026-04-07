@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.net.toUri
@@ -598,6 +599,9 @@ class ChatService(
 
     fun getCompressionWorkerJobsSnapshot(): Map<Uuid, Job?> = _compressionWorkerJobs.value
 
+    fun getCurrentConversationSnapshotOrNull(conversationId: Uuid): Conversation? =
+        runtimeService.getCurrentConversationOrNull(conversationId)
+
     // ---- 初始化对话 ----
 
     suspend fun initializeConversation(conversationId: Uuid) {
@@ -1089,21 +1093,59 @@ class ChatService(
             }.collect { chunk ->
                 when (chunk) {
                     is GenerationChunk.Messages -> {
-                        val updatedConversation = getConversationFlow(conversationId).value
-                            .updateCurrentMessages(
+                        val chunkDetail = "messages=${chunk.messages.size} startIndex=$generationWriteBackStartIndex"
+                        val chunkSizeHint = buildChunkSizeHint(
+                            messages = chunk.messages,
+                            startIndex = generationWriteBackStartIndex,
+                        )
+                        diagnosticsRecorder.record(
+                            category = "chunk-received",
+                            detail = chunkDetail,
+                            conversationId = conversationId,
+                            phase = "received",
+                            sizeHint = chunkSizeHint,
+                        )
+                        val currentConversation = getConversationFlow(conversationId).value
+                        val updatedConversation = traceDiagnostic(
+                            category = "chunk-updateCurrentMessages",
+                            detail = chunkDetail,
+                            conversationId = conversationId,
+                            phase = "updateCurrentMessages",
+                            sizeHint = chunkSizeHint,
+                        ) {
+                            currentConversation.updateCurrentMessages(
                                 messages = chunk.messages,
                                 startIndex = generationWriteBackStartIndex
                             )
-                        updateConversation(conversationId, updatedConversation)
+                        }
+                        traceDiagnostic(
+                            category = "chunk-runtimeUpdate",
+                            detail = "messageNodes=${updatedConversation.messageNodes.size}",
+                            conversationId = conversationId,
+                            phase = "runtimeUpdate",
+                            sizeHint = chunkSizeHint,
+                        ) {
+                            updateConversation(conversationId, updatedConversation)
+                        }
                         diagnosticsRecorder.record(
                             category = "chunk",
-                            detail = "messages=${chunk.messages.size} startIndex=$generationWriteBackStartIndex",
+                            detail = chunkDetail,
                             conversationId = conversationId,
+                            phase = "complete",
+                            sizeHint = chunkSizeHint,
                         )
 
                         // 如果应用不在前台，发送 Live Update 通知
                         if (!isForeground.value && settings.displaySetting.enableNotificationOnMessageGeneration && settings.displaySetting.enableLiveUpdateNotification) {
-                            sendLiveUpdateNotification(conversationId, chunk.messages, senderName)
+                            traceDiagnostic(
+                                category = "chunk-liveNotification",
+                                detail = "sender=$senderName",
+                                conversationId = conversationId,
+                                phase = "liveNotification",
+                                sizeHint = chunkSizeHint,
+                            ) {
+                                sendLiveUpdateNotification(conversationId, chunk.messages, senderName)
+                            }
                         }
                     }
                 }
@@ -1118,7 +1160,15 @@ class ChatService(
             Logging.log(TAG, it.stackTraceToString())
         }.onSuccess {
             val finalConversation = getConversationFlow(conversationId).value
-            saveConversation(conversationId, finalConversation)
+            traceDiagnostic(
+                category = "generation-finish-save",
+                detail = "messageNodes=${finalConversation.messageNodes.size}",
+                conversationId = conversationId,
+                phase = "finishSave",
+                sizeHint = buildConversationSizeHint(finalConversation),
+            ) {
+                saveConversation(conversationId, finalConversation)
+            }
             calibrateTokenEstimator(
                 promptChars = promptCharsForCalibration,
                 actualPromptTokens = finalConversation.currentMessages.lastOrNull()?.usage?.promptTokens ?: 0
@@ -2876,21 +2926,74 @@ class ChatService(
     }
 
     suspend fun saveConversation(conversationId: Uuid, conversation: Conversation) {
+        val startedAt = SystemClock.elapsedRealtimeNanos()
+        persistenceService.saveConversation(conversationId, conversation)
         diagnosticsRecorder.record(
             category = "save",
             detail = "messageNodes=${conversation.messageNodes.size}",
             conversationId = conversationId,
+            costMs = elapsedMillisSince(startedAt),
+            sizeHint = buildConversationSizeHint(conversation),
         )
-        persistenceService.saveConversation(conversationId, conversation)
     }
 
     private suspend fun saveConversationMetadata(conversationId: Uuid, conversation: Conversation) {
+        val startedAt = SystemClock.elapsedRealtimeNanos()
+        persistenceService.saveConversationMetadata(conversationId, conversation)
         diagnosticsRecorder.record(
             category = "metadata-save",
             detail = "messageNodes=${conversation.messageNodes.size}",
             conversationId = conversationId,
+            costMs = elapsedMillisSince(startedAt),
+            sizeHint = buildConversationSizeHint(conversation),
         )
-        persistenceService.saveConversationMetadata(conversationId, conversation)
+    }
+
+    private inline fun <T> traceDiagnostic(
+        category: String,
+        detail: String,
+        conversationId: Uuid,
+        phase: String? = null,
+        sizeHint: String? = null,
+        block: () -> T,
+    ): T {
+        val startedAt = SystemClock.elapsedRealtimeNanos()
+        return block().also {
+            diagnosticsRecorder.record(
+                category = category,
+                detail = detail,
+                conversationId = conversationId,
+                costMs = elapsedMillisSince(startedAt),
+                phase = phase,
+                sizeHint = sizeHint,
+            )
+        }
+    }
+
+    private fun buildConversationSizeHint(conversation: Conversation): String {
+        val lastMessage = conversation.currentMessages.lastOrNull()
+        return "messages=${conversation.currentMessages.size} lastParts=${lastMessage?.parts?.size ?: 0} textChars=${estimateMessageChars(lastMessage)}"
+    }
+
+    private fun buildChunkSizeHint(messages: List<UIMessage>, startIndex: Int): String {
+        val lastMessage = messages.lastOrNull()
+        return "messages=${messages.size} startIndex=$startIndex lastParts=${lastMessage?.parts?.size ?: 0} textChars=${estimateMessageChars(lastMessage)}"
+    }
+
+    private fun estimateMessageChars(message: UIMessage?): Int {
+        return message?.parts?.sumOf(::estimatePartChars) ?: 0
+    }
+
+    private fun estimatePartChars(part: UIMessagePart): Int = when (part) {
+        is UIMessagePart.Text -> part.text.length
+        is UIMessagePart.Document -> part.fileName.length + part.url.length
+        is UIMessagePart.Image -> part.url.length
+        is UIMessagePart.Tool -> part.output.sumOf(::estimatePartChars)
+        else -> part.toString().length
+    }
+
+    private fun elapsedMillisSince(startedAtNs: Long): Long {
+        return ((SystemClock.elapsedRealtimeNanos() - startedAtNs) / 1_000_000L).coerceAtLeast(0L)
     }
 
     // ---- 翻译消息 ----

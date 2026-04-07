@@ -106,7 +106,6 @@ val appModule = module {
 
     single {
         PerformanceDiagnosticsController(
-            appScope = get(),
             snapshotService = get(),
             formatter = get(),
             recorder = get(),
