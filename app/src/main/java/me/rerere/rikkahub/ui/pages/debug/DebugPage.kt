@@ -119,6 +119,7 @@ fun DebugPage(vm: DebugVM = koinViewModel()) {
 @Composable
 private fun MainPage(vm: DebugVM) {
     val settings = LocalSettings.current
+    val diagnosticsState by vm.diagnosticsUiState.collectAsStateWithLifecycle()
     Column(
         modifier = Modifier
             .padding(8.dp)
@@ -126,6 +127,55 @@ private fun MainPage(vm: DebugVM) {
             .imePadding(),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
+        Text("Performance Diagnostics", style = MaterialTheme.typography.titleMedium)
+        Text(
+            text = "Overlay=${diagnosticsState.overlayVisible} Expanded=${diagnosticsState.overlayExpanded} Route=${diagnosticsState.route.screenLabel}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = {
+                    if (diagnosticsState.overlayVisible) {
+                        vm.hideDiagnosticsOverlay()
+                    } else {
+                        vm.showDiagnosticsOverlay()
+                    }
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (diagnosticsState.overlayVisible) "关闭悬浮窗" else "开启悬浮窗")
+            }
+            Button(
+                onClick = { vm.runDetection(DetectionMode.Snapshot) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("快照检测")
+            }
+            Button(
+                onClick = { vm.runDetection(DetectionMode.Deep) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("深度检测")
+            }
+        }
+        diagnosticsState.currentReport?.let {
+            Text(
+                text = "${it.title} ${it.capturedAtLabel}",
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        diagnosticsState.lastError?.let {
+            Text(
+                text = "诊断错误: $it",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        HorizontalDivider()
         var avatar: Avatar by remember { mutableStateOf(Avatar.Emoji("😎")) }
         UIAvatar(
             value = avatar,

@@ -12,6 +12,7 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.ui.pages.debug.PerformanceDiagnosticsRecorder
 import me.rerere.rikkahub.utils.applyPlaceholders
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -25,6 +26,7 @@ class ConversationDerivedWorkService(
     private val runtimeService: ConversationRuntimeService,
     private val persistenceService: ConversationPersistenceService,
     private val artifactService: ConversationArtifactService,
+    private val diagnosticsRecorder: PerformanceDiagnosticsRecorder,
 ) {
     private val titleJobs = ConcurrentHashMap<Uuid, Job>()
     private val suggestionJobs = ConcurrentHashMap<Uuid, Job>()
@@ -45,11 +47,24 @@ class ConversationDerivedWorkService(
         }
     }
 
+    fun hasTitleJob(conversationId: Uuid): Boolean = titleJobs[conversationId]?.isActive == true
+
+    fun hasSuggestionJob(conversationId: Uuid): Boolean = suggestionJobs[conversationId]?.isActive == true
+
+    fun getTrackedJobsCount(): Int {
+        return titleJobs.values.count { it.isActive } + suggestionJobs.values.count { it.isActive }
+    }
+
     suspend fun generateTitle(
         conversationId: Uuid,
         conversation: Conversation,
         force: Boolean = false,
     ) {
+        diagnosticsRecorder.record(
+            category = "title-start",
+            detail = "force=$force",
+            conversationId = conversationId,
+        )
         val shouldGenerate = force || conversation.title.isBlank()
         if (!shouldGenerate) return
 
@@ -80,12 +95,22 @@ class ConversationDerivedWorkService(
             conversationId = conversationId,
             conversation = latestConversation.copy(title = title),
         )
+        diagnosticsRecorder.record(
+            category = "title-finish",
+            detail = "updated=true",
+            conversationId = conversationId,
+        )
     }
 
     suspend fun generateSuggestion(
         conversationId: Uuid,
         conversation: Conversation,
     ) {
+        diagnosticsRecorder.record(
+            category = "suggestion-start",
+            detail = "messages=${conversation.currentMessages.size}",
+            conversationId = conversationId,
+        )
         val settings = settingsStore.settingsFlow.first()
         val model = settings.findModelById(settings.suggestionModelId) ?: return
         val provider = model.findProvider(settings.providers) ?: return
@@ -124,6 +149,11 @@ class ConversationDerivedWorkService(
         persistenceService.saveConversationMetadata(
             conversationId = conversationId,
             conversation = latestConversation.copy(chatSuggestions = suggestions),
+        )
+        diagnosticsRecorder.record(
+            category = "suggestion-finish",
+            detail = "count=${suggestions.size}",
+            conversationId = conversationId,
         )
     }
 

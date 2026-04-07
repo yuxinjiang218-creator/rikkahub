@@ -19,6 +19,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import me.rerere.rikkahub.ui.pages.debug.PerformanceDiagnosticsRecorder
 
 /**
  * 后台进程管理器
@@ -30,7 +31,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class BackgroundProcessManager @Inject constructor(
-    private val context: Context
+    private val context: Context,
+    private val diagnosticsRecorder: PerformanceDiagnosticsRecorder,
 ) {
     // 运行时获取PRootManager，避免循环依赖
     private val prootManager: PRootManager
@@ -138,6 +140,10 @@ class BackgroundProcessManager @Inject constructor(
 
                 // 更新状态流
                 _processStates.value = processes.values.map { it }
+                diagnosticsRecorder.record(
+                    category = "container-start",
+                    detail = "processId=$processId pid=${pid ?: "none"} command=${command.take(80)}",
+                )
 
                 Log.i(TAG, "Started background process: $processId, command: $command")
 
@@ -218,6 +224,10 @@ class BackgroundProcessManager @Inject constructor(
                 )
                 processes[processId] = updatedInfo
                 _processStates.value = processes.values.toList()
+                diagnosticsRecorder.record(
+                    category = "container-stop",
+                    detail = "processId=$processId pid=${managedProcess.pid ?: "none"}",
+                )
 
                 ProcessExecutionResult(
                     success = true,
@@ -297,7 +307,12 @@ class BackgroundProcessManager @Inject constructor(
                 lines = lines,
                 totalLines = totalLines,
                 hasMore = offset + limit < totalLines
-            )
+            ).also {
+                diagnosticsRecorder.record(
+                    category = "container-logs",
+                    detail = "processId=$processId stream=$stream offset=$offset limit=$limit lines=${lines.size}",
+                )
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error reading logs for process: $processId", e)
             LogReadResult(

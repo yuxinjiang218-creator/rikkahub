@@ -21,6 +21,10 @@ import me.rerere.rikkahub.service.ConversationRuntimeService
 import me.rerere.rikkahub.service.KnowledgeBaseService
 import me.rerere.rikkahub.service.ScheduledPromptManager
 import me.rerere.rikkahub.service.ScheduledPromptWorker
+import me.rerere.rikkahub.ui.pages.debug.PerformanceDiagnosticsController
+import me.rerere.rikkahub.ui.pages.debug.PerformanceDiagnosticsRecorder
+import me.rerere.rikkahub.ui.pages.debug.PerformanceSnapshotFormatter
+import me.rerere.rikkahub.ui.pages.debug.PerformanceSnapshotService
 import me.rerere.rikkahub.utils.EmojiData
 import me.rerere.rikkahub.utils.EmojiUtils
 import me.rerere.rikkahub.utils.JsonInstant
@@ -78,7 +82,35 @@ val appModule = module {
     }
 
     single {
-        BackgroundProcessManager(get())
+        BackgroundProcessManager(get(), get())
+    }
+
+    single {
+        PerformanceDiagnosticsRecorder()
+    }
+
+    single {
+        PerformanceSnapshotFormatter()
+    }
+
+    single {
+        PerformanceSnapshotService(
+            context = get(),
+            chatService = get(),
+            derivedWorkService = get(),
+            backgroundProcessManager = get(),
+            prootManager = get(),
+            recorder = get(),
+        )
+    }
+
+    single {
+        PerformanceDiagnosticsController(
+            appScope = get(),
+            snapshotService = get(),
+            formatter = get(),
+            recorder = get(),
+        )
     }
 
     single {
@@ -147,6 +179,7 @@ val appModule = module {
             runtimeService = get(),
             persistenceService = get(),
             artifactService = get(),
+            diagnosticsRecorder = get(),
         )
     }
 
@@ -174,6 +207,7 @@ val appModule = module {
             persistenceService = get(),
             artifactService = get(),
             derivedWorkService = get(),
+            diagnosticsRecorder = get(),
         )
     }
 

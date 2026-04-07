@@ -24,15 +24,24 @@ import kotlin.uuid.Uuid
 class DebugVM(
     private val settingsStore: SettingsStore,
     private val conversationRepository: ConversationRepository,
+    private val diagnosticsController: PerformanceDiagnosticsController,
 ) : ViewModel() {
     val settings: StateFlow<Settings> = settingsStore.settingsFlow
         .stateIn(viewModelScope, SharingStarted.Lazily, Settings.dummy())
+
+    val diagnosticsUiState: StateFlow<DiagnosticsUiState> = diagnosticsController.uiState
 
     fun updateSettings(settings: Settings) {
         viewModelScope.launch {
             settingsStore.update(settings)
         }
     }
+
+    fun showDiagnosticsOverlay() = diagnosticsController.showOverlay()
+
+    fun hideDiagnosticsOverlay() = diagnosticsController.hideOverlay()
+
+    fun runDetection(mode: DetectionMode) = diagnosticsController.runDetection(mode)
 
     /**
      * 创建一个超大的对话用于测试 CursorWindow 限制

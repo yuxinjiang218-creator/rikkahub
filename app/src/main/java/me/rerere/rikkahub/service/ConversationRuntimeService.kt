@@ -66,6 +66,16 @@ class ConversationRuntimeService(
         }
     }
 
+    fun getConversationJobsSnapshot(): Map<Uuid, Job?> {
+        return sessions.values
+            .mapNotNull { session ->
+                session.getJob()?.let { session.id to it }
+            }
+            .toMap()
+    }
+
+    fun getSessionCount(): Int = sessions.size
+
     fun addConversationReference(conversationId: Uuid) {
         getOrCreateSession(conversationId).acquire()
     }

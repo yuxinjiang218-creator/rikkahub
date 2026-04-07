@@ -59,6 +59,7 @@ import me.rerere.highlight.LocalHighlighter
 import me.rerere.rikkahub.data.container.PRootManager
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.ui.components.ui.TTSController
+import me.rerere.rikkahub.ui.components.ui.FloatingWindow
 import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.context.LocalSharedTransitionScope
@@ -81,6 +82,9 @@ import me.rerere.rikkahub.ui.pages.assistant.detail.AssistantRequestPage
 import me.rerere.rikkahub.ui.pages.backup.BackupPage
 import me.rerere.rikkahub.ui.pages.chat.ChatPage
 import me.rerere.rikkahub.ui.pages.debug.DebugPage
+import me.rerere.rikkahub.ui.pages.debug.DiagnosticRouteState
+import me.rerere.rikkahub.ui.pages.debug.PerformanceDiagnosticsController
+import me.rerere.rikkahub.ui.pages.debug.PerformanceDiagnosticsOverlay
 import me.rerere.rikkahub.ui.pages.developer.DeveloperPage
 import me.rerere.rikkahub.ui.pages.favorite.FavoritePage
 import me.rerere.rikkahub.ui.pages.history.HistoryPage
@@ -237,6 +241,8 @@ class RouteActivity : ComponentActivity() {
         val settings by settingsStore.settingsFlow.collectAsStateWithLifecycle()
         val tts = rememberCustomTtsState()
         val eventBus = koinInject<AppEventBus>()
+        val diagnosticsController = koinInject<PerformanceDiagnosticsController>()
+        val diagnosticsUiState by diagnosticsController.uiState.collectAsStateWithLifecycle()
         LaunchedEffect(tts) {
             eventBus.events.collect { event ->
                 when (event) {
@@ -259,6 +265,9 @@ class RouteActivity : ComponentActivity() {
 
         val backStack = rememberNavBackStack(startScreen)
         SideEffect { this@RouteActivity.navStack = backStack }
+        LaunchedEffect(backStack.lastOrNull()) {
+            diagnosticsController.updateRoute(backStack.lastOrNull().toDiagnosticRouteState())
+        }
 
         LaunchedEffect(backStack) {
             intent?.getStringExtra("scheduledTaskRunId")?.let { runId ->
@@ -556,6 +565,40 @@ class RouteActivity : ComponentActivity() {
                 }
             }
         }
+        if (diagnosticsUiState.overlayVisible) {
+            FloatingWindow(tag = "performance-diagnostics-overlay") {
+                PerformanceDiagnosticsOverlay(
+                    onOpenDebugPage = {
+                        if (backStack.lastOrNull() !is Screen.Debug) {
+                            backStack.add(Screen.Debug)
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+private fun NavKey?.toDiagnosticRouteState(): DiagnosticRouteState {
+    return when (this) {
+        is Screen.Chat -> DiagnosticRouteState(
+            screenLabel = "chat",
+            conversationId = runCatching { Uuid.parse(id) }.getOrNull(),
+        )
+
+        is Screen.ShareHandler -> DiagnosticRouteState(screenLabel = "share")
+        is Screen.History -> DiagnosticRouteState(screenLabel = "history")
+        is Screen.Favorite -> DiagnosticRouteState(screenLabel = "favorite")
+        is Screen.Assistant -> DiagnosticRouteState(screenLabel = "assistant")
+        is Screen.Setting -> DiagnosticRouteState(screenLabel = "setting")
+        is Screen.SettingAbout -> DiagnosticRouteState(screenLabel = "about")
+        is Screen.Debug -> DiagnosticRouteState(screenLabel = "debug")
+        is Screen.Developer -> DiagnosticRouteState(screenLabel = "developer")
+        is Screen.Log -> DiagnosticRouteState(screenLabel = "log")
+        is Screen.Translator -> DiagnosticRouteState(screenLabel = "translator")
+        is Screen.ImageGen -> DiagnosticRouteState(screenLabel = "image_gen")
+        null -> DiagnosticRouteState()
+        else -> DiagnosticRouteState(screenLabel = this::class.simpleName ?: "unknown")
     }
 }
 

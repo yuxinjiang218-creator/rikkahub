@@ -128,6 +128,7 @@ import me.rerere.rikkahub.data.repository.SourcePreviewRepository
 import me.rerere.rikkahub.data.skills.SkillsRepository
 import me.rerere.rikkahub.data.skills.buildSkillsCatalogPrompt
 import me.rerere.rikkahub.sandbox.SandboxEngine
+import me.rerere.rikkahub.ui.pages.debug.PerformanceDiagnosticsRecorder
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
 import me.rerere.rikkahub.utils.JsonInstant
@@ -257,6 +258,7 @@ class ChatService(
     private val persistenceService: ConversationPersistenceService,
     private val artifactService: ConversationArtifactService,
     private val derivedWorkService: ConversationDerivedWorkService,
+    private val diagnosticsRecorder: PerformanceDiagnosticsRecorder,
 ) {
     // 错误状态
     private val _errors = MutableStateFlow<List<ChatError>>(emptyList())
@@ -585,6 +587,16 @@ class ChatService(
     fun getConversationJobs(): Flow<Map<Uuid, Job?>> {
         return runtimeService.getConversationJobs()
     }
+
+    fun getConversationJobsSnapshot(): Map<Uuid, Job?> = runtimeService.getConversationJobsSnapshot()
+
+    fun getConversationJobSnapshot(conversationId: Uuid): Job? = runtimeService.getConversationJobsSnapshot()[conversationId]
+
+    fun getCompressionUiStatesSnapshot(): Map<Uuid, CompressionUiState> = _compressionUiStates.value
+
+    fun getLedgerGenerationUiStatesSnapshot(): Map<Uuid, LedgerGenerationUiState> = _ledgerGenerationUiStates.value
+
+    fun getCompressionWorkerJobsSnapshot(): Map<Uuid, Job?> = _compressionWorkerJobs.value
 
     // ---- 初始化对话 ----
 
@@ -1083,6 +1095,11 @@ class ChatService(
                                 startIndex = generationWriteBackStartIndex
                             )
                         updateConversation(conversationId, updatedConversation)
+                        diagnosticsRecorder.record(
+                            category = "chunk",
+                            detail = "messages=${chunk.messages.size} startIndex=$generationWriteBackStartIndex",
+                            conversationId = conversationId,
+                        )
 
                         // 如果应用不在前台，发送 Live Update 通知
                         if (!isForeground.value && settings.displaySetting.enableNotificationOnMessageGeneration && settings.displaySetting.enableLiveUpdateNotification) {
@@ -1227,6 +1244,11 @@ class ChatService(
         keepRecentMessages: Int = 6,
         generateMemoryLedger: Boolean = true,
     ): Result<Unit> {
+        diagnosticsRecorder.record(
+            category = "compression-start",
+            detail = "keepRecent=$keepRecentMessages ledger=$generateMemoryLedger",
+            conversationId = conversationId,
+        )
         updateCompressionWorkerJob(conversationId, currentCoroutineContext()[Job])
         return runCatching<Unit> {
             val hydratedConversation = hydrateCompressionPayload(conversationId, conversation)
@@ -1241,10 +1263,20 @@ class ChatService(
             Unit
         }.also {
             updateCompressionWorkerJob(conversationId, null)
+            diagnosticsRecorder.record(
+                category = "compression-finish",
+                detail = "success=${it.isSuccess}",
+                conversationId = conversationId,
+            )
         }
     }
 
     suspend fun generateMemoryIndex(conversationId: Uuid): Result<Int> = runCatching {
+        diagnosticsRecorder.record(
+            category = "memory-index-start",
+            detail = "manual=true",
+            conversationId = conversationId,
+        )
         val settings = settingsStore.settingsFlow.first()
         val conversation = conversationRepo.getConversationWithCompressionPayload(conversationId)
             ?: throw IllegalStateException("Conversation not found")
@@ -1272,6 +1304,12 @@ class ChatService(
             )
             throw error
         }
+    }.also {
+        diagnosticsRecorder.record(
+            category = "memory-index-finish",
+            detail = "success=${it.isSuccess}",
+            conversationId = conversationId,
+        )
     }
 
     suspend fun regenerateLatestCompression(
@@ -2838,10 +2876,20 @@ class ChatService(
     }
 
     suspend fun saveConversation(conversationId: Uuid, conversation: Conversation) {
+        diagnosticsRecorder.record(
+            category = "save",
+            detail = "messageNodes=${conversation.messageNodes.size}",
+            conversationId = conversationId,
+        )
         persistenceService.saveConversation(conversationId, conversation)
     }
 
     private suspend fun saveConversationMetadata(conversationId: Uuid, conversation: Conversation) {
+        diagnosticsRecorder.record(
+            category = "metadata-save",
+            detail = "messageNodes=${conversation.messageNodes.size}",
+            conversationId = conversationId,
+        )
         persistenceService.saveConversationMetadata(conversationId, conversation)
     }
 
