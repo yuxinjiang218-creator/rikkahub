@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.container
 
 import android.content.Context
+import android.net.ConnectivityManager
 import android.util.Base64
 import android.util.Log
 import androidx.lifecycle.Lifecycle
@@ -1638,19 +1639,35 @@ fi
         return candidates.firstOrNull { it.exists() && it.isFile && it.canRead() && it.length() > 0 }
     }
 
+    private fun resolveAndroidDnsServers(): List<String> {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return emptyList()
+        val activeNetwork = connectivityManager.activeNetwork ?: return emptyList()
+        val linkProperties = connectivityManager.getLinkProperties(activeNetwork) ?: return emptyList()
+        return linkProperties.dnsServers
+            .mapNotNull { it.hostAddress?.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
     private fun ensurePackageManagerResolvConf(hostResolvConf: File?): File {
         val systemResolvConf = File(systemLayerDir, "etc/resolv.conf")
         systemResolvConf.parentFile?.mkdirs()
-        val content = runCatching {
+        val androidDnsServers = resolveAndroidDnsServers()
+        val content = if (androidDnsServers.isNotEmpty()) {
+            androidDnsServers.joinToString(separator = "\n") { "nameserver $it" }
+        } else {
+            runCatching {
             hostResolvConf?.takeIf { it.exists() && it.isFile && it.canRead() }
                 ?.readText()
                 ?.trim()
-        }.getOrNull()
-            ?.takeIf { it.isNotBlank() }
-            ?: """
-                nameserver 1.1.1.1
-                nameserver 8.8.8.8
-            """.trimIndent()
+            }.getOrNull()
+                ?.takeIf { it.isNotBlank() }
+                ?: """
+                    nameserver 1.1.1.1
+                    nameserver 8.8.8.8
+                """.trimIndent()
+        }
         systemResolvConf.writeText("$content\n")
         systemResolvConf.setReadable(true, false)
         systemResolvConf.setWritable(true, false)
@@ -2923,9 +2940,9 @@ fi
                 }
 
                 ContainerExecutionProfile.PACKAGE_MANAGER -> {
-                    // 更接近 `proot -S` 的收窄 profile：使用最小 host bind，再叠加可写系统层。
+                    // 包管理单独使用 system layer 作为 guest root，避免 /tmp 与 /var/cache/apk 跨绑定移动失败。
                     add("-r")
-                    add(rootfsDir.absolutePath)
+                    add(container.systemDir)
                     add("-b")
                     add("/dev")
                     add("-b")
@@ -2939,15 +2956,15 @@ fi
                     add("-b")
                     add("${skillLibraryDir.absolutePath}:/skills")
 
-                    addAll(buildWritableSystemBindArgs(container))
-
-                    add("-b")
-                    add("${container.systemDir}/run:/run")
-
                     val hostResolvConf = packageManagerRuntime?.hostResolvConf
                     if (hostResolvConf != null) {
                         add("-b")
                         add("${hostResolvConf.absolutePath}:/etc/resolv.conf")
+                    } else {
+                        packageManagerRuntime?.systemResolvConf?.let { resolvConf ->
+                            add("-b")
+                            add("${resolvConf.absolutePath}:/etc/resolv.conf")
+                        }
                     }
                 }
             }
