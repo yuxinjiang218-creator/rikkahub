@@ -61,6 +61,7 @@ import me.rerere.hugeicons.stroke.MessageAdd01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
@@ -101,6 +102,8 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
 
     val setting by vm.settings.collectAsStateWithLifecycle()
     val conversation by vm.stableConversation.collectAsStateWithLifecycle()
+    val headerState by vm.headerState.collectAsStateWithLifecycle()
+    val inputBarState by vm.inputBarState.collectAsStateWithLifecycle()
     val loadingJob by vm.conversationJob.collectAsStateWithLifecycle()
     val currentChatModel by vm.currentChatModel.collectAsStateWithLifecycle()
     val enableWebSearch by vm.enableWebSearch.collectAsStateWithLifecycle()
@@ -229,6 +232,8 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
                     loadingJob = loadingJob,
                     setting = setting,
                     conversation = conversation,
+                    headerState = headerState,
+                    inputBarState = inputBarState,
                     drawerState = drawerState,
                     navController = navController,
                     vm = vm,
@@ -262,6 +267,8 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
                     loadingJob = loadingJob,
                     setting = setting,
                     conversation = conversation,
+                    headerState = headerState,
+                    inputBarState = inputBarState,
                     drawerState = drawerState,
                     navController = navController,
                     vm = vm,
@@ -368,6 +375,8 @@ private fun ChatPageContent(
     setting: Settings,
     bigScreen: Boolean,
     conversation: Conversation,
+    headerState: ChatHeaderState,
+    inputBarState: ChatInputBarState,
     drawerState: DrawerState,
     navController: Navigator,
     vm: ChatVM,
@@ -407,9 +416,18 @@ private fun ChatPageContent(
         AssistantBackground(setting = setting)
         Scaffold(
             topBar = {
+                val assistant = headerState.assistantId?.let { assistantId ->
+                    setting.assistants.find { it.id == assistantId }
+                } ?: setting.getCurrentAssistant()
+                val model = assistant.chatModelId?.let(setting::findModelById) ?: setting.getCurrentChatModel()
+                val provider = model?.findProvider(providers = setting.providers, checkOverwrite = false)
                 TopBar(
-                    settings = setting,
-                    conversation = conversation,
+                    headerState = headerState,
+                    subtitle = if (model != null && provider != null) {
+                        "${assistant.name.ifBlank { stringResource(R.string.assistant_page_default_assistant) }} / ${model.displayName} (${provider.name})"
+                    } else {
+                        null
+                    },
                     bigScreen = bigScreen,
                     drawerState = drawerState,
                     previewMode = previewMode,
@@ -429,7 +447,7 @@ private fun ChatPageContent(
                     state = inputState,
                     loading = loadingJob != null,
                     settings = setting,
-                    conversation = conversation,
+                    messageCount = inputBarState.messageCount,
                     mcpManager = vm.mcpManager,
                     hazeState = hazeState,
                     autoCompressionUiState = compressionUiState,
@@ -468,7 +486,7 @@ private fun ChatPageContent(
                         } else {
                             vm.handleMessageSend(inputState.getContents())
                             scope.launch {
-                                chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                                chatListState.requestScrollToItem(inputBarState.messageCount + 5)
                             }
                         }
                         inputState.clearInput()
@@ -482,7 +500,7 @@ private fun ChatPageContent(
                         } else {
                             vm.handleMessageSend(content = inputState.getContents(), answer = false)
                             scope.launch {
-                                chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                                chatListState.requestScrollToItem(inputBarState.messageCount + 5)
                             }
                         }
                         inputState.clearInput()
@@ -648,8 +666,8 @@ private fun ChatPageContent(
 
 @Composable
 private fun TopBar(
-    settings: Settings,
-    conversation: Conversation,
+    headerState: ChatHeaderState,
+    subtitle: String?,
     drawerState: DrawerState,
     bigScreen: Boolean,
     previewMode: Boolean,
@@ -680,8 +698,8 @@ private fun TopBar(
             val editTitleWarning = stringResource(R.string.chat_page_edit_title_warning)
             Surface(
                 onClick = {
-                    if (conversation.messageNodes.isNotEmpty()) {
-                        titleState.open(conversation.title)
+                    if (headerState.hasMessages) {
+                        titleState.open(headerState.title)
                     } else {
                         toaster.show(editTitleWarning, type = ToastType.Warning)
                     }
@@ -689,18 +707,15 @@ private fun TopBar(
                 color = Color.Transparent,
             ) {
                 Column {
-                    val assistant = settings.getCurrentAssistant()
-                    val model = settings.getCurrentChatModel()
-                    val provider = model?.findProvider(providers = settings.providers, checkOverwrite = false)
                     Text(
-                        text = conversation.title.ifBlank { stringResource(R.string.chat_page_new_chat) },
+                        text = headerState.title.ifBlank { stringResource(R.string.chat_page_new_chat) },
                         maxLines = 1,
                         style = MaterialTheme.typography.bodyMedium,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (model != null && provider != null) {
+                    if (subtitle != null) {
                         Text(
-                            text = "${assistant.name.ifBlank { stringResource(R.string.assistant_page_default_assistant) }} / ${model.displayName} (${provider.name})",
+                            text = subtitle,
                             overflow = TextOverflow.Ellipsis,
                             maxLines = 1,
                             color = LocalContentColor.current.copy(0.65f),

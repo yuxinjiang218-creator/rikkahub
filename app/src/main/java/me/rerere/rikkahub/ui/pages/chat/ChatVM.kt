@@ -59,6 +59,16 @@ import kotlin.uuid.Uuid
 
 private const val TAG = "ChatVM"
 
+data class ChatHeaderState(
+    val title: String = "",
+    val hasMessages: Boolean = false,
+    val assistantId: Uuid? = null,
+)
+
+data class ChatInputBarState(
+    val messageCount: Int = 0,
+)
+
 class ChatVM(
     id: String,
     private val context: Application,
@@ -75,6 +85,22 @@ class ChatVM(
     val stableMessageNodes: StateFlow<List<MessageNode>> = chatService.getMessageNodesFlow(_conversationId)
     val streamingTail: StateFlow<StreamingTailState?> = chatService.getStreamingTailFlow(_conversationId)
     val streamingUiTick: StateFlow<Long> = chatService.getStreamingUiTickFlow(_conversationId)
+    val headerState: StateFlow<ChatHeaderState> = stableConversation
+        .map { conversation ->
+            ChatHeaderState(
+                title = conversation.title,
+                hasMessages = conversation.messageNodes.isNotEmpty(),
+                assistantId = conversation.assistantId,
+            )
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ChatHeaderState())
+    val inputBarState: StateFlow<ChatInputBarState> = stableConversation
+        .map { conversation ->
+            ChatInputBarState(
+                messageCount = conversation.messageNodes.size,
+            )
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ChatInputBarState())
     var chatListInitialized by mutableStateOf(false) // 鑱婂ぉ鍒楄〃鏄惁宸茬粡婊氬姩鍒板簳閮?
 
     // 鑱婂ぉ杈撳叆鐘舵€?- 淇濆瓨鍦?ViewModel 涓伩鍏?TransactionTooLargeException

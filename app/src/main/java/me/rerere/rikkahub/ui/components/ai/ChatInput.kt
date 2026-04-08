@@ -132,7 +132,6 @@ import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.datastore.getQuickMessagesOfAssistant
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
-import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.ui.components.ui.ExtensionSelector
 import me.rerere.rikkahub.ui.components.ui.KeepScreenOn
@@ -157,7 +156,7 @@ enum class ExpandState {
 fun ChatInput(
     state: ChatInputState,
     loading: Boolean,
-    conversation: Conversation,
+    messageCount: Int,
     settings: Settings,
     mcpManager: McpManager,
     hazeState: HazeState,
@@ -621,7 +620,7 @@ fun ChatInput(
                         color = if (settings.displaySetting.enableBlurEffect) Color.Transparent else hazeTintColor,
                     ) {
                         FilesPicker(
-                            conversation = conversation,
+                            messageCount = messageCount,
                             state = state,
                             assistant = assistant,
                             onOpenSandboxFileManager = onOpenSandboxFileManager,
@@ -1053,7 +1052,7 @@ private fun attachmentNameFromUrl(
 
 @Composable
 private fun FilesPicker(
-    conversation: Conversation,
+    messageCount: Int,
     assistant: Assistant,
     state: ChatInputState,
     onOpenSandboxFileManager: () -> Unit,
@@ -1148,9 +1147,9 @@ private fun FilesPicker(
                 Text(stringResource(R.string.chat_page_compress_context))
             },
             trailingContent = {
-                if (conversation.messageNodes.isNotEmpty()) {
+                if (messageCount > 0) {
                     Text(
-                        text = stringResource(R.string.chat_page_message_count, conversation.messageNodes.size),
+                        text = stringResource(R.string.chat_page_message_count, messageCount),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
