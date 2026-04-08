@@ -2397,20 +2397,18 @@ fi
         processEnv: MutableMap<String, String>,
         customEnv: Map<String, String>
     ) {
+        val prootTmpDir = File(context.noBackupFilesDir, "proot-tmp").apply {
+            mkdirs()
+        }
+
         processEnv["HOME"] = "/root"
         processEnv["TMPDIR"] = "/tmp"
-        processEnv["PROOT_TMP_DIR"] = context.cacheDir.absolutePath
+        processEnv["PROOT_TMP_DIR"] = prootTmpDir.absolutePath
         processEnv["PREFIX"] = "/usr"
         processEnv["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-        // 检查 termux-exec 是否可用
-        val nativeLibDir = context.applicationInfo.nativeLibraryDir
-        val termuxExecLib = File(nativeLibDir, "libtermux-exec.so")
-        val hasTermuxExec = termuxExecLib.exists()
-
-        if (hasTermuxExec) {
-            processEnv["LD_PRELOAD"] = termuxExecLib.absolutePath
-        }
+        // termux-exec 会干预 execve，和 PRoot 叠加时可能导致 /bin/sh 无法启动。
+        processEnv.remove("LD_PRELOAD")
 
         // 合并自定义环境变量
         processEnv.putAll(customEnv)
