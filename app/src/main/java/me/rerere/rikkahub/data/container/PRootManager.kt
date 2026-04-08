@@ -119,6 +119,12 @@ class PRootManager(
     @Volatile
     private var currentEnableContainerRuntime = false
 
+    private fun formatContainerError(throwable: Throwable): String {
+        return throwable.stackTraceToString().ifBlank {
+            throwable.message ?: "Unknown error: ${throwable.javaClass.name}"
+        }
+    }
+
     /**
      * 检查是否需要初始化（资源文件是否存在且有效）
      */
@@ -743,7 +749,7 @@ fi
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Container initialization failed", e)
-            _containerState.value = ContainerStateEnum.Error(e.message ?: "Unknown error: ${e.javaClass.simpleName}")
+            _containerState.value = ContainerStateEnum.Error(formatContainerError(e))
             Result.failure(e)
         }
     }

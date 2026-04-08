@@ -57,7 +57,9 @@ import androidx.compose.foundation.background
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
@@ -1705,6 +1707,7 @@ private fun ContainerStatusCard() {
     val prootManager: me.rerere.rikkahub.data.container.PRootManager = koinInject()
     val containerState by prootManager.containerState.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
 
     // Try restoring persisted container state when opening this card.
     LaunchedEffect(prootManager) {
@@ -1785,8 +1788,15 @@ private fun ContainerStatusCard() {
                 is me.rerere.rikkahub.data.container.ContainerStateEnum.Error -> {
                     Text("初始化失败: ${state.message}", color = MaterialTheme.colorScheme.error)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Button(onClick = { scope.launch { prootManager.initialize() } }) {
-                        Text("重试初始化")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(
+                            onClick = { clipboardManager.setText(AnnotatedString(state.message)) }
+                        ) {
+                            Text("复制报错")
+                        }
+                        Button(onClick = { scope.launch { prootManager.initialize() } }) {
+                            Text("重试初始化")
+                        }
                     }
                 }
             }

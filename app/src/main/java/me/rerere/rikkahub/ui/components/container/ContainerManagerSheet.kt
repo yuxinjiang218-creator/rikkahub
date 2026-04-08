@@ -17,6 +17,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -604,10 +606,10 @@ private fun NeedsRebuildCard(
 
 @Composable
 private fun ErrorCard(message: String, onRetry: () -> Unit) {
+    val clipboardManager = LocalClipboardManager.current
+
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onRetry),
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
@@ -624,12 +626,21 @@ private fun ErrorCard(message: String, onRetry: () -> Unit) {
                 color = MaterialTheme.colorScheme.error
             )
             Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "点击重试",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.align(Alignment.End)
-            )
+            Row(
+                modifier = Modifier.align(Alignment.End),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TextButton(
+                    onClick = { clipboardManager.setText(AnnotatedString(message)) }
+                ) {
+                    Text("复制报错")
+                }
+                TextButton(
+                    onClick = onRetry
+                ) {
+                    Text("重试")
+                }
+            }
         }
     }
 }
