@@ -81,9 +81,9 @@ class PRootManager(
         private const val DEFAULT_MAX_MEMORY_MB = 6144  // 6GB for compilation tasks
 
         // Rootfs 版本控制 - 每次更新 alpine rootfs 时递增此版本号
-        private const val ROOTFS_VERSION = 3
+        private const val ROOTFS_VERSION = 4
         private const val ROOTFS_VERSION_FILE = "rootfs_version.txt"
-        private const val ALPINE_ROOTFS_VERSION = "3.23.3"
+        private const val ALPINE_ROOTFS_VERSION = "3.19.0"
         private const val ALPINE_ROOTFS_ASSET = "rootfs/alpine-minirootfs-$ALPINE_ROOTFS_VERSION-aarch64.tar.gz"
         private const val LAYOUT_VERSION = 2
         private const val LAYOUT_VERSION_FILE = "layout_version.txt"
@@ -1611,6 +1611,8 @@ fi
             ensureWritableContainerDirectory(File(systemLayerDir, relative))
         }
 
+        resetPackageManagerTransientState()
+
         val hostResolvConf = resolveHostResolvConf()
         val systemResolvConf = ensurePackageManagerResolvConf(hostResolvConf)
 
@@ -1618,6 +1620,28 @@ fi
             hostResolvConf = hostResolvConf,
             systemResolvConf = systemResolvConf
         )
+    }
+
+    private fun resetPackageManagerTransientState() {
+        clearDirectoryContents(File(systemLayerDir, "var/cache/apk"))
+        clearDirectoryContents(File(systemLayerDir, "tmp"))
+        clearDirectoryContents(File(systemLayerDir, "run"))
+        ensureWritableContainerDirectory(File(systemLayerDir, "run/shm"))
+
+        val apkDbLockFile = File(systemLayerDir, "lib/apk/db/lock")
+        if (apkDbLockFile.exists()) {
+            apkDbLockFile.delete()
+        }
+    }
+
+    private fun clearDirectoryContents(dir: File) {
+        if (!dir.exists() || !dir.isDirectory) {
+            return
+        }
+
+        dir.listFiles()?.forEach { child ->
+            child.deleteRecursively()
+        }
     }
 
     private fun ensureWritableContainerDirectory(dir: File) {
@@ -1650,12 +1674,37 @@ fi
             .distinct()
     }
 
+    private fun resolveSystemPropertyDnsServers(): List<String> {
+        val candidates = listOf(
+            "net.dns1",
+            "net.dns2",
+            "net.dns3",
+            "net.dns4",
+            "persist.sys.dns1",
+            "persist.sys.dns2",
+        )
+
+        return candidates.mapNotNull { key ->
+            runCatching {
+                ProcessBuilder("getprop", key)
+                    .redirectErrorStream(true)
+                    .start()
+                    .inputStream
+                    .bufferedReader()
+                    .use { it.readText().trim() }
+            }.getOrNull()
+                ?.takeIf { it.isNotBlank() && it != "[::]" && it != "0.0.0.0" }
+        }.distinct()
+    }
+
     private fun ensurePackageManagerResolvConf(hostResolvConf: File?): File {
         val systemResolvConf = File(systemLayerDir, "etc/resolv.conf")
         systemResolvConf.parentFile?.mkdirs()
         val androidDnsServers = resolveAndroidDnsServers()
-        val content = if (androidDnsServers.isNotEmpty()) {
-            androidDnsServers.joinToString(separator = "\n") { "nameserver $it" }
+        val propertyDnsServers = resolveSystemPropertyDnsServers()
+        val effectiveDnsServers = (androidDnsServers + propertyDnsServers).distinct()
+        val content = if (effectiveDnsServers.isNotEmpty()) {
+            effectiveDnsServers.joinToString(separator = "\n") { "nameserver $it" }
         } else {
             runCatching {
             hostResolvConf?.takeIf { it.exists() && it.isFile && it.canRead() }
