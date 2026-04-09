@@ -30,6 +30,7 @@ import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Singleton
+import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.sandbox.SandboxEngine
 
@@ -133,6 +134,24 @@ class PRootManager(
     // 当前容器启用设置
     @Volatile
     private var currentEnableContainerRuntime = false
+
+    private val settingsStore: SettingsStore
+        get() = org.koin.core.context.GlobalContext.get().get()
+
+    private suspend fun persistContainerRuntimeEnabled(enabled: Boolean) {
+        currentEnableContainerRuntime = enabled
+        runCatching {
+            settingsStore.update { settings ->
+                if (settings.enableContainerRuntime == enabled) {
+                    settings
+                } else {
+                    settings.copy(enableContainerRuntime = enabled)
+                }
+            }
+        }.onFailure { throwable ->
+            Log.w(TAG, "Failed to persist container runtime enabled=$enabled", throwable)
+        }
+    }
 
     private fun formatContainerError(throwable: Throwable): String {
         val builder = StringBuilder()
@@ -920,6 +939,7 @@ fi
 
             writeLayoutVersion()
             _containerState.value = ContainerStateEnum.Running
+            persistContainerRuntimeEnabled(true)
             Log.d(TAG, "Container initialization completed successfully!")
             Result.success(Unit)
         } catch (e: Exception) {
@@ -964,6 +984,7 @@ fi
                         }
                     }
                     _containerState.value = ContainerStateEnum.Running
+                    persistContainerRuntimeEnabled(true)
                     return@withContext Result.success(Unit)
                 }
                 is ContainerStateEnum.NeedsRebuild -> {
@@ -998,6 +1019,7 @@ fi
             killTrackedBackgroundProcesses()
 
             _containerState.value = ContainerStateEnum.Stopped
+            persistContainerRuntimeEnabled(false)
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -1020,6 +1042,7 @@ fi
 
             globalContainer = null
             _containerState.value = ContainerStateEnum.NotInitialized
+            persistContainerRuntimeEnabled(false)
             Log.d(TAG, "Container runtime destroyed, workspaces and skills preserved")
             Result.success(Unit)
         } catch (e: Exception) {
