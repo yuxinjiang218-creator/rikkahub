@@ -79,12 +79,6 @@ class PRootManager(
         private const val TAG = "PRootManager"
         private const val DEFAULT_TIMEOUT_MS = 300_000L // 5分钟
         private const val DEFAULT_MAX_MEMORY_MB = 6144  // 6GB for compilation tasks
-        private const val ROOTFS_REBUILD_REQUIRED_REASON =
-            "Bundled rootfs version changed. Rebuild the container manually to avoid wiping installed tools automatically."
-
-        // Rootfs 版本控制 - 每次更新 alpine rootfs 时递增此版本号
-        private const val ROOTFS_VERSION = 4
-        private const val ROOTFS_VERSION_FILE = "rootfs_version.txt"
         private const val ALPINE_ROOTFS_VERSION = "3.19.0"
         private const val ALPINE_ROOTFS_ASSET = "rootfs/alpine-minirootfs-$ALPINE_ROOTFS_VERSION-aarch64.tar.gz"
         private const val LAYOUT_VERSION = 2
@@ -953,11 +947,6 @@ fi
                     return@withContext initialize()
                 }
                 is ContainerStateEnum.Stopped -> {
-                    if (checkRootfsNeedsUpdate()) {
-                        Log.i(TAG, "Rootfs update detected while starting stopped container, requiring manual rebuild")
-                        _containerState.value = ContainerStateEnum.NeedsRebuild(ROOTFS_REBUILD_REQUIRED_REASON)
-                        return@withContext Result.failure(IllegalStateException(ROOTFS_REBUILD_REQUIRED_REASON))
-                    }
                     ensureSystemLayerReady()
                     val layoutStatus = inspectLayoutStatus()
                     if (!layoutStatus.compatible) {
@@ -2115,15 +2104,7 @@ fi
     }
 
     private suspend fun extractAlpineRootfs() = withContext(Dispatchers.IO) {
-        // 检查是否需要更新 rootfs（版本控制）
-        val needUpdate = checkRootfsNeedsUpdate()
-
-        if (!rootfsDir.exists() || rootfsDir.listFiles()?.isEmpty() == true || needUpdate) {
-            if (needUpdate && rootfsDir.exists()) {
-                Log.d(TAG, "Rootfs version mismatch or update required, deleting old rootfs...")
-                rootfsDir.deleteRecursively()
-            }
-
+        if (!rootfsDir.exists() || rootfsDir.listFiles()?.isEmpty() == true) {
             Log.d(TAG, "Extracting Alpine rootfs to $rootfsDir")
             try {
                 val arch = getDeviceArchitecture()
@@ -2137,9 +2118,6 @@ fi
                     extractTarGz(input, rootfsDir)
                 }
 
-                // 写入版本文件
-                writeRootfsVersion()
-
                 val fileCount = rootfsDir.walkTopDown().count()
                 Log.d(TAG, "Alpine rootfs extracted successfully, total files: $fileCount")
             } catch (e: Exception) {
@@ -2148,43 +2126,6 @@ fi
             }
         } else {
             Log.d(TAG, "Alpine rootfs already exists at $rootfsDir")
-        }
-    }
-
-    /**
-     * 检查 rootfs 是否需要更新
-     * 通过对比本地版本文件和代码中的版本号
-     */
-    private fun checkRootfsNeedsUpdate(): Boolean {
-        val versionFile = File(rootfsDir, ROOTFS_VERSION_FILE)
-        if (!versionFile.exists()) {
-            Log.d(TAG, "Rootfs version file not found, needs update")
-            return true
-        }
-
-        return try {
-            val localVersion = versionFile.readText().trim().toIntOrNull() ?: 0
-            val needsUpdate = localVersion < ROOTFS_VERSION
-            if (needsUpdate) {
-                Log.d(TAG, "Rootfs version outdated: local=$localVersion, required=$ROOTFS_VERSION")
-            }
-            needsUpdate
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to read rootfs version, assuming needs update", e)
-            true
-        }
-    }
-
-    /**
-     * 写入 rootfs 版本文件
-     */
-    private fun writeRootfsVersion() {
-        try {
-            val versionFile = File(rootfsDir, ROOTFS_VERSION_FILE)
-            versionFile.writeText(ROOTFS_VERSION.toString())
-            Log.d(TAG, "Rootfs version file written: $ROOTFS_VERSION")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to write rootfs version file", e)
         }
     }
 
@@ -2425,7 +2366,6 @@ fi
             appendLine("containerSystemDir=${container.systemDir}")
             appendLine("rootfsDir=${rootfsDir.absolutePath}")
             appendLine("systemLayerDir=${systemLayerDir.absolutePath}")
-            appendLine("rootfsNeedsUpdate=${checkRootfsNeedsUpdate()}")
             appendLine("env.HOME=${processEnv["HOME"] ?: "<missing>"}")
             appendLine("env.TMPDIR=${processEnv["TMPDIR"] ?: "<missing>"}")
             appendLine("env.PROOT_TMP_DIR=${processEnv["PROOT_TMP_DIR"] ?: "<missing>"}")
@@ -2544,13 +2484,6 @@ fi
      */
     suspend fun restoreState(): Boolean = withContext(Dispatchers.IO) {
         try {
-            if (checkRootfsNeedsUpdate()) {
-                globalContainer = null
-                _containerState.value = ContainerStateEnum.NeedsRebuild(ROOTFS_REBUILD_REQUIRED_REASON)
-                Log.i(TAG, "[RestoreState] Rootfs update required, waiting for manual rebuild")
-                return@withContext true
-            }
-
             if (!checkInitializationStatus()) {
                 Log.d(TAG, "[RestoreState] Rootfs not initialized, cannot restore state")
                 return@withContext false
