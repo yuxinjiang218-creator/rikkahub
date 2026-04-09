@@ -79,6 +79,8 @@ class PRootManager(
         private const val TAG = "PRootManager"
         private const val DEFAULT_TIMEOUT_MS = 300_000L // 5分钟
         private const val DEFAULT_MAX_MEMORY_MB = 6144  // 6GB for compilation tasks
+        private const val ROOTFS_REBUILD_REQUIRED_REASON =
+            "Bundled rootfs version changed. Rebuild the container manually to avoid wiping installed tools automatically."
 
         // Rootfs 版本控制 - 每次更新 alpine rootfs 时递增此版本号
         private const val ROOTFS_VERSION = 4
@@ -952,9 +954,9 @@ fi
                 }
                 is ContainerStateEnum.Stopped -> {
                     if (checkRootfsNeedsUpdate()) {
-                        Log.i(TAG, "Rootfs update detected while starting stopped container, reinitializing runtime")
-                        _containerState.value = ContainerStateEnum.NotInitialized
-                        return@withContext initialize()
+                        Log.i(TAG, "Rootfs update detected while starting stopped container, requiring manual rebuild")
+                        _containerState.value = ContainerStateEnum.NeedsRebuild(ROOTFS_REBUILD_REQUIRED_REASON)
+                        return@withContext Result.failure(IllegalStateException(ROOTFS_REBUILD_REQUIRED_REASON))
                     }
                     ensureSystemLayerReady()
                     val layoutStatus = inspectLayoutStatus()
@@ -2544,9 +2546,9 @@ fi
         try {
             if (checkRootfsNeedsUpdate()) {
                 globalContainer = null
-                _containerState.value = ContainerStateEnum.NotInitialized
-                Log.i(TAG, "[RestoreState] Rootfs update required, forcing reinitialization")
-                return@withContext false
+                _containerState.value = ContainerStateEnum.NeedsRebuild(ROOTFS_REBUILD_REQUIRED_REASON)
+                Log.i(TAG, "[RestoreState] Rootfs update required, waiting for manual rebuild")
+                return@withContext true
             }
 
             if (!checkInitializationStatus()) {
@@ -2596,7 +2598,8 @@ fi
 
     /**
      * 启用容器自动管理
-     * - 应用进入前台时自动启动容器（如果启用且处于 Stopped 状态）
+     * - 应用进入前台时自动启动已存在的容器（如果启用且处于 Stopped 状态）
+     * - 不再自动初始化/重建容器，避免意外清空系统层
      * - 应用进入后台时自动停止容器
      *
      * @param enableContainerRuntime 用户是否启用了容器运行时功能
@@ -2635,11 +2638,22 @@ fi
                                     }
                                 }
                                 is ContainerStateEnum.NotInitialized -> {
-                                    Log.d(TAG, "[AutoManage] Container not initialized, auto-initializing...")
+                                    Log.d(TAG, "[AutoManage] Container state is NotInitialized, attempting restore only")
                                     GlobalScope.launch(Dispatchers.IO) {
-                                        Log.d(TAG, "[AutoManage] Calling initialize()...")
-                                        val result = initialize()
-                                        Log.d(TAG, "[AutoManage] Auto-initialize result: $result")
+                                        val restored = restoreState()
+                                        Log.d(TAG, "[AutoManage] restoreState() result: restored=$restored state=${_containerState.value}")
+
+                                        when (_containerState.value) {
+                                            is ContainerStateEnum.Stopped -> {
+                                                Log.d(TAG, "[AutoManage] Restored existing container, starting from Stopped state")
+                                                val result = start()
+                                                Log.d(TAG, "[AutoManage] Auto-start after restore result: $result")
+                                            }
+
+                                            else -> {
+                                                Log.d(TAG, "[AutoManage] State after restore is ${_containerState.value}, skipping auto-initialize")
+                                            }
+                                        }
                                     }
                                 }
                                 else -> {
