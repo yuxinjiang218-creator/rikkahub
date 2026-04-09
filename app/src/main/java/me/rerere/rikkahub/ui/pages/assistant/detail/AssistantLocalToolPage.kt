@@ -1709,10 +1709,12 @@ private fun ContainerStatusCard() {
     val scope = rememberCoroutineScope()
     val clipboardManager = LocalClipboardManager.current
 
-    // Try restoring persisted container state when opening this card.
-    LaunchedEffect(prootManager) {
-        runCatching {
-            prootManager.restoreState()
+    // Only attempt restore when startup recovery has not populated the state yet.
+    LaunchedEffect(prootManager, containerState) {
+        if (containerState is me.rerere.rikkahub.data.container.ContainerStateEnum.NotInitialized) {
+            runCatching {
+                prootManager.restoreState()
+            }
         }
     }
 

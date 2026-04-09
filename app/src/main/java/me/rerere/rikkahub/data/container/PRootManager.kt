@@ -2663,6 +2663,20 @@ fi
      */
     suspend fun restoreState(): Boolean = withContext(Dispatchers.IO) {
         try {
+            when (_containerState.value) {
+                ContainerStateEnum.Running -> {
+                    Log.d(TAG, "[RestoreState] Container is already Running, skipping restore")
+                    return@withContext true
+                }
+
+                is ContainerStateEnum.Initializing -> {
+                    Log.d(TAG, "[RestoreState] Container is currently Initializing, skipping restore")
+                    return@withContext true
+                }
+
+                else -> Unit
+            }
+
             val runtimeArtifacts = hasRuntimeArtifacts()
             val baseRuntimeStatus = ensureBaseRuntimeReady(allowRepair = runtimeArtifacts)
             if (!baseRuntimeStatus.ready) {
