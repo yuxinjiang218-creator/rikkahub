@@ -337,22 +337,57 @@ class ChatVM(
         val current = _messageWindowState.value
         if (current.isLoadingOlder || !current.hasOlder) return
 
-        _messageWindowState.update { it.copy(isLoadingOlder = true) }
         val newStartIndex = (current.loadedStartIndex - CHAT_OLDER_LOAD_BATCH_SIZE).coerceAtLeast(0)
         val newLimit = current.loadedStableNodes.size + (current.loadedStartIndex - newStartIndex)
-        val loadedNodes = conversationRepo.loadConversationNodesRange(
-            conversationId = _conversationId,
-            startIndex = newStartIndex,
-            limit = newLimit,
+        recordUiDiagnostic(
+            category = "older-load-start",
+            detail = "currentStart=${current.loadedStartIndex} requestStart=$newStartIndex limit=$newLimit loaded=${current.loadedStableNodes.size}",
+            phase = "start",
         )
-        _messageWindowState.value = current.copy(
-            totalStableCount = stableMessageNodes.value.size,
-            loadedStartIndex = newStartIndex,
-            loadedStableNodes = loadedNodes,
-            hasOlder = newStartIndex > 0,
-            isLoadingOlder = false,
-            initialized = true,
-        )
+        _messageWindowState.update { it.copy(isLoadingOlder = true) }
+        try {
+            val loadResult = conversationRepo.loadConversationNodesRange(
+                conversationId = _conversationId,
+                startIndex = newStartIndex,
+                limit = newLimit,
+            )
+            if (newLimit > 0 && loadResult.nodes.isEmpty()) {
+                error("Older message load returned no nodes for requestStart=$newStartIndex limit=$newLimit")
+            }
+            _messageWindowState.value = current.copy(
+                totalStableCount = stableMessageNodes.value.size,
+                loadedStartIndex = newStartIndex,
+                loadedStableNodes = loadResult.nodes,
+                hasOlder = newStartIndex > 0,
+                isLoadingOlder = false,
+                initialized = true,
+            )
+            recordUiDiagnostic(
+                category = "older-load-success",
+                detail = "requestStart=$newStartIndex limit=$newLimit returned=${loadResult.nodes.size} fallback=${loadResult.fallbackUsed} skipped=${loadResult.skippedNodeCount}",
+                phase = "success",
+            )
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            recordUiDiagnostic(
+                category = "older-load-failure",
+                detail = "requestStart=$newStartIndex limit=$newLimit error=${error::class.simpleName ?: "unknown"}",
+                phase = "failure",
+            )
+            chatService.addError(
+                error = error,
+                conversationId = _conversationId,
+                title = "加载旧消息失败",
+            )
+        } finally {
+            _messageWindowState.update { state ->
+                if (state.isLoadingOlder) {
+                    state.copy(isLoadingOlder = false)
+                } else {
+                    state
+                }
+            }
+        }
     }
 
     suspend fun ensureMessageIndexVisible(globalIndex: Int): Int {
@@ -374,11 +409,12 @@ class ChatVM(
             targetIndex = normalizedIndex,
             windowSize = targetWindowSize,
         )
-        val loadedNodes = conversationRepo.loadConversationNodesRange(
+        val loadResult = conversationRepo.loadConversationNodesRange(
             conversationId = _conversationId,
             startIndex = startIndex,
             limit = targetWindowSize,
         )
+        val loadedNodes = loadResult.nodes
         _messageWindowState.value = current.copy(
             totalStableCount = totalCount,
             loadedStartIndex = startIndex,

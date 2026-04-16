@@ -9,6 +9,7 @@ import kotlin.uuid.Uuid
 
 internal const val CHAT_INITIAL_WINDOW_SIZE = 60
 internal const val CHAT_OLDER_LOAD_BATCH_SIZE = 40
+internal const val CHAT_OLDER_LOAD_TRIGGER_THRESHOLD = 2
 private const val CHAT_JUMP_WINDOW_SIZE = 80
 private const val CHAT_JUMP_CONTEXT_BEFORE = 20
 
@@ -99,6 +100,15 @@ internal fun computeFocusedWindowStart(
     val normalizedWindowSize = min(windowSize, totalCount)
     val maxStart = (totalCount - normalizedWindowSize).coerceAtLeast(0)
     return (targetIndex - contextBefore).coerceIn(0, maxStart)
+}
+
+internal fun shouldLoadOlderMessages(
+    firstVisibleMessageGlobalIndex: Int?,
+    loadedStartIndex: Int,
+    threshold: Int = CHAT_OLDER_LOAD_TRIGGER_THRESHOLD,
+): Boolean {
+    val globalIndex = firstVisibleMessageGlobalIndex ?: return false
+    return globalIndex - loadedStartIndex <= threshold
 }
 
 internal fun localizeCompressionEvents(

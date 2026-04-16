@@ -398,13 +398,14 @@ private fun ChatListNormal(
         var pendingAnchorOffset by remember { mutableStateOf(0) }
         LaunchedEffect(timelineState.hasOlder, timelineState.isLoadingOlder, state.firstVisibleItemIndex, timelineItems) {
             if (!timelineState.hasOlder || timelineState.isLoadingOlder || stableMessageItems.isEmpty()) return@LaunchedEffect
-            if (!isRecentScroll && state.firstVisibleItemIndex == 0 && state.firstVisibleItemScrollOffset == 0) {
-                return@LaunchedEffect
-            }
-            if (state.firstVisibleItemIndex > 2) return@LaunchedEffect
             val anchorItem = state.layoutInfo.visibleItemsInfo.firstOrNull { info ->
                 timelineItems.getOrNull(info.index) is ChatTimelineMessageItem
             } ?: return@LaunchedEffect
+            val firstVisibleMessageGlobalIndex =
+                (timelineItems.getOrNull(anchorItem.index) as? ChatTimelineMessageItem)?.model?.globalIndex
+            if (!shouldLoadOlderMessages(firstVisibleMessageGlobalIndex, timelineState.loadedStartIndex)) {
+                return@LaunchedEffect
+            }
             val anchorNodeId = (timelineItems[anchorItem.index] as? ChatTimelineMessageItem)?.model?.node?.id
                 ?: return@LaunchedEffect
             pendingAnchorNodeId = anchorNodeId

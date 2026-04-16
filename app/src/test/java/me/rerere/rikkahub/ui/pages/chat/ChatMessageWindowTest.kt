@@ -80,4 +80,32 @@ class ChatMessageWindowTest {
         assertTrue(150 in startIndex until (startIndex + 80))
         assertFalse(150 < startIndex)
     }
+
+    @Test
+    fun `shouldLoadOlderMessages triggers when first visible message is near window start`() {
+        assertTrue(
+            shouldLoadOlderMessages(
+                firstVisibleMessageGlobalIndex = 40,
+                loadedStartIndex = 40,
+            )
+        )
+        assertTrue(
+            shouldLoadOlderMessages(
+                firstVisibleMessageGlobalIndex = 42,
+                loadedStartIndex = 40,
+            )
+        )
+        assertFalse(
+            shouldLoadOlderMessages(
+                firstVisibleMessageGlobalIndex = 43,
+                loadedStartIndex = 40,
+            )
+        )
+        assertFalse(
+            shouldLoadOlderMessages(
+                firstVisibleMessageGlobalIndex = null,
+                loadedStartIndex = 40,
+            )
+        )
+    }
 }

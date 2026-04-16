@@ -226,8 +226,8 @@ class ConversationRepository(
         conversationId: Uuid,
         startIndex: Int,
         limit: Int,
-    ): List<MessageNode> {
-        if (limit <= 0) return emptyList()
+    ): ConversationNodesRangeLoadResult {
+        if (limit <= 0) return ConversationNodesRangeLoadResult()
         return loadMessageNodesRange(
             conversationId = conversationId.toString(),
             startIndex = startIndex,
@@ -681,15 +681,80 @@ class ConversationRepository(
         conversationId: String,
         startIndex: Int,
         limit: Int,
-    ): List<MessageNode> {
+    ): ConversationNodesRangeLoadResult {
         val favoriteNodeIds = loadFavoriteNodeIds(conversationId)
         return database.withTransaction {
-            messageNodeDAO.getNodesOfConversationPaged(
-                conversationId = conversationId,
-                limit = limit,
-                offset = startIndex,
-            ).map { entity ->
-                decodeMessageNode(entity, favoriteNodeIds)
+            try {
+                ConversationNodesRangeLoadResult(
+                    nodes = messageNodeDAO.getNodesOfConversationPaged(
+                        conversationId = conversationId,
+                        limit = limit,
+                        offset = startIndex,
+                    ).map { entity ->
+                        decodeMessageNode(entity, favoriteNodeIds)
+                    }
+                )
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (error !is SQLiteBlobTooBigException && error !is IllegalStateException) {
+                    throw error
+                }
+                Log.w(
+                    TAG,
+                    "loadMessageNodesRange: paged load failed for conversation=$conversationId startIndex=$startIndex limit=$limit, falling back to per-node loading",
+                    error,
+                )
+                val headers = messageNodeDAO.getNodeHeadersOfConversationPaged(
+                    conversationId = conversationId,
+                    limit = limit,
+                    offset = startIndex,
+                )
+                val nodes = mutableListOf<MessageNode>()
+                var skippedNodeCount = 0
+                headers.forEach { header ->
+                    val messagesJson = try {
+                        messageNodeDAO.getMessagesOfNode(header.id)
+                    } catch (nodeError: Exception) {
+                        if (nodeError is CancellationException) throw nodeError
+                        if (nodeError !is SQLiteBlobTooBigException && nodeError !is IllegalStateException) {
+                            throw nodeError
+                        }
+                        Log.w(
+                            TAG,
+                            "loadMessageNodesRange: skipped unreadable node ${header.id} in conversation=$conversationId",
+                            nodeError,
+                        )
+                        skippedNodeCount++
+                        null
+                    } ?: return@forEach
+
+                    val messages = try {
+                        JsonInstant.decodeFromString<List<UIMessage>>(messagesJson)
+                    } catch (decodeError: Exception) {
+                        if (decodeError is CancellationException) throw decodeError
+                        Log.w(
+                            TAG,
+                            "loadMessageNodesRange: skipped malformed node ${header.id} in conversation=$conversationId",
+                            decodeError,
+                        )
+                        skippedNodeCount++
+                        return@forEach
+                    }
+                    val nodeId = Uuid.parse(header.id)
+                    nodes.add(
+                        MessageNode(
+                            id = nodeId,
+                            messages = messages,
+                            selectIndex = header.selectIndex,
+                            isFavorite = favoriteNodeIds.contains(nodeId),
+                        )
+                    )
+                }
+                ConversationNodesRangeLoadResult(
+                    nodes = nodes,
+                    fallbackUsed = true,
+                    skippedNodeCount = skippedNodeCount,
+                )
             }
         }
     }
@@ -855,6 +920,12 @@ data class LightConversationEntity(
 data class ConversationPageResult(
     val items: List<Conversation>,
     val nextOffset: Int?,
+)
+
+data class ConversationNodesRangeLoadResult(
+    val nodes: List<MessageNode> = emptyList(),
+    val fallbackUsed: Boolean = false,
+    val skippedNodeCount: Int = 0,
 )
 
 data class ConversationMessageSearchResult(
