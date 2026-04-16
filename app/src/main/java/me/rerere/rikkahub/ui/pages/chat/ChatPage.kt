@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyListItemInfo
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerState
@@ -103,14 +104,10 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
     val setting by vm.settings.collectAsStateWithLifecycle()
     val conversation by vm.stableConversation.collectAsStateWithLifecycle()
     val messageWindowState by vm.messageWindowState.collectAsStateWithLifecycle()
-    val headerState by vm.headerState.collectAsStateWithLifecycle()
-    val inputBarState by vm.inputBarState.collectAsStateWithLifecycle()
+    val chatChromeState by vm.chatChromeState.collectAsStateWithLifecycle()
+    val chatInputUiState by vm.chatInputUiState.collectAsStateWithLifecycle()
     val loadingJob by vm.conversationJob.collectAsStateWithLifecycle()
-    val currentChatModel by vm.currentChatModel.collectAsStateWithLifecycle()
-    val enableWebSearch by vm.enableWebSearch.collectAsStateWithLifecycle()
     val errors by vm.errors.collectAsStateWithLifecycle()
-    val compressionUiState by vm.compressionUiState.collectAsStateWithLifecycle()
-    val ledgerGenerationUiState by vm.ledgerGenerationUiState.collectAsStateWithLifecycle()
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val softwareKeyboardController = LocalSoftwareKeyboardController.current
@@ -258,17 +255,13 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
                     loadingJob = loadingJob,
                     setting = setting,
                     conversation = conversation,
-                    headerState = headerState,
-                    inputBarState = inputBarState,
+                    chatChromeState = chatChromeState,
+                    chatInputUiState = chatInputUiState,
                     drawerState = drawerState,
                     navController = navController,
                     vm = vm,
                     chatListState = chatListState,
-                    enableWebSearch = enableWebSearch,
-                    currentChatModel = currentChatModel,
                     bigScreen = true,
-                    compressionUiState = compressionUiState,
-                    ledgerGenerationUiState = ledgerGenerationUiState,
                     errors = errors,
                     onDismissError = { vm.dismissError(it) },
                     onClearAllErrors = { vm.clearAllErrors() },
@@ -293,17 +286,13 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
                     loadingJob = loadingJob,
                     setting = setting,
                     conversation = conversation,
-                    headerState = headerState,
-                    inputBarState = inputBarState,
+                    chatChromeState = chatChromeState,
+                    chatInputUiState = chatInputUiState,
                     drawerState = drawerState,
                     navController = navController,
                     vm = vm,
                     chatListState = chatListState,
-                    enableWebSearch = enableWebSearch,
-                    currentChatModel = currentChatModel,
                     bigScreen = false,
-                    compressionUiState = compressionUiState,
-                    ledgerGenerationUiState = ledgerGenerationUiState,
                     errors = errors,
                     onDismissError = { vm.dismissError(it) },
                     onClearAllErrors = { vm.clearAllErrors() },
@@ -329,7 +318,6 @@ private fun TTSAutoPlayConversationBridge(
 private fun StreamingChatList(
     vm: ChatVM,
     innerPadding: androidx.compose.foundation.layout.PaddingValues,
-    stableConversation: Conversation,
     state: LazyListState,
     loading: Boolean,
     previewMode: Boolean,
@@ -354,28 +342,33 @@ private fun StreamingChatList(
     onToggleFavorite: ((MessageNode) -> Unit)?,
     onAutoScrollCheck: (String) -> Unit,
 ) {
-    val stableNodes by vm.stableMessageNodes.collectAsStateWithLifecycle()
-    val streamingTail by vm.streamingTail.collectAsStateWithLifecycle()
+    val chatTimelineUiState by vm.chatTimelineUiState.collectAsStateWithLifecycle()
     val streamingUiTick by vm.streamingUiTick.collectAsStateWithLifecycle()
-    val messageWindowState by vm.messageWindowState.collectAsStateWithLifecycle()
-    val previewSearchResults by vm.previewSearchResults.collectAsStateWithLifecycle()
+    val autoScrollTargetIndex = chatTimelineUiState.items.size +
+        if (loading) {
+            if (chatTimelineUiState.isLoadingOlder) 2 else 1
+        } else {
+            0
+        }
+
+    StreamingChatListAutoScrollEffect(
+        state = state,
+        innerPadding = innerPadding,
+        loading = loading,
+        streamingUiTick = streamingUiTick,
+        targetScrollIndex = autoScrollTargetIndex,
+        enableAutoScroll = settings.displaySetting.enableAutoScroll && !previewMode,
+        onAutoScrollCheck = onAutoScrollCheck,
+    )
 
     ChatList(
         innerPadding = innerPadding,
-        conversation = stableConversation,
-        stableNodes = messageWindowState.loadedStableNodes,
-        streamingTail = streamingTail,
-        loadedStartIndex = messageWindowState.loadedStartIndex,
-        totalStableCount = messageWindowState.totalStableCount,
-        hasOlder = messageWindowState.hasOlder,
-        isLoadingOlder = messageWindowState.isLoadingOlder,
+        timelineState = chatTimelineUiState,
         state = state,
         loading = loading,
-        streamingUiTick = streamingUiTick,
         previewMode = previewMode,
         settings = settings,
         hazeState = hazeState,
-        previewSearchResults = previewSearchResults,
         errors = errors,
         onDismissError = onDismissError,
         onClearAllErrors = onClearAllErrors,
@@ -395,8 +388,33 @@ private fun StreamingChatList(
         onToggleFavorite = onToggleFavorite,
         onSearchPreviewMessages = vm::searchPreviewMessages,
         onLoadOlder = { vm.loadOlderMessages() },
-        onAutoScrollCheck = onAutoScrollCheck,
     )
+}
+
+@Composable
+private fun StreamingChatListAutoScrollEffect(
+    state: LazyListState,
+    innerPadding: androidx.compose.foundation.layout.PaddingValues,
+    loading: Boolean,
+    streamingUiTick: Long,
+    targetScrollIndex: Int,
+    enableAutoScroll: Boolean,
+    onAutoScrollCheck: (String) -> Unit,
+) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    if (!enableAutoScroll) return
+
+    LaunchedEffect(streamingUiTick, loading, targetScrollIndex) {
+        if (!loading || streamingUiTick <= 0L) return@LaunchedEffect
+        val visibleItemsInfo = state.layoutInfo.visibleItemsInfo
+        val atBottom = visibleItemsInfo.isAtBottom(state = state, density = density, innerPadding = innerPadding)
+        onAutoScrollCheck(
+            "tick=$streamingUiTick loading=$loading atBottom=$atBottom scrolling=${state.isScrollInProgress}"
+        )
+        if (!state.isScrollInProgress && atBottom) {
+            state.requestScrollToItem(targetScrollIndex)
+        }
+    }
 }
 
 @Composable
@@ -406,16 +424,12 @@ private fun ChatPageContent(
     setting: Settings,
     bigScreen: Boolean,
     conversation: Conversation,
-    headerState: ChatHeaderState,
-    inputBarState: ChatInputBarState,
+    chatChromeState: ChatChromeUiState,
+    chatInputUiState: ChatInputUiState,
     drawerState: DrawerState,
     navController: Navigator,
     vm: ChatVM,
     chatListState: LazyListState,
-    enableWebSearch: Boolean,
-    currentChatModel: Model?,
-    compressionUiState: me.rerere.rikkahub.service.CompressionUiState?,
-    ledgerGenerationUiState: me.rerere.rikkahub.service.LedgerGenerationUiState?,
     errors: List<ChatError>,
     onDismissError: (Uuid) -> Unit,
     onClearAllErrors: () -> Unit,
@@ -428,9 +442,8 @@ private fun ChatPageContent(
     TTSAutoPlayConversationBridge(vm = vm, setting = setting)
     val assistant = setting.assistants.find { it.id == conversation.assistantId }
         ?: setting.getCurrentAssistant()
-    val workflowEnabled = assistant.localTools.contains(LocalToolOption.WorkflowControl)
-    val currentWorkflowState = conversation.workflowState
-    val workflowActive = currentWorkflowState != null
+    val workflowEnabled = chatChromeState.workflowEnabled
+    val workflowActive = chatChromeState.workflowActive
     var showWorkflowPanel by rememberSaveable { mutableStateOf(false) }
     var showSandboxFileManager by rememberSaveable { mutableStateOf(false) }
 
@@ -447,18 +460,8 @@ private fun ChatPageContent(
         AssistantBackground(setting = setting)
         Scaffold(
             topBar = {
-                val assistant = headerState.assistantId?.let { assistantId ->
-                    setting.assistants.find { it.id == assistantId }
-                } ?: setting.getCurrentAssistant()
-                val model = assistant.chatModelId?.let(setting::findModelById) ?: setting.getCurrentChatModel()
-                val provider = model?.findProvider(providers = setting.providers, checkOverwrite = false)
                 TopBar(
-                    headerState = headerState,
-                    subtitle = if (model != null && provider != null) {
-                        "${assistant.name.ifBlank { stringResource(R.string.assistant_page_default_assistant) }} / ${model.displayName} (${provider.name})"
-                    } else {
-                        null
-                    },
+                    chatChromeState = chatChromeState,
                     bigScreen = bigScreen,
                     drawerState = drawerState,
                     previewMode = previewMode,
@@ -476,24 +479,24 @@ private fun ChatPageContent(
             bottomBar = {
                 ChatInput(
                     state = inputState,
-                    loading = loadingJob != null,
+                    loading = chatInputUiState.loading,
                     settings = setting,
-                    messageCount = inputBarState.messageCount,
+                    messageCount = chatInputUiState.messageCount,
                     mcpManager = vm.mcpManager,
                     hazeState = hazeState,
-                    autoCompressionUiState = compressionUiState,
+                    autoCompressionUiState = chatInputUiState.compressionUiState,
                     onCancelClick = {
                         loadingJob?.cancel()
                     },
                     onCancelCompressionProgress = {
                         vm.cancelCompressionWork()
                     },
-                    enableSearch = enableWebSearch,
+                    enableSearch = chatInputUiState.enableWebSearch,
                     onToggleSearch = {
-                        vm.updateSettings(setting.copy(enableWebSearch = !enableWebSearch))
+                        vm.updateSettings(setting.copy(enableWebSearch = !chatInputUiState.enableWebSearch))
                     },
-                    workflowEnabled = workflowEnabled,
-                    workflowActive = workflowActive,
+                    workflowEnabled = chatInputUiState.workflowEnabled,
+                    workflowActive = chatInputUiState.workflowActive,
                     onToggleWorkflow = {
                         if (conversation.workflowState == null) {
                             vm.initializeWorkflowState()
@@ -505,7 +508,7 @@ private fun ChatPageContent(
                         showSandboxFileManager = true
                     },
                     onSendClick = {
-                        if (currentChatModel == null) {
+                        if (chatInputUiState.currentChatModel == null) {
                             toaster.show("璇峰厛閫夋嫨妯″瀷", type = ToastType.Error)
                             return@ChatInput
                         }
@@ -575,9 +578,8 @@ private fun ChatPageContent(
             StreamingChatList(
                 vm = vm,
                 innerPadding = innerPadding,
-                stableConversation = conversation,
                 state = chatListState,
-                loading = loadingJob != null,
+                loading = chatInputUiState.loading,
                 previewMode = previewMode,
                 settings = setting,
                 hazeState = hazeState,
@@ -607,17 +609,7 @@ private fun ChatPageContent(
                     }
                 },
                 onUpdateMessage = { newNode ->
-                    vm.updateConversation(
-                        conversation.copy(
-                            messageNodes = conversation.messageNodes.map { node ->
-                                if (node.id == newNode.id) {
-                                    newNode
-                                } else {
-                                    node
-                                }
-                            }
-                        ))
-                    vm.saveConversationAsync()
+                    vm.updateMessageNode(newNode)
                 },
                 onClickSuggestion = { suggestion ->
                     inputState.editingMessage = null
@@ -674,7 +666,7 @@ private fun ChatPageContent(
             WorkflowFloatingPanel(
                 visible = showWorkflowPanel,
                 onDismiss = { showWorkflowPanel = false },
-                currentPhase = currentWorkflowState.phase,
+                currentPhase = chatChromeState.workflowPhase ?: me.rerere.rikkahub.data.model.WorkflowPhase.PLAN,
                 onPhaseChange = { phase ->
                     vm.updateWorkflowPhase(phase)
                 },
@@ -688,7 +680,7 @@ private fun ChatPageContent(
             )
         }
 
-        if (ledgerGenerationUiState != null) {
+        if (chatInputUiState.showLedgerGenerationDialog) {
             LedgerGenerationDialog(
                 onCancel = {
                     vm.cancelCompressionWork()
@@ -700,8 +692,7 @@ private fun ChatPageContent(
 
 @Composable
 private fun TopBar(
-    headerState: ChatHeaderState,
-    subtitle: String?,
+    chatChromeState: ChatChromeUiState,
     drawerState: DrawerState,
     bigScreen: Boolean,
     previewMode: Boolean,
@@ -732,8 +723,8 @@ private fun TopBar(
             val editTitleWarning = stringResource(R.string.chat_page_edit_title_warning)
             Surface(
                 onClick = {
-                    if (headerState.hasMessages) {
-                        titleState.open(headerState.title)
+                    if (chatChromeState.hasMessages) {
+                        titleState.open(chatChromeState.title)
                     } else {
                         toaster.show(editTitleWarning, type = ToastType.Warning)
                     }
@@ -742,14 +733,14 @@ private fun TopBar(
             ) {
                 Column {
                     Text(
-                        text = headerState.title.ifBlank { stringResource(R.string.chat_page_new_chat) },
+                        text = chatChromeState.title.ifBlank { stringResource(R.string.chat_page_new_chat) },
                         maxLines = 1,
                         style = MaterialTheme.typography.bodyMedium,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (subtitle != null) {
+                    if (chatChromeState.subtitle != null) {
                         Text(
-                            text = subtitle,
+                            text = chatChromeState.subtitle,
                             overflow = TextOverflow.Ellipsis,
                             maxLines = 1,
                             color = LocalContentColor.current.copy(0.65f),
@@ -824,4 +815,14 @@ private fun Conversation.findCompressionBoundaryIndex(eventId: Long): Int? {
     return normalizedEvents.firstOrNull { it.id == eventId }?.boundaryIndex
 }
 
-
+private fun List<LazyListItemInfo>.isAtBottom(
+    state: LazyListState,
+    density: androidx.compose.ui.unit.Density,
+    innerPadding: androidx.compose.foundation.layout.PaddingValues,
+): Boolean {
+    val lastItem = lastOrNull() ?: return false
+    val inputBarHeight = with(density) { innerPadding.calculateBottomPadding().toPx() }
+    val lastPos = lastItem.offset + lastItem.size
+    val inputPos = state.layoutInfo.viewportEndOffset - inputBarHeight.toInt()
+    return lastPos <= inputPos - 8
+}

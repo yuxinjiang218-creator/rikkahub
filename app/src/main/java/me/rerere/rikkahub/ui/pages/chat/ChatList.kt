@@ -135,20 +135,12 @@ private enum class CompressionCardPage {
 @Composable
 fun ChatList(
     innerPadding: PaddingValues,
-    conversation: Conversation,
-    stableNodes: List<MessageNode> = conversation.messageNodes,
-    streamingTail: StreamingTailState? = null,
-    loadedStartIndex: Int = 0,
-    totalStableCount: Int = stableNodes.size,
-    hasOlder: Boolean = false,
-    isLoadingOlder: Boolean = false,
+    timelineState: ChatTimelineUiState,
     state: LazyListState,
     loading: Boolean,
-    streamingUiTick: Long = 0L,
     previewMode: Boolean,
     settings: Settings,
     hazeState: HazeState,
-    previewSearchResults: List<ConversationPreviewSearchResult> = emptyList(),
     errors: List<ChatError> = emptyList(),
     onDismissError: (Uuid) -> Unit = {},
     onClearAllErrors: () -> Unit = {},
@@ -168,7 +160,6 @@ fun ChatList(
     onToggleFavorite: ((MessageNode) -> Unit)? = null,
     onSearchPreviewMessages: (String) -> Unit = {},
     onLoadOlder: suspend () -> Unit = {},
-    onAutoScrollCheck: (String) -> Unit = {},
 ) {
     AnimatedContent(
         targetState = previewMode,
@@ -180,30 +171,17 @@ fun ChatList(
         if (target) {
             ChatListPreview(
                 innerPadding = innerPadding,
-                displayedNodes = remember(stableNodes, streamingTail, loadedStartIndex) {
-                    buildDisplayedNodes(
-                        stableNodes = stableNodes,
-                        streamingTail = streamingTail,
-                        loadedStartIndex = loadedStartIndex,
-                    )
-                },
-                searchResults = previewSearchResults,
+                displayedNodes = timelineState.previewMessages,
+                searchResults = timelineState.previewSearchResults,
                 onSearchQueryChange = onSearchPreviewMessages,
                 onJumpToMessage = onJumpToMessage,
             )
         } else {
             ChatListNormal(
                 innerPadding = innerPadding,
-                conversation = conversation,
-                stableNodes = stableNodes,
-                streamingTail = streamingTail,
-                loadedStartIndex = loadedStartIndex,
-                totalStableCount = totalStableCount,
-                hasOlder = hasOlder,
-                isLoadingOlder = isLoadingOlder,
+                timelineState = timelineState,
                 state = state,
                 loading = loading,
-                streamingUiTick = streamingUiTick,
                 settings = settings,
                 hazeState = hazeState,
                 errors = errors,
@@ -219,12 +197,10 @@ fun ChatList(
                 onClickSuggestion = onClickSuggestion,
                 onTranslate = onTranslate,
                 onClearTranslation = onClearTranslation,
-                animatedVisibilityScope = this@AnimatedContent,
                 onToolApproval = onToolApproval,
                 onToolAnswer = onToolAnswer,
                 onToggleFavorite = onToggleFavorite,
                 onLoadOlder = onLoadOlder,
-                onAutoScrollCheck = onAutoScrollCheck,
             )
         }
     }
@@ -233,16 +209,9 @@ fun ChatList(
 @Composable
 private fun ChatListNormal(
     innerPadding: PaddingValues,
-    conversation: Conversation,
-    stableNodes: List<MessageNode>,
-    streamingTail: StreamingTailState?,
-    loadedStartIndex: Int,
-    totalStableCount: Int,
-    hasOlder: Boolean,
-    isLoadingOlder: Boolean,
+    timelineState: ChatTimelineUiState,
     state: LazyListState,
     loading: Boolean,
-    streamingUiTick: Long,
     settings: Settings,
     hazeState: HazeState,
     errors: List<ChatError>,
@@ -258,26 +227,26 @@ private fun ChatListNormal(
     onClickSuggestion: (String) -> Unit,
     onTranslate: ((UIMessage, java.util.Locale) -> Unit)?,
     onClearTranslation: (UIMessage) -> Unit,
-    animatedVisibilityScope: AnimatedVisibilityScope,
     onToolApproval: ((toolCallId: String, approved: Boolean, reason: String) -> Unit)? = null,
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
     onToggleFavorite: ((MessageNode) -> Unit)? = null,
     onLoadOlder: suspend () -> Unit = {},
-    onAutoScrollCheck: (String) -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
-    val loadingState by rememberUpdatedState(loading)
     var isRecentScroll by remember { mutableStateOf(false) }
-    val displayedNodes = remember(stableNodes, streamingTail, loadedStartIndex) {
-        buildDisplayedNodes(
-            stableNodes = stableNodes,
-            streamingTail = streamingTail,
-            loadedStartIndex = loadedStartIndex,
-        )
+    val timelineItems = timelineState.items
+    val messageItems = remember(timelineItems) {
+        timelineItems.filterIsInstance<ChatTimelineMessageItem>()
     }
-    val displayedNodeCount = displayedNodes.size
-    val lastDisplayedIndex = displayedNodes.lastIndex
-    val conversationUpdated by rememberUpdatedState(displayedNodes)
+    val messageListIndexByNodeId = remember(timelineItems) {
+        buildMap<Uuid, Int> {
+            timelineItems.forEachIndexed { index, item ->
+                if (item is ChatTimelineMessageItem) {
+                    put(item.model.node.id, index)
+                }
+            }
+        }
+    }
     val density = LocalDensity.current
     val activity = LocalContext.current as? me.rerere.rikkahub.RouteActivity
 
@@ -299,15 +268,6 @@ private fun ChatListNormal(
         }
     }
 
-    fun List<LazyListItemInfo>.isAtBottom(): Boolean {
-        val lastItem = lastOrNull() ?: return false
-        val inputBarHeight = with(density) { innerPadding.calculateBottomPadding().toPx() }
-        val lastPos = lastItem.offset + lastItem.size
-        val inputPos = (state.layoutInfo.viewportEndOffset - inputBarHeight.roundToInt())
-        // println("lastPos = $lastPos, inputPos = $inputPos  | ${lastPos <= inputPos - 8}")
-        return lastPos <= inputPos - 8
-    }
-
     // 鑱婂ぉ閫夋嫨
     val selectedItems = remember { mutableStateListOf<Uuid>() }
     var selecting by remember { mutableStateOf(false) }
@@ -317,19 +277,11 @@ private fun ChatListNormal(
     ImeLazyListAutoScroller(lazyListState = state)
 
     // 瀵硅瘽澶у皬璀﹀憡瀵硅瘽妗?
-    val lastAssistantInputTokens = remember(displayedNodes) {
-        displayedNodes.asReversed()
-            .map { it.currentMessage }
-            .firstOrNull { it.role == me.rerere.ai.core.MessageRole.ASSISTANT }
-            ?.usage
-            ?.promptTokens
-            ?: 0
-    }
     val sizeInfo = rememberConversationSizeInfo(
-        nodeCount = totalStableCount + if (streamingTail != null && streamingTail.index >= totalStableCount) 1 else 0,
-        lastAssistantInputTokens = lastAssistantInputTokens,
+        nodeCount = timelineState.renderedMessageCount,
+        lastAssistantInputTokens = timelineState.lastAssistantInputTokens,
     )
-    var showSizeWarningDialog by rememberSaveable(conversation.id) { mutableStateOf(true) }
+    var showSizeWarningDialog by rememberSaveable(timelineState.conversationTitle) { mutableStateOf(true) }
     if (sizeInfo.showWarning && showSizeWarningDialog) {
         ConversationSizeWarningDialog(
             sizeInfo = sizeInfo,
@@ -337,33 +289,17 @@ private fun ChatListNormal(
         )
     }
 
-    val normalizedCompressionEvents = remember(
-        conversation.compressionEvents,
-        totalStableCount,
-        loadedStartIndex,
-        stableNodes,
-    ) {
-        localizeCompressionEvents(
-            events = conversation.compressionEvents,
-            totalStableCount = totalStableCount,
-            loadedStartIndex = loadedStartIndex,
-            loadedNodeCount = stableNodes.size,
-        ).sortedWith(compressionEventOrder)
-    }
-    val latestCompressionEventId = normalizedCompressionEvents.lastOrNull()?.id
-    var expandedCompressionEventId by rememberSaveable(conversation.id) { mutableStateOf(latestCompressionEventId) }
-    var showRegenerateConfirm by rememberSaveable(conversation.id) { mutableStateOf(false) }
-    var regenerateTarget by rememberSaveable(conversation.id) {
+    val latestCompressionEventId = timelineState.latestCompressionEventId
+    var expandedCompressionEventId by rememberSaveable(timelineState.conversationTitle) { mutableStateOf(latestCompressionEventId) }
+    var showRegenerateConfirm by rememberSaveable(timelineState.conversationTitle) { mutableStateOf(false) }
+    var regenerateTarget by rememberSaveable(timelineState.conversationTitle) {
         mutableStateOf(CompressionRegenerationTarget.DialogueSummary)
     }
-    var latestCompressionPage by rememberSaveable(conversation.id) {
+    var latestCompressionPage by rememberSaveable(timelineState.conversationTitle) {
         mutableStateOf(CompressionCardPage.DialogueSummary)
     }
-    var showEditLatestSummaryDialog by rememberSaveable(conversation.id) { mutableStateOf(false) }
-    var editingLatestSummaryText by rememberSaveable(conversation.id) { mutableStateOf("") }
-    val eventsByBoundary = remember(normalizedCompressionEvents) {
-        normalizedCompressionEvents.groupBy { it.boundaryIndex }
-    }
+    var showEditLatestSummaryDialog by rememberSaveable(timelineState.conversationTitle) { mutableStateOf(false) }
+    var editingLatestSummaryText by rememberSaveable(timelineState.conversationTitle) { mutableStateOf("") }
     LaunchedEffect(latestCompressionEventId) {
         expandedCompressionEventId = latestCompressionEventId
     }
@@ -436,56 +372,44 @@ private fun ChatListNormal(
         modifier = Modifier
             .fillMaxSize(),
     ) {
-        // 鑷姩婊氬姩鍒板簳閮?
-        if (settings.displaySetting.enableAutoScroll) {
-            LaunchedEffect(streamingUiTick, loadingState) {
-                if (!loadingState || streamingUiTick <= 0L) return@LaunchedEffect
-                val visibleItemsInfo = state.layoutInfo.visibleItemsInfo
-                val atBottom = visibleItemsInfo.isAtBottom()
-                onAutoScrollCheck(
-                    "tick=$streamingUiTick loading=$loadingState atBottom=$atBottom scrolling=${state.isScrollInProgress}"
-                )
-                if (!state.isScrollInProgress && atBottom) {
-                    state.requestScrollToItem(conversationUpdated.lastIndex + 10)
-                }
-            }
-        }
-
         // 鍒ゆ柇鏈€杩戞槸鍚︽粴鍔?
-    LaunchedEffect(state.isScrollInProgress) {
-        if (state.isScrollInProgress) {
-            isRecentScroll = true
-            delay(1500)
-            isRecentScroll = false
+        LaunchedEffect(state.isScrollInProgress) {
+            if (state.isScrollInProgress) {
+                isRecentScroll = true
+                delay(1500)
+                isRecentScroll = false
             } else {
                 delay(1500)
                 isRecentScroll = false
+            }
         }
-    }
 
-    var pendingAnchorNodeId by remember { mutableStateOf<Uuid?>(null) }
-    var pendingAnchorOffset by remember { mutableStateOf(0) }
-    LaunchedEffect(hasOlder, isLoadingOlder, state.firstVisibleItemIndex, displayedNodes) {
-        if (!hasOlder || isLoadingOlder || displayedNodes.isEmpty()) return@LaunchedEffect
-        if (!isRecentScroll && state.firstVisibleItemIndex == 0 && state.firstVisibleItemScrollOffset == 0) {
-            return@LaunchedEffect
+        var pendingAnchorNodeId by remember { mutableStateOf<Uuid?>(null) }
+        var pendingAnchorOffset by remember { mutableStateOf(0) }
+        LaunchedEffect(timelineState.hasOlder, timelineState.isLoadingOlder, state.firstVisibleItemIndex, timelineItems) {
+            if (!timelineState.hasOlder || timelineState.isLoadingOlder || messageItems.isEmpty()) return@LaunchedEffect
+            if (!isRecentScroll && state.firstVisibleItemIndex == 0 && state.firstVisibleItemScrollOffset == 0) {
+                return@LaunchedEffect
+            }
+            if (state.firstVisibleItemIndex > 2) return@LaunchedEffect
+            val anchorItem = state.layoutInfo.visibleItemsInfo.firstOrNull { info ->
+                timelineItems.getOrNull(info.index) is ChatTimelineMessageItem
+            } ?: return@LaunchedEffect
+            val anchorNodeId = (timelineItems[anchorItem.index] as? ChatTimelineMessageItem)?.model?.node?.id
+                ?: return@LaunchedEffect
+            pendingAnchorNodeId = anchorNodeId
+            pendingAnchorOffset = anchorItem.offset
+            onLoadOlder()
         }
-        if (state.firstVisibleItemIndex > 2) return@LaunchedEffect
-        val anchorItem = state.layoutInfo.visibleItemsInfo.firstOrNull() ?: return@LaunchedEffect
-        val anchorNodeId = displayedNodes.getOrNull(anchorItem.index)?.id ?: return@LaunchedEffect
-        pendingAnchorNodeId = anchorNodeId
-        pendingAnchorOffset = anchorItem.offset
-        onLoadOlder()
-    }
 
-    LaunchedEffect(displayedNodes, pendingAnchorNodeId) {
-        val anchorNodeId = pendingAnchorNodeId ?: return@LaunchedEffect
-        val anchorIndex = displayedNodes.indexOfFirst { it.id == anchorNodeId }
-        if (anchorIndex >= 0) {
-            state.scrollToItem(anchorIndex, pendingAnchorOffset)
+        LaunchedEffect(timelineItems, pendingAnchorNodeId) {
+            val anchorNodeId = pendingAnchorNodeId ?: return@LaunchedEffect
+            val anchorIndex = messageListIndexByNodeId[anchorNodeId]
+            if (anchorIndex != null) {
+                state.scrollToItem(anchorIndex, pendingAnchorOffset)
+            }
+            pendingAnchorNodeId = null
         }
-        pendingAnchorNodeId = null
-    }
 
         LazyColumn(
             state = state,
@@ -497,7 +421,7 @@ private fun ChatListNormal(
                 .hazeSource(state = hazeState)
                 .padding(top = innerPadding.calculateTopPadding()),
         ) {
-            if (isLoadingOlder) {
+            if (timelineState.isLoadingOlder) {
                 item("load_older_indicator") {
                     RabbitLoadingIndicator(
                         modifier = Modifier
@@ -506,28 +430,21 @@ private fun ChatListNormal(
                     )
                 }
             }
-            itemsIndexed(
-                items = displayedNodes,
-                key = { index, item -> item.id },
-            ) { index, node ->
-                Column {
-                    eventsByBoundary[index].orEmpty().forEach { event ->
+            items(
+                items = timelineItems,
+                key = { item -> item.stableKey },
+                contentType = { item -> item.contentType },
+            ) { item ->
+                when (item) {
+                    is ChatTimelineCompressionItem -> {
                         CompressionBoundaryEvent(
-                            event = event,
-                            latest = event.id == latestCompressionEventId,
-                            expanded = expandedCompressionEventId == event.id,
+                            event = item.model.event,
+                            latest = item.model.isLatest,
+                            expanded = expandedCompressionEventId == item.model.event.id,
                             latestPage = latestCompressionPage,
-                            ledgerStatus = if (event.id == latestCompressionEventId) {
-                                conversation.compressionState.memoryLedgerStatus
-                            } else {
-                                null
-                            },
-                            ledgerError = if (event.id == latestCompressionEventId) {
-                                conversation.compressionState.memoryLedgerError
-                            } else {
-                                null
-                            },
-                            onRegenerate = if (event.id == latestCompressionEventId) {
+                            ledgerStatus = item.model.ledgerStatus,
+                            ledgerError = item.model.ledgerError,
+                            onRegenerate = if (item.model.isLatest) {
                                 {
                                     regenerateTarget = if (latestCompressionPage == CompressionCardPage.DialogueSummary) {
                                         CompressionRegenerationTarget.DialogueSummary
@@ -539,9 +456,9 @@ private fun ChatListNormal(
                             } else {
                                 null
                             },
-                            onEditLatestDialogueSummary = if (event.id == latestCompressionEventId) {
+                            onEditLatestDialogueSummary = if (item.model.isLatest) {
                                 {
-                                    editingLatestSummaryText = event.dialogueSummaryText
+                                    editingLatestSummaryText = item.model.event.dialogueSummaryText
                                     latestCompressionPage = CompressionCardPage.DialogueSummary
                                     showEditLatestSummaryDialog = true
                                 }
@@ -550,115 +467,68 @@ private fun ChatListNormal(
                             },
                             onPageChanged = { latestCompressionPage = it },
                             onToggle = {
-                                expandedCompressionEventId = if (expandedCompressionEventId == event.id) {
+                                expandedCompressionEventId = if (expandedCompressionEventId == item.model.event.id) {
                                     null
                                 } else {
-                                    event.id
+                                    item.model.event.id
                                 }
                             },
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
-                    ListSelectableItem(
-                        key = node.id,
-                        onSelectChange = {
-                            if (!selectedItems.contains(node.id)) {
-                                selectedItems.add(node.id)
-                            } else {
-                                selectedItems.remove(node.id)
-                            }
-                        },
-                        selectedKeys = selectedItems,
-                        enabled = selecting,
-                    ) {
-                        ChatMessage(
-                            node = node,
-                            model = node.currentMessage.modelId?.let { settings.findModelById(it) },
-                            assistant = settings.getAssistantById(conversation.assistantId),
-                            loading = loading && index == lastDisplayedIndex,
-                            onRegenerate = {
-                                onRegenerate(node.currentMessage)
-                            },
-                            onEdit = {
-                                onEdit(node.currentMessage)
-                            },
-                            onFork = {
-                                onForkMessage(node.currentMessage)
-                            },
-                            onDelete = {
-                                onDelete(node.currentMessage)
-                            },
-                            onShare = {
-                                selecting = true  // 浣跨敤 CoroutineScope 寤惰繜鐘舵€佹洿鏂?
-                                selectedItems.clear()
-                                selectedItems.addAll(displayedNodes.map { it.id }
-                                    .subList(0, displayedNodes.indexOf(node) + 1))
-                            },
-                            onUpdate = {
-                                onUpdateMessage(it)
-                            },
-                            isFavorite = node.isFavorite,
-                            onToggleFavorite = {
-                                onToggleFavorite?.invoke(node)
-                            },
-                            onTranslate = onTranslate,
-                            onClearTranslation = onClearTranslation,
-                            onToolApproval = onToolApproval,
-                            onToolAnswer = onToolAnswer,
-                            lastMessage = index == lastDisplayedIndex,
-                        )
-                    }
-                }
-            }
 
-            eventsByBoundary[displayedNodeCount].orEmpty().forEach { event ->
-                item(key = "compression_event_tail_${event.id}") {
-                    CompressionBoundaryEvent(
-                        event = event,
-                        latest = event.id == latestCompressionEventId,
-                        expanded = expandedCompressionEventId == event.id,
-                        latestPage = latestCompressionPage,
-                        ledgerStatus = if (event.id == latestCompressionEventId) {
-                            conversation.compressionState.memoryLedgerStatus
-                        } else {
-                            null
-                        },
-                        ledgerError = if (event.id == latestCompressionEventId) {
-                            conversation.compressionState.memoryLedgerError
-                        } else {
-                            null
-                        },
-                        onRegenerate = if (event.id == latestCompressionEventId) {
-                            {
-                                regenerateTarget = if (latestCompressionPage == CompressionCardPage.DialogueSummary) {
-                                    CompressionRegenerationTarget.DialogueSummary
+                    is ChatTimelineMessageItem -> {
+                        ListSelectableItem(
+                            key = item.model.node.id,
+                            onSelectChange = {
+                                if (!selectedItems.contains(item.model.node.id)) {
+                                    selectedItems.add(item.model.node.id)
                                 } else {
-                                    CompressionRegenerationTarget.MemoryLedger
+                                    selectedItems.remove(item.model.node.id)
                                 }
-                                showRegenerateConfirm = true
-                            }
-                        } else {
-                            null
-                        },
-                        onEditLatestDialogueSummary = if (event.id == latestCompressionEventId) {
-                            {
-                                editingLatestSummaryText = event.dialogueSummaryText
-                                latestCompressionPage = CompressionCardPage.DialogueSummary
-                                showEditLatestSummaryDialog = true
-                            }
-                        } else {
-                            null
-                        },
-                        onPageChanged = { latestCompressionPage = it },
-                        onToggle = {
-                            expandedCompressionEventId = if (expandedCompressionEventId == event.id) {
-                                null
-                            } else {
-                                event.id
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                            },
+                            selectedKeys = selectedItems,
+                            enabled = selecting,
+                        ) {
+                            ChatMessage(
+                                renderModel = item.model.renderModel,
+                                loading = loading && item.model.isLastMessage,
+                                onRegenerate = {
+                                    onRegenerate(item.model.message)
+                                },
+                                onEdit = {
+                                    onEdit(item.model.message)
+                                },
+                                onFork = {
+                                    onForkMessage(item.model.message)
+                                },
+                                onDelete = {
+                                    onDelete(item.model.message)
+                                },
+                                onShare = {
+                                    selecting = true
+                                    selectedItems.clear()
+                                    selectedItems.addAll(
+                                        messageItems
+                                            .filter { candidate -> candidate.model.globalIndex <= item.model.globalIndex }
+                                            .map { candidate -> candidate.model.node.id }
+                                    )
+                                },
+                                onUpdate = {
+                                    onUpdateMessage(it)
+                                },
+                                isFavorite = item.model.node.isFavorite,
+                                onToggleFavorite = {
+                                    onToggleFavorite?.invoke(item.model.node)
+                                },
+                                onTranslate = onTranslate,
+                                onClearTranslation = onClearTranslation,
+                                onToolApproval = onToolApproval,
+                                onToolAnswer = onToolAnswer,
+                                lastMessage = item.model.isLastMessage,
+                            )
+                        }
+                    }
                 }
             }
 
@@ -737,7 +607,7 @@ private fun ChatListNormal(
                                 if (selectedItems.isNotEmpty()) {
                                     selectedItems.clear()
                                 } else {
-                                    selectedItems.addAll(displayedNodes.map { it.id })
+                                    selectedItems.addAll(messageItems.map { it.model.node.id })
                                 }
                             }
                         ) {
@@ -752,7 +622,7 @@ private fun ChatListNormal(
                         FilledIconButton(
                             onClick = {
                                 selecting = false
-                                val messages = displayedNodes.filter { it.id in selectedItems }
+                                val messages = messageItems.filter { it.model.node.id in selectedItems }
                                 if (messages.isNotEmpty()) {
                                     showExportSheet = true
                                 }
@@ -771,9 +641,10 @@ private fun ChatListNormal(
                     showExportSheet = false
                     selectedItems.clear()
                 },
-                conversation = conversation,
-                selectedMessages = displayedNodes.filter { it.id in selectedItems }
-                    .map { it.currentMessage }
+                conversationTitle = timelineState.conversationTitle,
+                selectedMessages = messageItems
+                    .filter { it.model.node.id in selectedItems }
+                    .map { it.model.message }
             )
 
             val captureProgress = LocalScrollCaptureInProgress.current
@@ -787,9 +658,9 @@ private fun ChatListNormal(
             )
 
             // Suggestion
-            if (conversation.chatSuggestions.isNotEmpty() && !captureProgress) {
+            if (timelineState.chatSuggestions.isNotEmpty() && !captureProgress) {
                 ChatSuggestionsRow(
-                    conversation = conversation,
+                    suggestions = timelineState.chatSuggestions,
                     onClickSuggestion = onClickSuggestion,
                     modifier = Modifier.align(Alignment.BottomCenter)
                 )
@@ -1263,26 +1134,10 @@ private fun buildHighlightedText(
     }
 }
 
-private fun buildDisplayedNodes(
-    stableNodes: List<MessageNode>,
-    streamingTail: StreamingTailState?,
-    loadedStartIndex: Int,
-): List<MessageNode> {
-    if (streamingTail == null) return stableNodes
-
-    val displayedNodes = stableNodes.toMutableList()
-    val localStreamingIndex = streamingTail.index - loadedStartIndex
-    when {
-        localStreamingIndex in displayedNodes.indices -> displayedNodes[localStreamingIndex] = streamingTail.node
-        localStreamingIndex == displayedNodes.size -> displayedNodes.add(streamingTail.node)
-    }
-    return displayedNodes
-}
-
 @Composable
 private fun ChatListPreview(
     innerPadding: PaddingValues,
-    displayedNodes: List<MessageNode>,
+    displayedNodes: List<ChatPreviewMessageItem>,
     searchResults: List<ConversationPreviewSearchResult>,
     onSearchQueryChange: (String) -> Unit,
     onJumpToMessage: (Int) -> Unit,
@@ -1295,10 +1150,9 @@ private fun ChatListPreview(
     // 杩囨护娑堟伅锛屽悓鏃朵繚鐣欏師濮?index 閬垮厤鍚庣画 O(n) indexOf 鏌ユ壘
     val filteredMessages = remember(displayedNodes, searchQuery) {
         if (searchQuery.isBlank()) {
-            displayedNodes.mapIndexed { index, node -> index to node }
+            displayedNodes
         } else {
-            displayedNodes.mapIndexed { index, node -> index to node }
-                .filter { (_, node) -> node.currentMessage.toText().contains(searchQuery, ignoreCase = true) }
+            displayedNodes.filter { node -> node.message.toText().contains(searchQuery, ignoreCase = true) }
         }
     }
 
@@ -1347,11 +1201,11 @@ private fun ChatListPreview(
                 .weight(1f),
         ) {
             if (searchQuery.isBlank()) {
-                itemsIndexed(
+                items(
                     items = filteredMessages,
-                    key = { _, item -> item.second.id },
-                ) { _, (originalIndex, node) ->
-                    val message = node.currentMessage
+                    key = { item -> item.nodeId },
+                ) { node ->
+                    val message = node.message
                     val isUser = message.role == me.rerere.ai.core.MessageRole.USER
                     Column(
                         modifier = Modifier
@@ -1368,7 +1222,7 @@ private fun ChatListPreview(
                             Row(
                                 modifier = Modifier
                                     .clickable {
-                                        onJumpToMessage(originalIndex)
+                                        onJumpToMessage(node.globalIndex)
                                     }
                                     .padding(horizontal = 8.dp, vertical = 6.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1449,7 +1303,7 @@ private fun ChatListPreview(
 @Composable
 private fun ChatSuggestionsRow(
     modifier: Modifier = Modifier,
-    conversation: Conversation,
+    suggestions: List<String>,
     onClickSuggestion: (String) -> Unit
 ) {
     LazyRow(
@@ -1459,7 +1313,7 @@ private fun ChatSuggestionsRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        items(conversation.chatSuggestions) { suggestion ->
+        items(suggestions) { suggestion ->
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
@@ -1580,4 +1434,3 @@ private fun BoxScope.MessageJumper(
         }
     }
 }
-

@@ -113,7 +113,7 @@ import kotlin.time.DurationUnit
 fun ChatExportSheet(
     visible: Boolean,
     onDismissRequest: () -> Unit,
-    conversation: Conversation,
+    conversationTitle: String,
     selectedMessages: List<UIMessage>
 ) {
     val context = LocalContext.current
@@ -141,7 +141,7 @@ fun ChatExportSheet(
                     stringResource(id = R.string.chat_page_export_success, "Markdown")
                 OutlinedCard(
                     onClick = {
-                        exportToMarkdown(context, conversation, selectedMessages)
+                        exportToMarkdown(context, conversationTitle, selectedMessages)
                         toaster.show(
                             markdownSuccessMessage,
                             type = ToastType.Success
@@ -209,7 +209,7 @@ fun ChatExportSheet(
                                                 context = context,
                                                 scope = scope,
                                                 density = density,
-                                                conversation = conversation,
+                                                conversationTitle = conversationTitle,
                                                 messages = selectedMessages,
                                                 settings = settings,
                                                 options = imageExportOptions
@@ -241,13 +241,13 @@ fun ChatExportSheet(
 
 private fun exportToMarkdown(
     context: Context,
-    conversation: Conversation,
+    conversationTitle: String,
     messages: List<UIMessage>
 ) {
     val filename = "chat-export-${LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"))}.md"
 
     val sb = buildAnnotatedString {
-        append("# ${conversation.title}\n\n")
+        append("# $conversationTitle\n\n")
         append("*Exported on ${LocalDateTime.now().toLocalString()}*\n\n")
 
         messages.forEach { message ->
@@ -382,7 +382,7 @@ private suspend fun exportToImage(
     context: Context,
     scope: CoroutineScope,
     density: Density,
-    conversation: Conversation,
+    conversationTitle: String,
     messages: List<UIMessage>,
     settings: Settings,
     options: ImageExportOptions = ImageExportOptions()
@@ -404,7 +404,7 @@ private suspend fun exportToImage(
         content = {
             CompositionLocalProvider(LocalSettings provides settings) {
                 ExportedChatImage(
-                    conversation = conversation,
+                    conversationTitle = conversationTitle,
                     messages = messages,
                     options = options
                 )
@@ -450,7 +450,7 @@ data class ImageExportOptions(val expandReasoning: Boolean = false)
 
 @Composable
 private fun ExportedChatImage(
-    conversation: Conversation,
+    conversationTitle: String,
     messages: List<UIMessage>,
     options: ImageExportOptions = ImageExportOptions()
 ) {
@@ -481,7 +481,7 @@ private fun ExportedChatImage(
                     ) {
                         Column(modifier = Modifier.weight(1f, fill = false)) {
                             Text(
-                                text = conversation.title,
+                                text = conversationTitle,
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
                             )

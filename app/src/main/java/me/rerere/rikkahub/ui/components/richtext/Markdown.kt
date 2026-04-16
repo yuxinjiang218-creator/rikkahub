@@ -102,6 +102,34 @@ private val BLOCK_LATEX_REGEX = Regex("\\\\\\[(.+?)\\\\\\]", RegexOption.DOT_MAT
 val THINKING_REGEX = Regex("<think>([\\s\\S]*?)(?:</think>|$)", RegexOption.DOT_MATCHES_ALL)
 private val CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```|`[^`\n]*`", RegexOption.DOT_MATCHES_ALL)
 private val BREAK_LINE_REGEX = Regex("(?i)<br\\s*/?>")
+private const val MARKDOWN_PARSE_CACHE_LIMIT = 96
+
+private object MarkdownParseCache {
+    private val cache = object : LinkedHashMap<String, Pair<String, ASTNode>>(MARKDOWN_PARSE_CACHE_LIMIT, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<String, ASTNode>>): Boolean {
+            return size > MARKDOWN_PARSE_CACHE_LIMIT
+        }
+    }
+
+    fun get(content: String): Pair<String, ASTNode>? = synchronized(cache) {
+        cache[content]
+    }
+
+    fun getOrParse(content: String): Pair<String, ASTNode> {
+        get(content)?.let { return it }
+        val parsed = parseMarkdownContent(content)
+        synchronized(cache) {
+            cache[content] = parsed
+        }
+        return parsed
+    }
+}
+
+private fun parseMarkdownContent(content: String): Pair<String, ASTNode> {
+    val preprocessed = preProcess(content)
+    val astTree = parser.buildMarkdownTreeFromString(preprocessed)
+    return preprocessed to astTree
+}
 
 // 预处理markdown内容
 private fun preProcess(content: String): String {
@@ -192,10 +220,8 @@ fun MarkdownBlock(
     onClickCitation: (String) -> Unit = {}
 ) {
     var (data, setData) = remember {
-        val preprocessed = preProcess(content)
-        val astTree = parser.buildMarkdownTreeFromString(preprocessed)
         mutableStateOf(
-            value = preprocessed to astTree,
+            value = MarkdownParseCache.getOrParse(content),
             policy = referentialEqualityPolicy(),
         )
     }
@@ -205,9 +231,7 @@ fun MarkdownBlock(
     val updatedContent by rememberUpdatedState(content)
     LaunchedEffect(Unit) {
         snapshotFlow { updatedContent }.distinctUntilChanged().mapLatest {
-            val preprocessed = preProcess(it)
-            val astTree = parser.buildMarkdownTreeFromString(preprocessed)
-            preprocessed to astTree
+            MarkdownParseCache.getOrParse(it)
         }.catch { exception -> exception.printStackTrace() }.flowOn(Dispatchers.Default) // 在后台线程解析AST树
             .collect {
                 setData(it)

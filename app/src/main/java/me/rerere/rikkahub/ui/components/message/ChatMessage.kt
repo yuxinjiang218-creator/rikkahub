@@ -95,13 +95,19 @@ import me.rerere.rikkahub.utils.urlDecode
 import java.util.Locale
 import kotlin.time.Duration.Companion.milliseconds
 
+@androidx.compose.runtime.Immutable
+data class ChatMessageRenderModel(
+    val node: MessageNode,
+    val message: UIMessage,
+    val model: Model? = null,
+    val assistant: Assistant? = null,
+)
+
 @Composable
 fun ChatMessage(
-    node: MessageNode,
+    renderModel: ChatMessageRenderModel,
     modifier: Modifier = Modifier,
     loading: Boolean = false,
-    model: Model? = null,
-    assistant: Assistant? = null,
     lastMessage: Boolean = false,
     onFork: () -> Unit,
     onRegenerate: () -> Unit,
@@ -116,7 +122,10 @@ fun ChatMessage(
     onToolApproval: ((toolCallId: String, approved: Boolean, reason: String) -> Unit)? = null,
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
 ) {
-    val message = node.messages[node.selectIndex]
+    val node = renderModel.node
+    val message = renderModel.message
+    val model = renderModel.model
+    val assistant = renderModel.assistant
     val settings = LocalSettings.current.displaySetting
     val textStyle = LocalTextStyle.current.copy(
         fontSize = LocalTextStyle.current.fontSize * settings.fontSizeRatio,
@@ -255,6 +264,52 @@ fun ChatMessage(
     }
 }
 
+@Composable
+fun ChatMessage(
+    node: MessageNode,
+    modifier: Modifier = Modifier,
+    loading: Boolean = false,
+    model: Model? = null,
+    assistant: Assistant? = null,
+    lastMessage: Boolean = false,
+    onFork: () -> Unit,
+    onRegenerate: () -> Unit,
+    onEdit: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit,
+    onUpdate: (MessageNode) -> Unit,
+    isFavorite: Boolean = false,
+    onToggleFavorite: (() -> Unit)? = null,
+    onTranslate: ((UIMessage, Locale) -> Unit)? = null,
+    onClearTranslation: (UIMessage) -> Unit = {},
+    onToolApproval: ((toolCallId: String, approved: Boolean, reason: String) -> Unit)? = null,
+    onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
+) {
+    ChatMessage(
+        renderModel = ChatMessageRenderModel(
+            node = node,
+            message = node.messages[node.selectIndex],
+            model = model,
+            assistant = assistant,
+        ),
+        modifier = modifier,
+        loading = loading,
+        lastMessage = lastMessage,
+        onFork = onFork,
+        onRegenerate = onRegenerate,
+        onEdit = onEdit,
+        onShare = onShare,
+        onDelete = onDelete,
+        onUpdate = onUpdate,
+        isFavorite = isFavorite,
+        onToggleFavorite = onToggleFavorite,
+        onTranslate = onTranslate,
+        onClearTranslation = onClearTranslation,
+        onToolApproval = onToolApproval,
+        onToolAnswer = onToolAnswer,
+    )
+}
+
 @OptIn(FlowPreview::class)
 @Composable
 private fun MessagePartsBlock(
@@ -351,7 +406,6 @@ private fun MessagePartsBlock(
                         SelectionContainer {
                             if (role == MessageRole.USER) {
                                 Surface(
-                                    modifier = Modifier.animateContentSize(),
                                     shape = MaterialTheme.shapes.medium,
                                     tonalElevation = 2.dp,
                                     onClick = { onUserMessageClick?.invoke() },
@@ -370,7 +424,6 @@ private fun MessagePartsBlock(
                             } else {
                                 if (settings.displaySetting.showAssistantBubble) {
                                     Surface(
-                                        modifier = Modifier.animateContentSize(),
                                         shape = MaterialTheme.shapes.medium,
                                         tonalElevation = 2.dp,
                                     ) {
@@ -393,8 +446,6 @@ private fun MessagePartsBlock(
                                             visual = true,
                                         ),
                                         onClickCitation = handleClickCitation,
-                                        modifier = Modifier
-                                            .animateContentSize()
                                     )
                                 }
                             }
@@ -539,9 +590,7 @@ private fun MessagePartsBlock(
 
     // Annotations (always rendered at the end)
     if (annotations.isNotEmpty()) {
-        Column(
-            modifier = Modifier.animateContentSize(),
-        ) {
+        Column {
             var expand by remember { mutableStateOf(false) }
             if (expand) {
                 ProvideTextStyle(

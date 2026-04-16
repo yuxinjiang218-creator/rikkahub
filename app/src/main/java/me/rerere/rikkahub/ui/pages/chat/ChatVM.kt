@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
@@ -33,8 +34,11 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.isEmptyInputMessage
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.tools.LocalToolOption
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.getAssistantById
+import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
@@ -63,14 +67,16 @@ import kotlin.uuid.Uuid
 
 private const val TAG = "ChatVM"
 
-data class ChatHeaderState(
-    val title: String = "",
-    val hasMessages: Boolean = false,
-    val assistantId: Uuid? = null,
+private data class ChatInputMetaState(
+    val workflowEnabled: Boolean,
+    val currentChatModel: Model?,
+    val enableWebSearch: Boolean,
 )
 
-data class ChatInputBarState(
-    val messageCount: Int = 0,
+private data class ChatInputRuntimeState(
+    val loading: Boolean,
+    val compressionUiState: CompressionUiState?,
+    val showLedgerGenerationDialog: Boolean,
 )
 
 private const val PREVIEW_SEARCH_LIMIT = 50
@@ -96,22 +102,6 @@ class ChatVM(
     private val _previewSearchResults = MutableStateFlow<List<ConversationPreviewSearchResult>>(emptyList())
     val previewSearchResults: StateFlow<List<ConversationPreviewSearchResult>> = _previewSearchResults.asStateFlow()
     private var previewSearchJob: Job? = null
-    val headerState: StateFlow<ChatHeaderState> = stableConversation
-        .map { conversation ->
-            ChatHeaderState(
-                title = conversation.title,
-                hasMessages = conversation.messageNodes.isNotEmpty(),
-                assistantId = conversation.assistantId,
-            )
-        }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, ChatHeaderState())
-    val inputBarState: StateFlow<ChatInputBarState> = stableConversation
-        .map { conversation ->
-            ChatInputBarState(
-                messageCount = conversation.messageNodes.size,
-            )
-        }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, ChatInputBarState())
     var chatListInitialized by mutableStateOf(false) // 鑱婂ぉ鍒楄〃鏄惁宸茬粡婊氬姩鍒板簳閮?
 
     // 鑱婂ぉ杈撳叆鐘舵€?- 淇濆瓨鍦?ViewModel 涓伩鍏?TransactionTooLargeException
@@ -243,6 +233,90 @@ class ChatVM(
         chatService.getLedgerGenerationUiStateFlow(_conversationId)
             .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val compressionScrollEvents: SharedFlow<Pair<Uuid, Long>> = chatService.compressionScrollEvents
+    private val workflowEnabledState: StateFlow<Boolean> = combine(stableConversation, settings) { conversation, settings ->
+        val assistant = settings.getAssistantById(conversation.assistantId) ?: settings.getCurrentAssistant()
+        assistant.localTools.contains(LocalToolOption.WorkflowControl)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val chatChromeState: StateFlow<ChatChromeUiState> = combine(
+        stableConversation,
+        settings,
+        workflowEnabledState,
+    ) { conversation, settings, workflowEnabled ->
+        buildChatChromeUiState(
+            conversation = conversation,
+            settings = settings,
+            workflowEnabled = workflowEnabled,
+            defaultAssistantLabel = context.getString(R.string.assistant_page_default_assistant),
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatChromeUiState())
+    private val chatInputMetaState: StateFlow<ChatInputMetaState> = combine(
+        workflowEnabledState,
+        currentChatModel,
+        enableWebSearch,
+    ) { workflowEnabled, currentChatModel, enableWebSearch ->
+        ChatInputMetaState(
+            workflowEnabled = workflowEnabled,
+            currentChatModel = currentChatModel,
+            enableWebSearch = enableWebSearch,
+        )
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.Eagerly,
+        ChatInputMetaState(
+            workflowEnabled = false,
+            currentChatModel = null,
+            enableWebSearch = false,
+        )
+    )
+    private val chatInputRuntimeState: StateFlow<ChatInputRuntimeState> = combine(
+        conversationJob,
+        compressionUiState,
+        ledgerGenerationUiState,
+    ) { loadingJob, compressionUiState, ledgerGenerationUiState ->
+        ChatInputRuntimeState(
+            loading = loadingJob != null,
+            compressionUiState = compressionUiState,
+            showLedgerGenerationDialog = ledgerGenerationUiState != null,
+        )
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.Eagerly,
+        ChatInputRuntimeState(
+            loading = false,
+            compressionUiState = null,
+            showLedgerGenerationDialog = false,
+        )
+    )
+    val chatInputUiState: StateFlow<ChatInputUiState> = combine(
+        stableConversation,
+        chatInputMetaState,
+        chatInputRuntimeState,
+    ) { conversation, metaState, runtimeState ->
+        buildChatInputUiState(
+            conversation = conversation,
+            workflowEnabled = metaState.workflowEnabled,
+            currentChatModel = metaState.currentChatModel,
+            loading = runtimeState.loading,
+            enableWebSearch = metaState.enableWebSearch,
+            compressionUiState = runtimeState.compressionUiState,
+            showLedgerGenerationDialog = runtimeState.showLedgerGenerationDialog,
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatInputUiState())
+    val chatTimelineUiState: StateFlow<ChatTimelineUiState> = combine(
+        stableConversation,
+        settings,
+        messageWindowState,
+        streamingTail,
+        previewSearchResults,
+    ) { conversation, settings, messageWindowState, streamingTail, previewSearchResults ->
+        buildChatTimelineUiState(
+            conversation = conversation,
+            settings = settings,
+            windowState = messageWindowState,
+            streamingTail = streamingTail,
+            previewSearchResults = previewSearchResults,
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatTimelineUiState())
 
     fun dismissError(id: Uuid) = chatService.dismissError(id)
 
@@ -591,6 +665,21 @@ class ChatVM(
         }
     }
 
+    fun updateMessageNode(newNode: MessageNode) {
+        chatService.updateConversationState(_conversationId) { currentConversation ->
+            currentConversation.copy(
+                messageNodes = currentConversation.messageNodes.map { existingNode ->
+                    if (existingNode.id == newNode.id) {
+                        newNode
+                    } else {
+                        existingNode
+                    }
+                }
+            )
+        }
+        saveConversationAsync()
+    }
+
     fun toggleMessageFavorite(node: MessageNode) {
         viewModelScope.launch {
             val currentlyFavorited = favoriteRepository.isNodeFavorited(_conversationId, node.id)
@@ -675,5 +764,3 @@ private fun ConversationMessageSearchResult.toPreviewSearchResult(): Conversatio
         snippet = snippet,
     )
 }
-
-
