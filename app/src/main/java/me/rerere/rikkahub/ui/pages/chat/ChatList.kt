@@ -136,6 +136,7 @@ private enum class CompressionCardPage {
 fun ChatList(
     innerPadding: PaddingValues,
     timelineState: ChatTimelineUiState,
+    streamingTailItem: ChatTimelineMessageItem? = null,
     state: LazyListState,
     loading: Boolean,
     previewMode: Boolean,
@@ -180,6 +181,7 @@ fun ChatList(
             ChatListNormal(
                 innerPadding = innerPadding,
                 timelineState = timelineState,
+                streamingTailItem = streamingTailItem,
                 state = state,
                 loading = loading,
                 settings = settings,
@@ -210,6 +212,7 @@ fun ChatList(
 private fun ChatListNormal(
     innerPadding: PaddingValues,
     timelineState: ChatTimelineUiState,
+    streamingTailItem: ChatTimelineMessageItem?,
     state: LazyListState,
     loading: Boolean,
     settings: Settings,
@@ -235,7 +238,7 @@ private fun ChatListNormal(
     val scope = rememberCoroutineScope()
     var isRecentScroll by remember { mutableStateOf(false) }
     val timelineItems = timelineState.items
-    val messageItems = remember(timelineItems) {
+    val stableMessageItems = remember(timelineItems) {
         timelineItems.filterIsInstance<ChatTimelineMessageItem>()
     }
     val messageListIndexByNodeId = remember(timelineItems) {
@@ -245,6 +248,13 @@ private fun ChatListNormal(
                     put(item.model.node.id, index)
                 }
             }
+        }
+    }
+    val allMessageItems = remember(stableMessageItems, streamingTailItem) {
+        if (streamingTailItem == null) {
+            stableMessageItems
+        } else {
+            stableMessageItems + streamingTailItem
         }
     }
     val density = LocalDensity.current
@@ -278,7 +288,7 @@ private fun ChatListNormal(
 
     // 瀵硅瘽澶у皬璀﹀憡瀵硅瘽妗?
     val sizeInfo = rememberConversationSizeInfo(
-        nodeCount = timelineState.renderedMessageCount,
+        nodeCount = timelineState.totalStableCount + if (streamingTailItem != null) 1 else 0,
         lastAssistantInputTokens = timelineState.lastAssistantInputTokens,
     )
     var showSizeWarningDialog by rememberSaveable(timelineState.conversationTitle) { mutableStateOf(true) }
@@ -387,7 +397,7 @@ private fun ChatListNormal(
         var pendingAnchorNodeId by remember { mutableStateOf<Uuid?>(null) }
         var pendingAnchorOffset by remember { mutableStateOf(0) }
         LaunchedEffect(timelineState.hasOlder, timelineState.isLoadingOlder, state.firstVisibleItemIndex, timelineItems) {
-            if (!timelineState.hasOlder || timelineState.isLoadingOlder || messageItems.isEmpty()) return@LaunchedEffect
+            if (!timelineState.hasOlder || timelineState.isLoadingOlder || stableMessageItems.isEmpty()) return@LaunchedEffect
             if (!isRecentScroll && state.firstVisibleItemIndex == 0 && state.firstVisibleItemScrollOffset == 0) {
                 return@LaunchedEffect
             }
@@ -492,7 +502,7 @@ private fun ChatListNormal(
                         ) {
                             ChatMessage(
                                 renderModel = item.model.renderModel,
-                                loading = loading && item.model.isLastMessage,
+                                loading = loading && item.model.isLastMessage && streamingTailItem == null,
                                 onRegenerate = {
                                     onRegenerate(item.model.message)
                                 },
@@ -503,13 +513,13 @@ private fun ChatListNormal(
                                     onForkMessage(item.model.message)
                                 },
                                 onDelete = {
-                                    onDelete(item.model.message)
+                                onDelete(item.model.message)
                                 },
                                 onShare = {
                                     selecting = true
                                     selectedItems.clear()
                                     selectedItems.addAll(
-                                        messageItems
+                                        allMessageItems
                                             .filter { candidate -> candidate.model.globalIndex <= item.model.globalIndex }
                                             .map { candidate -> candidate.model.node.id }
                                     )
@@ -525,9 +535,67 @@ private fun ChatListNormal(
                                 onClearTranslation = onClearTranslation,
                                 onToolApproval = onToolApproval,
                                 onToolAnswer = onToolAnswer,
-                                lastMessage = item.model.isLastMessage,
+                                lastMessage = item.model.isLastMessage && streamingTailItem == null,
                             )
                         }
+                    }
+                }
+            }
+
+            if (streamingTailItem != null) {
+                item(
+                    key = streamingTailItem.stableKey,
+                    contentType = streamingTailItem.contentType,
+                ) {
+                    ListSelectableItem(
+                        key = streamingTailItem.model.node.id,
+                        onSelectChange = {
+                            if (!selectedItems.contains(streamingTailItem.model.node.id)) {
+                                selectedItems.add(streamingTailItem.model.node.id)
+                            } else {
+                                selectedItems.remove(streamingTailItem.model.node.id)
+                            }
+                        },
+                        selectedKeys = selectedItems,
+                        enabled = selecting,
+                    ) {
+                        ChatMessage(
+                            renderModel = streamingTailItem.model.renderModel,
+                            loading = loading,
+                            onRegenerate = {
+                                onRegenerate(streamingTailItem.model.message)
+                            },
+                            onEdit = {
+                                onEdit(streamingTailItem.model.message)
+                            },
+                            onFork = {
+                                onForkMessage(streamingTailItem.model.message)
+                            },
+                            onDelete = {
+                                onDelete(streamingTailItem.model.message)
+                            },
+                            onShare = {
+                                selecting = true
+                                selectedItems.clear()
+                                selectedItems.addAll(
+                                    allMessageItems
+                                        .filter { candidate -> candidate.model.globalIndex <= streamingTailItem.model.globalIndex }
+                                        .map { candidate -> candidate.model.node.id }
+                                )
+                            },
+                            onUpdate = {
+                                onUpdateMessage(it)
+                            },
+                            isFavorite = streamingTailItem.model.node.isFavorite,
+                            onToggleFavorite = {
+                                onToggleFavorite?.invoke(streamingTailItem.model.node)
+                            },
+                            onTranslate = onTranslate,
+                            onClearTranslation = onClearTranslation,
+                            onToolApproval = onToolApproval,
+                            onToolAnswer = onToolAnswer,
+                            lastMessage = true,
+                        )
                     }
                 }
             }
@@ -607,7 +675,7 @@ private fun ChatListNormal(
                                 if (selectedItems.isNotEmpty()) {
                                     selectedItems.clear()
                                 } else {
-                                    selectedItems.addAll(messageItems.map { it.model.node.id })
+                                    selectedItems.addAll(allMessageItems.map { it.model.node.id })
                                 }
                             }
                         ) {
@@ -622,7 +690,7 @@ private fun ChatListNormal(
                         FilledIconButton(
                             onClick = {
                                 selecting = false
-                                val messages = messageItems.filter { it.model.node.id in selectedItems }
+                                val messages = allMessageItems.filter { it.model.node.id in selectedItems }
                                 if (messages.isNotEmpty()) {
                                     showExportSheet = true
                                 }
@@ -642,7 +710,7 @@ private fun ChatListNormal(
                     selectedItems.clear()
                 },
                 conversationTitle = timelineState.conversationTitle,
-                selectedMessages = messageItems
+                selectedMessages = allMessageItems
                     .filter { it.model.node.id in selectedItems }
                     .map { it.model.message }
             )

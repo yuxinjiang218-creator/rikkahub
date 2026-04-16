@@ -343,13 +343,12 @@ private fun StreamingChatList(
     onAutoScrollCheck: (String) -> Unit,
 ) {
     val chatTimelineUiState by vm.chatTimelineUiState.collectAsStateWithLifecycle()
+    val chatStreamingTailUiState by vm.chatStreamingTailUiState.collectAsStateWithLifecycle()
     val streamingUiTick by vm.streamingUiTick.collectAsStateWithLifecycle()
     val autoScrollTargetIndex = chatTimelineUiState.items.size +
-        if (loading) {
-            if (chatTimelineUiState.isLoadingOlder) 2 else 1
-        } else {
-            0
-        }
+        if (chatTimelineUiState.isLoadingOlder) 1 else 0 +
+        if (chatStreamingTailUiState.item != null) 1 else 0 +
+        if (loading) 1 else 0
 
     StreamingChatListAutoScrollEffect(
         state = state,
@@ -364,6 +363,7 @@ private fun StreamingChatList(
     ChatList(
         innerPadding = innerPadding,
         timelineState = chatTimelineUiState,
+        streamingTailItem = chatStreamingTailUiState.item,
         state = state,
         loading = loading,
         previewMode = previewMode,

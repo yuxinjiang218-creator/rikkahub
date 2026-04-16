@@ -306,17 +306,28 @@ class ChatVM(
         stableConversation,
         settings,
         messageWindowState,
-        streamingTail,
         previewSearchResults,
-    ) { conversation, settings, messageWindowState, streamingTail, previewSearchResults ->
+    ) { conversation, settings, messageWindowState, previewSearchResults ->
         buildChatTimelineUiState(
             conversation = conversation,
             settings = settings,
             windowState = messageWindowState,
-            streamingTail = streamingTail,
             previewSearchResults = previewSearchResults,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatTimelineUiState())
+    val chatStreamingTailUiState: StateFlow<ChatStreamingTailUiState> = combine(
+        stableConversation,
+        settings,
+        messageWindowState,
+        streamingTail,
+    ) { conversation, settings, messageWindowState, streamingTail ->
+        buildChatStreamingTailUiState(
+            conversation = conversation,
+            settings = settings,
+            windowState = messageWindowState,
+            streamingTail = streamingTail,
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatStreamingTailUiState())
 
     fun dismissError(id: Uuid) = chatService.dismissError(id)
 

@@ -52,11 +52,15 @@ data class ChatTimelineUiState(
     val chatSuggestions: List<String> = emptyList(),
     val loadedStartIndex: Int = 0,
     val totalStableCount: Int = 0,
-    val renderedMessageCount: Int = 0,
     val hasOlder: Boolean = false,
     val isLoadingOlder: Boolean = false,
     val latestCompressionEventId: Long? = null,
     val lastAssistantInputTokens: Int = 0,
+)
+
+@Immutable
+data class ChatStreamingTailUiState(
+    val item: ChatTimelineMessageItem? = null,
 )
 
 @Immutable
@@ -165,14 +169,9 @@ internal fun buildChatTimelineUiState(
     conversation: Conversation,
     settings: Settings,
     windowState: ChatMessageWindowState,
-    streamingTail: StreamingTailState?,
     previewSearchResults: List<ConversationPreviewSearchResult>,
 ): ChatTimelineUiState {
-    val displayedNodes = buildDisplayedNodes(
-        stableNodes = windowState.loadedStableNodes,
-        streamingTail = streamingTail,
-        loadedStartIndex = windowState.loadedStartIndex,
-    )
+    val displayedNodes = windowState.loadedStableNodes
     val normalizedCompressionEvents = localizeCompressionEvents(
         events = conversation.compressionEvents,
         totalStableCount = windowState.totalStableCount,
@@ -254,11 +253,6 @@ internal fun buildChatTimelineUiState(
         ?.usage
         ?.promptTokens
         ?: 0
-    val renderedMessageCount = windowState.totalStableCount + if (streamingTail != null && streamingTail.index >= windowState.totalStableCount) {
-        1
-    } else {
-        0
-    }
 
     return ChatTimelineUiState(
         conversationTitle = conversation.title,
@@ -268,7 +262,6 @@ internal fun buildChatTimelineUiState(
         chatSuggestions = conversation.chatSuggestions,
         loadedStartIndex = windowState.loadedStartIndex,
         totalStableCount = windowState.totalStableCount,
-        renderedMessageCount = renderedMessageCount,
         hasOlder = windowState.hasOlder,
         isLoadingOlder = windowState.isLoadingOlder,
         latestCompressionEventId = latestCompressionEventId,
@@ -276,18 +269,33 @@ internal fun buildChatTimelineUiState(
     )
 }
 
-private fun buildDisplayedNodes(
-    stableNodes: List<MessageNode>,
+internal fun buildChatStreamingTailUiState(
+    conversation: Conversation,
+    settings: Settings,
+    windowState: ChatMessageWindowState,
     streamingTail: StreamingTailState?,
-    loadedStartIndex: Int,
-): List<MessageNode> {
-    if (streamingTail == null) return stableNodes
-
-    val displayedNodes = stableNodes.toMutableList()
-    val localStreamingIndex = streamingTail.index - loadedStartIndex
-    when {
-        localStreamingIndex in displayedNodes.indices -> displayedNodes[localStreamingIndex] = streamingTail.node
-        localStreamingIndex == displayedNodes.size -> displayedNodes.add(streamingTail.node)
+): ChatStreamingTailUiState {
+    if (streamingTail == null) {
+        return ChatStreamingTailUiState()
     }
-    return displayedNodes
+    val localStreamingIndex = streamingTail.index - windowState.loadedStartIndex
+    if (localStreamingIndex != windowState.loadedStableNodes.size) {
+        return ChatStreamingTailUiState()
+    }
+
+    val assistant = settings.getAssistantById(conversation.assistantId)
+    return ChatStreamingTailUiState(
+        item = ChatTimelineMessageItem(
+            model = ChatMessageItemModel(
+                renderModel = ChatMessageRenderModel(
+                    node = streamingTail.node,
+                    message = streamingTail.node.currentMessage,
+                    model = streamingTail.node.currentMessage.modelId?.let(settings::findModelById),
+                    assistant = assistant,
+                ),
+                globalIndex = streamingTail.index,
+                isLastMessage = true,
+            )
+        )
+    )
 }
