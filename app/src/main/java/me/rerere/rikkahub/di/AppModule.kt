@@ -14,6 +14,9 @@ import me.rerere.rikkahub.data.container.BackgroundProcessManager
 import me.rerere.rikkahub.data.container.PRootManager
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.service.ChatService
+import me.rerere.rikkahub.service.ChatCompressionService
+import me.rerere.rikkahub.service.ChatMutationService
+import me.rerere.rikkahub.service.ChatNoticeService
 import me.rerere.rikkahub.service.ConversationArtifactService
 import me.rerere.rikkahub.service.ConversationDerivedWorkService
 import me.rerere.rikkahub.service.ConversationPersistenceService
@@ -183,6 +186,43 @@ val appModule = module {
     }
 
     single {
+        ChatNoticeService(
+            context = get(),
+            runtimeService = get(),
+            diagnosticsRecorder = get(),
+        )
+    }
+
+    single {
+        ChatMutationService(
+            context = get(),
+            appScope = get(),
+            settingsStore = get(),
+            generationHandler = get(),
+            filesManager = get(),
+            runtimeService = get(),
+            persistenceService = get(),
+            noticeService = get(),
+        )
+    }
+
+    single {
+        ChatCompressionService(
+            context = get(),
+            settingsStore = get(),
+            conversationRepo = get(),
+            memoryIndexRepository = get(),
+            pendingLedgerBatchRepository = get(),
+            sourcePreviewRepository = get(),
+            providerManager = get(),
+            runtimeService = get(),
+            persistenceService = get(),
+            artifactService = get(),
+            noticeService = get(),
+        )
+    }
+
+    single {
         ChatService(
             context = get(),
             appScope = get(),
@@ -207,6 +247,9 @@ val appModule = module {
             artifactService = get(),
             derivedWorkService = get(),
             diagnosticsRecorder = get(),
+            noticeService = get(),
+            mutationService = get(),
+            compressionService = get(),
         )
     }
 

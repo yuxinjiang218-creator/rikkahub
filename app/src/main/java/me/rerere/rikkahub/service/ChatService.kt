@@ -268,41 +268,31 @@ class ChatService(
     private val artifactService: ConversationArtifactService,
     private val derivedWorkService: ConversationDerivedWorkService,
     private val diagnosticsRecorder: PerformanceDiagnosticsRecorder,
+    private val noticeService: ChatNoticeService,
+    private val mutationService: ChatMutationService,
+    private val compressionService: ChatCompressionService,
 ) {
-    // 错误状态
-    private val _errors = MutableStateFlow<List<ChatError>>(emptyList())
-    val errors: StateFlow<List<ChatError>> = _errors.asStateFlow()
-
-    private val _compressionUiStates = MutableStateFlow<Map<Uuid, CompressionUiState>>(emptyMap())
-    private val _ledgerGenerationUiStates = MutableStateFlow<Map<Uuid, LedgerGenerationUiState>>(emptyMap())
-    private val _compressionWorkerJobs = MutableStateFlow<Map<Uuid, Job?>>(emptyMap())
-    private val _compressionScrollEvents = MutableSharedFlow<Pair<Uuid, Long>>(extraBufferCapacity = 8)
+    val errors: StateFlow<List<ChatError>> = noticeService.errors
     private val pendingStreamingUpdates = ConcurrentHashMap<Uuid, PendingStreamingUpdate>()
     private val streamingFlushJobs = ConcurrentHashMap<Uuid, Job>()
-    val compressionScrollEvents: SharedFlow<Pair<Uuid, Long>> = _compressionScrollEvents.asSharedFlow()
+    // Legacy compaction internals still compile against this buffer while live behavior routes through ChatCompressionService.
+    private val _compressionScrollEvents = MutableSharedFlow<Pair<Uuid, Long>>(extraBufferCapacity = 8)
+    val compressionScrollEvents: SharedFlow<Pair<Uuid, Long>> = compressionService.compressionScrollEvents
 
     fun addError(error: Throwable, conversationId: Uuid? = null, title: String? = null) {
-        if (error is CancellationException) return
-        _errors.update { it + ChatError(title = title, error = error, conversationId = conversationId) }
+        noticeService.addError(error, conversationId, title)
     }
 
     fun addSuccessNotice(message: String, conversationId: Uuid? = null, title: String? = null) {
-        _errors.update {
-            it + ChatError(
-                title = title,
-                error = IllegalStateException(message),
-                conversationId = conversationId,
-                kind = ChatNoticeKind.SUCCESS,
-            )
-        }
+        noticeService.addSuccessNotice(message, conversationId, title)
     }
 
     fun dismissError(id: Uuid) {
-        _errors.update { list -> list.filter { it.id != id } }
+        noticeService.dismissError(id)
     }
 
     fun clearAllErrors() {
-        _errors.value = emptyList()
+        noticeService.clearAllErrors()
     }
 
     suspend fun executeScheduledTask(task: ScheduledPromptTask): Result<ScheduledTaskExecutionResult> = runCatching {
@@ -513,33 +503,27 @@ class ChatService(
     }
 
     fun getCompressionUiStateFlow(conversationId: Uuid): Flow<CompressionUiState?> {
-        return _compressionUiStates.map { it[conversationId] }
-    }
-
-    private fun updateCompressionUiState(conversationId: Uuid, state: CompressionUiState?) {
-        _compressionUiStates.update { current ->
-            if (state == null) current - conversationId else current + (conversationId to state)
-        }
+        return compressionService.getCompressionUiStateFlow(conversationId)
     }
 
     fun getLedgerGenerationUiStateFlow(conversationId: Uuid): Flow<LedgerGenerationUiState?> {
-        return _ledgerGenerationUiStates.map { it[conversationId] }
+        return compressionService.getLedgerGenerationUiStateFlow(conversationId)
+    }
+
+    private fun updateCompressionUiState(conversationId: Uuid, state: CompressionUiState?) {
+        // Legacy bridge for compaction code that is no longer on the hot path.
     }
 
     private fun updateLedgerGenerationUiState(conversationId: Uuid, state: LedgerGenerationUiState?) {
-        _ledgerGenerationUiStates.update { current ->
-            if (state == null) current - conversationId else current + (conversationId to state)
-        }
+        // Legacy bridge for compaction code that is no longer on the hot path.
     }
 
     private fun updateCompressionWorkerJob(conversationId: Uuid, job: Job?) {
-        _compressionWorkerJobs.update { current ->
-            if (job == null) current - conversationId else current + (conversationId to job)
-        }
+        // Legacy bridge for compaction code that is no longer on the hot path.
     }
 
     fun cancelCompressionWork(conversationId: Uuid) {
-        _compressionWorkerJobs.value[conversationId]?.cancel()
+        compressionService.cancelCompressionWork(conversationId)
     }
 
     // 生成完成流
@@ -620,11 +604,12 @@ class ChatService(
 
     fun getConversationJobSnapshot(conversationId: Uuid): Job? = runtimeService.getConversationJobsSnapshot()[conversationId]
 
-    fun getCompressionUiStatesSnapshot(): Map<Uuid, CompressionUiState> = _compressionUiStates.value
+    fun getCompressionUiStatesSnapshot(): Map<Uuid, CompressionUiState> = compressionService.getCompressionUiStatesSnapshot()
 
-    fun getLedgerGenerationUiStatesSnapshot(): Map<Uuid, LedgerGenerationUiState> = _ledgerGenerationUiStates.value
+    fun getLedgerGenerationUiStatesSnapshot(): Map<Uuid, LedgerGenerationUiState> =
+        compressionService.getLedgerGenerationUiStatesSnapshot()
 
-    fun getCompressionWorkerJobsSnapshot(): Map<Uuid, Job?> = _compressionWorkerJobs.value
+    fun getCompressionWorkerJobsSnapshot(): Map<Uuid, Job?> = compressionService.getCompressionWorkerJobsSnapshot()
 
     fun getCurrentConversationSnapshotOrNull(conversationId: Uuid): Conversation? =
         runtimeService.getCurrentConversationOrNull(conversationId)
@@ -635,12 +620,7 @@ class ChatService(
         detail: String,
         phase: String? = null,
     ) {
-        diagnosticsRecorder.record(
-            category = category,
-            conversationId = conversationId,
-            detail = detail,
-            phase = phase,
-        )
+        noticeService.recordUiDiagnostic(category, conversationId, detail, phase)
     }
 
     private fun getPendingOrCurrentConversation(conversationId: Uuid): Conversation {
@@ -1480,239 +1460,26 @@ class ChatService(
         additionalPrompt: String,
         keepRecentMessages: Int = 6,
         generateMemoryLedger: Boolean = true,
-    ): Result<Unit> {
-        diagnosticsRecorder.record(
-            category = "compression-start",
-            detail = "keepRecent=$keepRecentMessages ledger=$generateMemoryLedger",
-            conversationId = conversationId,
-        )
-        updateCompressionWorkerJob(conversationId, currentCoroutineContext()[Job])
-        return runCatching<Unit> {
-            val hydratedConversation = hydrateCompressionPayload(conversationId, conversation)
-            compressConversationInternal(
-                conversationId = conversationId,
-                conversation = hydratedConversation,
-                additionalPrompt = additionalPrompt,
-                keepRecentMessages = keepRecentMessages,
-                trigger = "manual",
-                generateMemoryLedger = generateMemoryLedger,
-            )
-            Unit
-        }.also {
-            updateCompressionWorkerJob(conversationId, null)
-            diagnosticsRecorder.record(
-                category = "compression-finish",
-                detail = "success=${it.isSuccess}",
-                conversationId = conversationId,
-            )
-        }
-    }
+    ): Result<Unit> = compressionService.compressConversation(
+        conversationId = conversationId,
+        conversation = conversation,
+        additionalPrompt = additionalPrompt,
+        keepRecentMessages = keepRecentMessages,
+        generateMemoryLedger = generateMemoryLedger,
+    )
 
-    suspend fun generateMemoryIndex(conversationId: Uuid): Result<Int> = runCatching {
-        diagnosticsRecorder.record(
-            category = "memory-index-start",
-            detail = "manual=true",
-            conversationId = conversationId,
-        )
-        val settings = settingsStore.settingsFlow.first()
-        val conversation = conversationRepo.getConversationWithCompressionPayload(conversationId)
-            ?: throw IllegalStateException("Conversation not found")
-        try {
-            val indexedCount = rebuildConversationIndexes(
-                conversationId = conversationId,
-                conversation = conversation,
-                settings = settings,
-            )
-            addSuccessNotice(
-                message = context.getString(R.string.memory_index_updated),
-                conversationId = conversationId,
-                title = context.getString(R.string.memory_index_updated_title)
-            )
-            indexedCount
-        } catch (error: Throwable) {
-            saveConversation(
-                conversationId,
-                conversation.copy(
-                    memoryIndexState = conversation.memoryIndexState.copy(
-                        lastIndexStatus = "failed",
-                        lastIndexError = error.message.orEmpty()
-                    )
-                )
-            )
-            throw error
-        }
-    }.also {
-        diagnosticsRecorder.record(
-            category = "memory-index-finish",
-            detail = "success=${it.isSuccess}",
-            conversationId = conversationId,
-        )
-    }
+    suspend fun generateMemoryIndex(conversationId: Uuid): Result<Int> =
+        compressionService.generateMemoryIndex(conversationId)
 
     suspend fun regenerateLatestCompression(
         conversationId: Uuid,
         target: CompressionRegenerationTarget = CompressionRegenerationTarget.DialogueSummary,
-    ): Result<Unit> {
-        updateCompressionWorkerJob(conversationId, currentCoroutineContext()[Job])
-        return runCatching<Unit> {
-            val conversation = getConversationWithCompressionArtifacts(conversationId)
-                ?: throw IllegalStateException("Conversation not found")
-            val latestEvent = conversation.compressionEvents.latestCompressionEvent()
-                ?: throw IllegalStateException(context.getString(R.string.chat_page_compress_no_latest_summary))
-            when (target) {
-                CompressionRegenerationTarget.DialogueSummary -> {
-                    val rebuiltConversation = conversation.copy(
-                        compressionState = conversation.compressionState.copy(
-                            dialogueSummaryText = latestEvent.baseDialogueSummaryText,
-                            dialogueSummaryTokenEstimate = estimateTokenCount(
-                                latestEvent.baseDialogueSummaryText,
-                                settingsStore.settingsFlow.first().tokenEstimatorCharsPerToken
-                            ),
-                            dialogueSummaryUpdatedAt = Instant.now(),
-                            lastCompressedMessageIndex = (latestEvent.compressStartIndex - 1).coerceAtLeast(-1),
-                            memoryLedgerStatus = "stale",
-                            memoryLedgerError = "",
-                            updatedAt = Instant.now()
-                        )
-                    )
-                    // Keep the previous compression event alive until the regenerated summary
-                    // has been persisted successfully. If we remove it first and generation
-                    // fails, the latest card loses its original base summary / ledger lineage.
-                    val regeneratedConversation = compressConversationInternal(
-                        conversationId = conversationId,
-                        conversation = rebuiltConversation,
-                        additionalPrompt = latestEvent.additionalPrompt,
-                        keepRecentMessages = latestEvent.keepRecentMessages,
-                        trigger = "regenerate-dialogue-summary",
-                        generateMemoryLedger = false,
-                        baseDialogueSummaryTextOverride = latestEvent.baseDialogueSummaryText,
-                        baseRollingSummaryJsonOverride = conversation.compressionState.rollingSummaryJson.ifBlank {
-                            latestEvent.baseLedgerJson.ifBlank { latestEvent.baseSummaryJson.ifBlank { "{}" } }
-                        },
-                        compressStartIndexOverride = latestEvent.compressStartIndex,
-                        compressEndIndexOverride = latestEvent.compressEndIndex
-                    )
-                    removeSupersededCompressionArtifacts(
-                        conversationId = conversationId,
-                        conversation = regeneratedConversation,
-                        supersededEventId = latestEvent.id,
-                    )
-                }
-
-                CompressionRegenerationTarget.MemoryLedger -> {
-                    val baseLedgerJson = latestEvent.baseLedgerJson.ifBlank { latestEvent.baseSummaryJson.ifBlank { "{}" } }
-                    val rebuiltConversation = conversation.copy(
-                        compressionState = conversation.compressionState.copy(
-                            rollingSummaryJson = baseLedgerJson,
-                            rollingSummaryTokenEstimate = estimateTokenCount(
-                                baseLedgerJson,
-                                settingsStore.settingsFlow.first().tokenEstimatorCharsPerToken
-                            ),
-                            memoryLedgerStatus = "pending",
-                            memoryLedgerError = "",
-                            updatedAt = Instant.now()
-                        )
-                    )
-                    saveConversationMetadata(conversationId, rebuiltConversation)
-                    val incrementalMessages = rebuiltConversation.currentMessages
-                        .subList(latestEvent.compressStartIndex, latestEvent.compressEndIndex + 1)
-                        .joinToString("\n\n") { message -> message.toCompressionText() }
-                    pendingLedgerBatchRepository.upsertPendingBatch(
-                        conversationId = conversationId,
-                        eventId = latestEvent.id,
-                        startIndex = latestEvent.compressStartIndex,
-                        endIndex = latestEvent.compressEndIndex,
-                        incrementalMessages = incrementalMessages,
-                    )
-                    val settings = settingsStore.settingsFlow.first()
-                    val model = settings.findModelById(settings.compressModelId)
-                        ?: settings.getCurrentChatModel()
-                        ?: throw IllegalStateException("No model available for compression")
-                    val provider = model.findProvider(settings.providers)
-                        ?: throw IllegalStateException("Compression provider not found")
-                    val providerHandler = providerManager.getProviderByType(provider)
-
-                    updateLedgerGenerationUiState(
-                        conversationId,
-                        LedgerGenerationUiState(conversationId = conversationId, trigger = "regenerate-memory-ledger")
-                    )
-                    try {
-                        var updatedConversation = processPendingLedgerBatches(
-                            conversationId = conversationId,
-                            conversation = rebuiltConversation,
-                            trigger = "regenerate-memory-ledger",
-                            settings = settings,
-                            provider = provider,
-                            providerHandler = providerHandler,
-                            model = model,
-                        )
-                        updateCompressionUiState(
-                            conversationId,
-                            CompressionUiState(
-                                conversationId = conversationId,
-                                trigger = "regenerate-memory-ledger",
-                                phase = CompressionUiPhase.Indexing
-                            )
-                        )
-                        updatedConversation = rebuildIndexesWithRecovery(
-                            conversationId = conversationId,
-                            conversation = updatedConversation,
-                            settings = settings,
-                            showSuccessNotice = true,
-                        )
-                    } finally {
-                        updateLedgerGenerationUiState(conversationId, null)
-                        updateCompressionUiState(conversationId, null)
-                    }
-                }
-            }
-            Unit
-        }.also {
-            updateCompressionWorkerJob(conversationId, null)
-        }
-    }
+    ): Result<Unit> = compressionService.regenerateLatestCompression(conversationId, target)
 
     suspend fun editLatestDialogueSummary(
         conversationId: Uuid,
         editedSummaryText: String,
-    ): Result<Unit> {
-        return runCatching {
-            val normalizedSummary = normalizeCompressionPlainText(editedSummaryText)
-            if (normalizedSummary.isBlank()) {
-                throw IllegalStateException("Dialogue summary cannot be blank")
-            }
-
-            val conversation = getConversationWithCompressionArtifacts(conversationId)
-                ?: throw IllegalStateException("Conversation not found")
-            val latestEvent = conversation.compressionEvents.latestCompressionEvent()
-                ?: throw IllegalStateException(context.getString(R.string.chat_page_compress_no_latest_summary))
-            val now = Instant.now()
-            val tokenEstimate = estimateTokenCount(
-                text = normalizedSummary,
-                charsPerToken = settingsStore.settingsFlow.first().tokenEstimatorCharsPerToken
-            )
-            val updatedEvent = latestEvent.copy(
-                dialogueSummaryText = normalizedSummary,
-                dialogueSummaryPreview = buildDialogueSummaryPreview(normalizedSummary),
-            )
-            conversationRepo.updateCompressionEvent(updatedEvent, conversationId)
-            val updatedConversation = conversation.copy(
-                compressionState = conversation.compressionState.copy(
-                    // Manual edits become the source of truth for future compaction.
-                    // The next summary pass must continue from what the user kept here.
-                    dialogueSummaryText = normalizedSummary,
-                    dialogueSummaryTokenEstimate = tokenEstimate,
-                    dialogueSummaryUpdatedAt = now,
-                    updatedAt = now,
-                ),
-                compressionEvents = conversation.compressionEvents
-                    .map { event -> if (event.id == updatedEvent.id) updatedEvent else event }
-                    .sortedWith(compressionEventOrder),
-                chatSuggestions = emptyList(),
-            )
-            saveConversationMetadata(conversationId, updatedConversation)
-        }
-    }
+    ): Result<Unit> = compressionService.editLatestDialogueSummary(conversationId, editedSummaryText)
 
     private suspend fun compressConversationInternal(
         conversationId: Uuid,
@@ -2993,21 +2760,7 @@ class ChatService(
     // ---- 通知 ----
 
     private fun sendGenerationDoneNotification(conversationId: Uuid, senderName: String) {
-        // 先取消 Live Update 通知
-        cancelLiveUpdateNotification(conversationId)
-
-        val conversation = getConversationFlow(conversationId).value
-        context.sendNotification(
-            channelId = CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID,
-            notificationId = 1
-        ) {
-            title = senderName
-            content = conversation.currentMessages.lastOrNull()?.toText()?.take(50)?.trim() ?: ""
-            autoCancel = true
-            useDefaults = true
-            category = NotificationCompat.CATEGORY_MESSAGE
-            contentIntent = getPendingIntent(context, conversationId)
-        }
+        noticeService.sendGenerationDoneNotification(conversationId, senderName)
     }
 
     private fun getLiveUpdateNotificationId(conversationId: Uuid): Int {
@@ -3019,27 +2772,7 @@ class ChatService(
         messages: List<UIMessage>,
         senderName: String
     ) {
-        val lastMessage = messages.lastOrNull() ?: return
-        val parts = lastMessage.parts
-
-        // 确定当前状态
-        val (chipText, statusText, contentText) = determineNotificationContent(parts)
-
-        context.sendNotification(
-            channelId = CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID,
-            notificationId = getLiveUpdateNotificationId(conversationId)
-        ) {
-            title = senderName
-            content = contentText
-            subText = statusText
-            ongoing = true
-            onlyAlertOnce = true
-            category = NotificationCompat.CATEGORY_PROGRESS
-            useBigTextStyle = true
-            contentIntent = getPendingIntent(context, conversationId)
-            requestPromotedOngoing = true
-            shortCriticalText = chipText
-        }
+        noticeService.sendLiveUpdateNotification(conversationId, messages, senderName)
     }
 
     private fun determineNotificationContent(parts: List<UIMessagePart>): Triple<String, String, String> {
@@ -3086,7 +2819,7 @@ class ChatService(
     }
 
     private fun cancelLiveUpdateNotification(conversationId: Uuid) {
-        context.cancelNotification(getLiveUpdateNotificationId(conversationId))
+        noticeService.cancelLiveUpdateNotification(conversationId)
     }
 
     private fun getPendingIntent(context: Context, conversationId: Uuid): PendingIntent {
@@ -3115,25 +2848,13 @@ class ChatService(
     suspend fun saveConversation(conversationId: Uuid, conversation: Conversation) {
         val startedAt = SystemClock.elapsedRealtimeNanos()
         persistenceService.saveConversation(conversationId, conversation)
-        diagnosticsRecorder.record(
-            category = "save",
-            detail = "messageNodes=${conversation.messageNodes.size}",
-            conversationId = conversationId,
-            costMs = elapsedMillisSince(startedAt),
-            sizeHint = buildConversationSizeHint(conversation),
-        )
+        noticeService.recordConversationSave(conversationId, conversation, startedAt)
     }
 
     private suspend fun saveConversationMetadata(conversationId: Uuid, conversation: Conversation) {
         val startedAt = SystemClock.elapsedRealtimeNanos()
         persistenceService.saveConversationMetadata(conversationId, conversation)
-        diagnosticsRecorder.record(
-            category = "metadata-save",
-            detail = "messageNodes=${conversation.messageNodes.size}",
-            conversationId = conversationId,
-            costMs = elapsedMillisSince(startedAt),
-            sizeHint = buildConversationSizeHint(conversation),
-        )
+        noticeService.recordConversationMetadataSave(conversationId, conversation, startedAt)
     }
 
     private inline fun <T> traceDiagnostic(
@@ -3158,13 +2879,11 @@ class ChatService(
     }
 
     private fun buildConversationSizeHint(conversation: Conversation): String {
-        val lastMessage = conversation.currentMessages.lastOrNull()
-        return "messages=${conversation.currentMessages.size} lastParts=${lastMessage?.parts?.size ?: 0} textChars=${estimateMessageChars(lastMessage)}"
+        return noticeService.buildConversationSizeHint(conversation)
     }
 
     private fun buildChunkSizeHint(messages: List<UIMessage>, startIndex: Int): String {
-        val lastMessage = messages.lastOrNull()
-        return "messages=${messages.size} startIndex=$startIndex lastParts=${lastMessage?.parts?.size ?: 0} textChars=${estimateMessageChars(lastMessage)}"
+        return noticeService.buildChunkSizeHint(messages, startIndex)
     }
 
     private fun estimateMessageChars(message: UIMessage?): Int {
@@ -3190,37 +2909,7 @@ class ChatService(
         message: UIMessage,
         targetLanguage: Locale
     ) {
-        appScope.launch(Dispatchers.IO) {
-            try {
-                val settings = settingsStore.settingsFlow.first()
-
-                val messageText = message.parts.filterIsInstance<UIMessagePart.Text>()
-                    .joinToString("\n\n") { it.text }
-                    .trim()
-
-                if (messageText.isBlank()) return@launch
-
-                // Set loading state for translation
-                val loadingText = context.getString(R.string.translating)
-                updateTranslationField(conversationId, message.id, loadingText)
-
-                generationHandler.translateText(
-                    settings = settings,
-                    sourceText = messageText,
-                    targetLanguage = targetLanguage
-                ) { translatedText ->
-                    // Update translation field in real-time
-                    updateTranslationField(conversationId, message.id, translatedText)
-                }.collect { /* Final translation already handled in onStreamUpdate */ }
-
-                // Save the conversation after translation is complete
-                saveConversation(conversationId, getConversationFlow(conversationId).value)
-            } catch (e: Exception) {
-                // Clear translation field on error
-                clearTranslationField(conversationId, message.id)
-                addError(e, conversationId, title = context.getString(R.string.error_title_translate_message))
-            }
-        }
+        mutationService.translateMessage(conversationId, message, targetLanguage)
     }
 
     private fun updateTranslationField(
@@ -3256,124 +2945,30 @@ class ChatService(
     ) {
         if (parts.isEmptyInputMessage()) return
         val processedParts = preprocessUserInputParts(parts)
-
-        val currentConversation = getConversationFlow(conversationId).value
-        var edited = false
-
-        val updatedNodes = currentConversation.messageNodes.map { node ->
-            if (!node.messages.any { it.id == messageId }) {
-                return@map node
-            }
-            edited = true
-
-            node.copy(
-                messages = node.messages + UIMessage(
-                    role = node.role,
-                    parts = processedParts,
-                ),
-                selectIndex = node.messages.size
-            )
-        }
-
-        if (!edited) return
-
-        saveConversation(conversationId, currentConversation.copy(messageNodes = updatedNodes))
+        mutationService.editMessage(conversationId, messageId, processedParts)
     }
 
     suspend fun forkConversationAtMessage(
         conversationId: Uuid,
         messageId: Uuid
-    ): Conversation {
-        val currentConversation = getConversationFlow(conversationId).value
-        val targetNodeIndex = currentConversation.messageNodes.indexOfFirst { node ->
-            node.messages.any { it.id == messageId }
-        }
-        if (targetNodeIndex == -1) {
-            throw NotFoundException("Message not found")
-        }
-
-        val copiedNodes = currentConversation.messageNodes
-            .subList(0, targetNodeIndex + 1)
-            .map { node ->
-                node.copy(
-                    id = Uuid.random(),
-                    messages = node.messages.map { message ->
-                        message.copy(
-                            parts = message.parts.map { part ->
-                                part.copyWithForkedFileUrl()
-                            }
-                        )
-                    }
-                )
-            }
-
-        val forkConversationId = Uuid.random()
-        val forkConversation = Conversation(
-            id = forkConversationId,
-            assistantId = currentConversation.assistantId,
-            messageNodes = copiedNodes,
-        )
-
-        if (!SandboxEngine.copySandbox(context, conversationId.toString(), forkConversationId.toString())) {
-            Log.w(TAG, "forkConversationAtMessage: failed to copy sandbox from $conversationId to $forkConversationId")
-        }
-
-        saveConversation(forkConversation.id, forkConversation)
-        return forkConversation
-    }
+    ): Conversation = mutationService.forkConversationAtMessage(conversationId, messageId)
 
     suspend fun selectMessageNode(
         conversationId: Uuid,
         nodeId: Uuid,
         selectIndex: Int
-    ) {
-        val currentConversation = getConversationFlow(conversationId).value
-        val targetNode = currentConversation.messageNodes.firstOrNull { it.id == nodeId }
-            ?: throw NotFoundException("Message node not found")
-
-        if (selectIndex !in targetNode.messages.indices) {
-            throw BadRequestException("Invalid selectIndex")
-        }
-
-        if (targetNode.selectIndex == selectIndex) {
-            return
-        }
-
-        val updatedNodes = currentConversation.messageNodes.map { node ->
-            if (node.id == nodeId) {
-                node.copy(selectIndex = selectIndex)
-            } else {
-                node
-            }
-        }
-
-        saveConversation(conversationId, currentConversation.copy(messageNodes = updatedNodes))
-    }
+    ) = mutationService.selectMessageNode(conversationId, nodeId, selectIndex)
 
     suspend fun deleteMessage(
         conversationId: Uuid,
         messageId: Uuid,
         failIfMissing: Boolean = true,
-    ) {
-        val currentConversation = getConversationFlow(conversationId).value
-        val updatedConversation = buildConversationAfterMessageDelete(currentConversation, messageId)
-
-        if (updatedConversation == null) {
-            if (failIfMissing) {
-                throw NotFoundException("Message not found")
-            }
-            return
-        }
-
-        saveConversation(conversationId, updatedConversation)
-    }
+    ) = mutationService.deleteMessage(conversationId, messageId, failIfMissing)
 
     suspend fun deleteMessage(
         conversationId: Uuid,
         message: UIMessage,
-    ) {
-        deleteMessage(conversationId, message.id, failIfMissing = false)
-    }
+    ) = mutationService.deleteMessage(conversationId, message)
 
     private fun buildConversationAfterMessageDelete(
         conversation: Conversation,
@@ -3423,23 +3018,7 @@ class ChatService(
     }
 
     fun clearTranslationField(conversationId: Uuid, messageId: Uuid) {
-        val currentConversation = getConversationFlow(conversationId).value
-        val updatedNodes = currentConversation.messageNodes.map { node ->
-            if (node.messages.any { it.id == messageId }) {
-                val updatedMessages = node.messages.map { msg ->
-                    if (msg.id == messageId) {
-                        msg.copy(translation = null)
-                    } else {
-                        msg
-                    }
-                }
-                node.copy(messages = updatedMessages)
-            } else {
-                node
-            }
-        }
-
-        updateConversation(conversationId, currentConversation.copy(messageNodes = updatedNodes))
+        mutationService.clearTranslationField(conversationId, messageId)
     }
 
     // 停止当前会话生成任务（不清理会话缓存）
