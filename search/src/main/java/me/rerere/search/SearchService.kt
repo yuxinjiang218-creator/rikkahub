@@ -244,6 +244,8 @@ sealed class SearchServiceOptions {
     data class JinaOptions(
         override val id: Uuid = Uuid.random(),
         val apiKey: String = "",
+        val searchUrl: String = "https://s.jina.ai/",
+        val scrapeUrl: String = "https://r.jina.ai/",
     ) : SearchServiceOptions()
 
     @Serializable
@@ -275,6 +277,8 @@ sealed class SearchServiceOptions {
         override val id: Uuid = Uuid.random(),
         val apiKey: String = "",
         val model: String = "grok-4-1-fast-non-reasoning",
+        val customUrl: String = "https://api.x.ai/v1/responses",
+        val systemPrompt: String = "You are a helpful search assistant. Search the web to find accurate and up-to-date information for the user's query. Provide a comprehensive answer with citations.",
     ) : SearchServiceOptions()
 }
 

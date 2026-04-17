@@ -222,7 +222,9 @@ python3 scripts/upstream_sync.py trailers --base "$OLD_BASE"
 Also create a sync anchor tag on the finished master commit:
 
 ```bash
-git tag -a "sync-upstream-$(git describe --tags --abbrev=0 main)" -m "master synced through $(git describe --tags --abbrev=0 main)"
+python3 scripts/upstream_sync.py trailers --base "$OLD_BASE"
+# use the printed Sync-Anchor-Tag value
+git tag -a "<sync-anchor-tag>" -m "master synced through $(git rev-parse --short main)"
 ```
 
 Fast-forward master:
@@ -231,7 +233,7 @@ Fast-forward master:
 git switch master
 git merge --ff-only port-upstream-<yyyymmdd>-<version>
 git push origin master
-git push origin "sync-upstream-$(git describe --tags --abbrev=0 main)"
+git push origin "<sync-anchor-tag>"
 ```
 
 Delete the finished port branch after master is updated:

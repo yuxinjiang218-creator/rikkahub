@@ -32,8 +32,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -104,18 +104,24 @@ private val CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```|`[^`\n]*`", RegexOption.D
 private val BREAK_LINE_REGEX = Regex("(?i)<br\\s*/?>")
 private const val MARKDOWN_PARSE_CACHE_LIMIT = 96
 
+private data class MarkdownParseResult(
+    val preprocessed: String,
+    val astTree: ASTNode,
+    val hasHtmlBlocks: Boolean,
+)
+
 private object MarkdownParseCache {
-    private val cache = object : LinkedHashMap<String, Pair<String, ASTNode>>(MARKDOWN_PARSE_CACHE_LIMIT, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<String, ASTNode>>): Boolean {
+    private val cache = object : LinkedHashMap<String, MarkdownParseResult>(MARKDOWN_PARSE_CACHE_LIMIT, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MarkdownParseResult>): Boolean {
             return size > MARKDOWN_PARSE_CACHE_LIMIT
         }
     }
 
-    fun get(content: String): Pair<String, ASTNode>? = synchronized(cache) {
+    fun get(content: String): MarkdownParseResult? = synchronized(cache) {
         cache[content]
     }
 
-    fun getOrParse(content: String): Pair<String, ASTNode> {
+    fun getOrParse(content: String): MarkdownParseResult {
         get(content)?.let { return it }
         val parsed = parseMarkdownContent(content)
         synchronized(cache) {
@@ -125,10 +131,15 @@ private object MarkdownParseCache {
     }
 }
 
-private fun parseMarkdownContent(content: String): Pair<String, ASTNode> {
+private fun ASTNode.containsHtmlBlocks(): Boolean {
+    if (type == MarkdownElementTypes.HTML_BLOCK) return true
+    return children.any { it.containsHtmlBlocks() }
+}
+
+private fun parseMarkdownContent(content: String): MarkdownParseResult {
     val preprocessed = preProcess(content)
     val astTree = parser.buildMarkdownTreeFromString(preprocessed)
-    return preprocessed to astTree
+    return MarkdownParseResult(preprocessed, astTree, astTree.containsHtmlBlocks())
 }
 
 // 预处理markdown内容
@@ -238,15 +249,23 @@ fun MarkdownBlock(
             }
     }
 
-    val (preprocessed, astTree) = data
-    ProvideTextStyle(style) {
-        Column(
-            modifier = modifier.padding(start = 4.dp)
-        ) {
-            astTree.children.fastForEach { child ->
-                MarkdownNode(
-                    node = child, content = preprocessed, onClickCitation = onClickCitation
-                )
+    if (data.hasHtmlBlocks) {
+        MarkdownNew(
+            content = content,
+            modifier = modifier,
+            style = style,
+            onClickCitation = onClickCitation,
+        )
+    } else {
+        ProvideTextStyle(style) {
+            Column(
+                modifier = modifier.padding(start = 4.dp)
+            ) {
+                data.astTree.children.fastForEach { child ->
+                    MarkdownNode(
+                        node = child, content = data.preprocessed, onClickCitation = onClickCitation
+                    )
+                }
             }
         }
     }

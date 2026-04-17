@@ -115,6 +115,13 @@ def nearest_tag(commit: str) -> str | None:
         return None
 
 
+def describe_ref(commit: str) -> str | None:
+    try:
+        return git("describe", "--tags", commit)
+    except subprocess.CalledProcessError:
+        return None
+
+
 def parse_trailers(body: str) -> dict[str, str]:
     trailers: dict[str, str] = {}
     for line in body.splitlines():
@@ -398,13 +405,22 @@ def cmd_report(args: argparse.Namespace) -> int:
 def cmd_trailers(args: argparse.Namespace) -> int:
     head = git("rev-parse", args.upstream)
     upstream_tag = args.upstream_tag or exact_tag(head) or nearest_tag(head) or "unknown"
+    anchor_tag = build_sync_anchor_tag(head, upstream_tag)
     lines = [
         f"Upstream-Base: {args.base}",
         f"Upstream-Head: {head}",
         f"Upstream-Tag: {upstream_tag}",
+        f"Upstream-Describe: {describe_ref(head) or short_sha(head)}",
+        f"Sync-Anchor-Tag: {anchor_tag}",
     ]
     sys.stdout.write("\n".join(lines) + "\n")
     return 0
+
+
+def build_sync_anchor_tag(head: str, upstream_tag: str) -> str:
+    if exact_tag(head) == upstream_tag:
+        return f"sync-upstream-{upstream_tag}"
+    return f"sync-upstream-{upstream_tag}-{short_sha(head)}"
 
 
 def build_parser() -> argparse.ArgumentParser:

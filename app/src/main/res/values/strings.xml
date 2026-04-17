@@ -589,6 +589,7 @@
   <string name="setting_provider_page_title">Providers</string>
   <string name="setting_provider_page_tool">Tool</string>
   <string name="setting_provider_page_vertex_ai">Vertex AI</string>
+  <string name="setting_provider_page_use_service_account">Use Service Account</string>
   <string name="setting_tts_page_add">Add</string>
   <string name="setting_tts_page_add_provider">Add TTS Provider</string>
   <string name="setting_tts_page_add_provider_content_description">Add TTS Provider</string>
@@ -1103,4 +1104,5 @@
   <string name="skill_detail_page_file_name">File Name</string>
   <string name="skill_detail_page_file_name_invalid">Invalid file name</string>
   <string name="skill_detail_page_create">Create</string>
+  <string name="setting_provider_page_import_service_account_json">Import Service Account JSON</string>
 </resources>
