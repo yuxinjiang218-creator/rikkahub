@@ -1,6 +1,9 @@
 package me.rerere.rikkahub.ui.pages.chat
 
 import me.rerere.rikkahub.data.model.CompressionEvent
+import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.ai.ui.UIMessage
+import me.rerere.rikkahub.ui.components.message.ChatMessageRenderModel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -51,5 +54,80 @@ class ChatTimelineHelpersTest {
         assertEquals(0, findCompressionListIndex(eventId = 10L, localizedEvents = localizedEvents, messageCount = 3))
         assertEquals(3, findCompressionListIndex(eventId = 20L, localizedEvents = localizedEvents, messageCount = 3))
         assertNull(findCompressionListIndex(eventId = 99L, localizedEvents = localizedEvents, messageCount = 3))
+    }
+
+    @Test
+    fun `chat timeline listIndexForMessage uses compression offsets`() {
+        val timelineState = ChatTimelineUiState(
+            messageItems = List(3) { index -> messageItem(index) },
+            compressionItems = listOf(
+                ChatCompressionBoundaryItem(
+                    boundaryIndex = 0,
+                    model = ChatCompressionBoundaryModel(
+                        event = CompressionEvent(id = 10L, boundaryIndex = 0, createdAt = Instant.EPOCH),
+                        isLatest = false,
+                        ledgerStatus = null,
+                        ledgerError = null,
+                    )
+                ),
+                ChatCompressionBoundaryItem(
+                    boundaryIndex = 2,
+                    model = ChatCompressionBoundaryModel(
+                        event = CompressionEvent(id = 20L, boundaryIndex = 2, createdAt = Instant.EPOCH),
+                        isLatest = true,
+                        ledgerStatus = null,
+                        ledgerError = null,
+                    )
+                ),
+            )
+        )
+
+        assertEquals(1, timelineState.listIndexForMessage(0))
+        assertEquals(2, timelineState.listIndexForMessage(1))
+        assertEquals(4, timelineState.listIndexForMessage(2))
+    }
+
+    @Test
+    fun `chat timeline listIndexForCompressionEvent returns inserted card position`() {
+        val timelineState = ChatTimelineUiState(
+            messageItems = List(3) { index -> messageItem(index) },
+            compressionItems = listOf(
+                ChatCompressionBoundaryItem(
+                    boundaryIndex = 0,
+                    model = ChatCompressionBoundaryModel(
+                        event = CompressionEvent(id = 10L, boundaryIndex = 0, createdAt = Instant.EPOCH),
+                        isLatest = false,
+                        ledgerStatus = null,
+                        ledgerError = null,
+                    )
+                ),
+                ChatCompressionBoundaryItem(
+                    boundaryIndex = 2,
+                    model = ChatCompressionBoundaryModel(
+                        event = CompressionEvent(id = 20L, boundaryIndex = 2, createdAt = Instant.EPOCH),
+                        isLatest = true,
+                        ledgerStatus = null,
+                        ledgerError = null,
+                    )
+                ),
+            )
+        )
+
+        assertEquals(0, timelineState.listIndexForCompressionEvent(10L))
+        assertEquals(3, timelineState.listIndexForCompressionEvent(20L))
+        assertNull(timelineState.listIndexForCompressionEvent(99L))
+    }
+
+    private fun messageItem(index: Int): ChatMessageItemModel {
+        val message = if (index % 2 == 0) UIMessage.user("u$index") else UIMessage.assistant("a$index")
+        val node = MessageNode(messages = listOf(message))
+        return ChatMessageItemModel(
+            renderModel = ChatMessageRenderModel(
+                node = node,
+                message = message,
+            ),
+            globalIndex = index,
+            isLastMessage = index == 2,
+        )
     }
 }

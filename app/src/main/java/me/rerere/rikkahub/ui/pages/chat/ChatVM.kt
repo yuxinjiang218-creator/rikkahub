@@ -296,15 +296,22 @@ class ChatVM(
         stableConversation,
         settings,
         stableMessageNodes,
-        previewSearchResults,
-    ) { conversation, settings, stableMessageNodes, previewSearchResults ->
+    ) { conversation, settings, stableMessageNodes ->
         buildChatTimelineUiState(
             conversation = conversation,
             settings = settings,
             stableNodes = stableMessageNodes,
-            previewSearchResults = previewSearchResults,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatTimelineUiState())
+    val chatPreviewUiState: StateFlow<ChatPreviewUiState> = combine(
+        stableMessageNodes,
+        previewSearchResults,
+    ) { stableMessageNodes, previewSearchResults ->
+        buildChatPreviewUiState(
+            stableNodes = stableMessageNodes,
+            previewSearchResults = previewSearchResults,
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatPreviewUiState())
     val chatStreamingTailUiState: StateFlow<ChatStreamingTailUiState> = combine(
         stableConversation,
         settings,
