@@ -6,6 +6,10 @@ import org.junit.Test
 class ChatServiceConfigTest {
     @Test
     fun `dialogue summary output cap stays intentionally wide`() {
-        assertEquals(65_536, DIALOGUE_SUMMARY_MAX_OUTPUT_TOKENS)
+        val holder = Class.forName("me.rerere.rikkahub.service.ChatCompressionServiceKt")
+        val field = holder.getDeclaredField("CHAT_COMPRESSION_DIALOGUE_SUMMARY_MAX_OUTPUT_TOKENS")
+        field.isAccessible = true
+
+        assertEquals(65_536, field.getInt(null))
     }
 }

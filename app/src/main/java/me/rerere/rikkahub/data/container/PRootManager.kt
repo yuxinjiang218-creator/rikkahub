@@ -25,6 +25,7 @@ import java.io.FileNotFoundException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.util.Collections
 import java.util.IdentityHashMap
@@ -33,6 +34,69 @@ import javax.inject.Singleton
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.sandbox.SandboxEngine
+
+internal fun resolveContainerSymlinkTarget(rootDir: Path, linkPath: Path, linkTarget: String): Path? {
+    val normalizedRoot = rootDir.toAbsolutePath().normalize()
+    val normalizedLinkPath = linkPath.toAbsolutePath().normalize()
+    val rawTarget = runCatching { Paths.get(linkTarget) }.getOrElse { return null }
+    val resolved = if (rawTarget.isAbsolute) {
+        normalizedRoot.resolve(linkTarget.removePrefix("/")).normalize()
+    } else {
+        val parent = normalizedLinkPath.parent ?: return null
+        parent.resolve(rawTarget).normalize()
+    }
+    return resolved.takeIf { it.startsWith(normalizedRoot) }
+}
+
+internal fun toHostSymlinkTarget(rootDir: Path, linkPath: Path, linkTarget: String): String? {
+    val normalizedLinkPath = linkPath.toAbsolutePath().normalize()
+    val parent = normalizedLinkPath.parent ?: return null
+    val resolvedTarget = resolveContainerSymlinkTarget(rootDir, normalizedLinkPath, linkTarget) ?: return null
+    return parent.relativize(resolvedTarget).toString().replace(File.separatorChar, '/')
+}
+
+internal fun isUsableContainerFile(rootDir: Path, filePath: Path): Boolean {
+    return diagnoseContainerFileIssue(rootDir, filePath) == null
+}
+
+internal fun diagnoseContainerFileIssue(rootDir: Path, filePath: Path): String? {
+    val normalizedRoot = rootDir.toAbsolutePath().normalize()
+    val normalizedFile = filePath.toAbsolutePath().normalize()
+    if (!normalizedFile.startsWith(normalizedRoot)) {
+        return "escapes rootfs"
+    }
+    return diagnoseContainerFileIssue(
+        rootDir = normalizedRoot,
+        filePath = normalizedFile,
+        visited = linkedSetOf(),
+    )
+}
+
+private fun diagnoseContainerFileIssue(
+    rootDir: Path,
+    filePath: Path,
+    visited: MutableSet<Path>,
+): String? {
+    if (!visited.add(filePath)) {
+        return "symlink loop"
+    }
+    if (!Files.exists(filePath, LinkOption.NOFOLLOW_LINKS)) {
+        return "missing"
+    }
+    if (Files.isSymbolicLink(filePath)) {
+        val linkTarget = runCatching { Files.readSymbolicLink(filePath).toString() }.getOrElse {
+            return "unreadable symlink"
+        }
+        val resolvedTarget = resolveContainerSymlinkTarget(rootDir, filePath, linkTarget)
+            ?: return "broken symlink"
+        return diagnoseContainerFileIssue(rootDir, resolvedTarget, visited)
+    }
+    if (!Files.isRegularFile(filePath, LinkOption.NOFOLLOW_LINKS)) {
+        return "not a file"
+    }
+    val size = runCatching { Files.size(filePath) }.getOrElse { return "unreadable file" }
+    return if (size > 0L) null else "empty file"
+}
 
 /**
  * PRoot 容器管理器 - 全局单例架构
@@ -324,10 +388,10 @@ class PRootManager(
             issues.add("Missing or empty rootfs directory")
         }
 
-        val missingRootfsPaths = requiredRootfsPaths()
-            .map { relative -> relative to File(rootfsDir, relative) }
-            .filter { (_, file) -> !file.exists() || !file.isFile || file.length() <= 0L }
-            .map { it.first }
+        val missingRootfsPaths = requiredRootfsPaths().mapNotNull { relative ->
+            val issue = diagnoseContainerFileIssue(rootfsDir.toPath(), File(rootfsDir, relative).toPath())
+            issue?.let { "$relative ($it)" }
+        }
 
         if (missingRootfsPaths.isNotEmpty()) {
             issues.add("Missing rootfs paths: ${missingRootfsPaths.joinToString()}")
@@ -474,9 +538,14 @@ class PRootManager(
     }
 
     private fun missingSystemPaths(): List<String> {
-        return (requiredSystemPaths() + criticalSystemPaths())
+        val missingDirectories = requiredSystemPaths()
             .distinct()
             .filter { relative -> !hostPathExistsNoFollow(File(systemLayerDir, relative)) }
+        val missingCriticalFiles = criticalSystemPaths().mapNotNull { relative ->
+            val issue = diagnoseContainerFileIssue(systemLayerDir.toPath(), File(systemLayerDir, relative).toPath())
+            issue?.let { "$relative ($it)" }
+        }
+        return missingDirectories + missingCriticalFiles
     }
 
     private fun hostPathExistsNoFollow(file: File): Boolean {
@@ -1768,6 +1837,7 @@ fi
 
         Log.w(TAG, "Container system layer is incomplete, attempting repair: ${missingBeforeRepair.joinToString()}")
         systemSeedRoots().forEach(::seedSystemPath)
+        criticalSystemPaths().forEach(::repairCriticalSystemPathIfNeeded)
 
         val missingAfterRepair = missingSystemPaths()
         if (missingAfterRepair.isNotEmpty()) {
@@ -1775,6 +1845,21 @@ fi
                 "Container system layer is incomplete after repair: ${missingAfterRepair.joinToString()}"
             )
         }
+    }
+
+    private fun repairCriticalSystemPathIfNeeded(relativePath: String) {
+        val target = File(systemLayerDir, relativePath)
+        if (isUsableContainerFile(systemLayerDir.toPath(), target.toPath())) {
+            return
+        }
+
+        val source = File(rootfsDir, relativePath).toPath()
+        if (!Files.exists(source, LinkOption.NOFOLLOW_LINKS)) {
+            return
+        }
+
+        deleteHostPath(target.toPath())
+        copyPathPreservingLinks(source, target.toPath())
     }
 
     private fun preparePackageManagerRuntime(): PackageManagerRuntimeContext {
@@ -1812,6 +1897,21 @@ fi
 
         dir.listFiles()?.forEach { child ->
             child.deleteRecursively()
+        }
+    }
+
+    private fun deleteHostPath(path: Path) {
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+            return
+        }
+        when {
+            Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(path) -> {
+                path.toFile().deleteRecursively()
+            }
+
+            else -> {
+                Files.deleteIfExists(path)
+            }
         }
     }
 
@@ -2418,9 +2518,17 @@ fi
                     val linkName = String(linkNameBytes, Charsets.UTF_8).trimEnd('\u0000')
                     if (linkName.isNotEmpty()) {
                         file.parentFile?.mkdirs()
+                        val hostLinkTarget = toHostSymlinkTarget(
+                            rootDir = targetDir.toPath(),
+                            linkPath = file.toPath(),
+                            linkTarget = linkName,
+                        )
                         try {
-                            android.system.Os.symlink(linkName, file.absolutePath)
-                            Log.d(TAG, "Created symlink: ${file.absolutePath} -> $linkName")
+                            if (hostLinkTarget == null) {
+                                throw IllegalStateException("Invalid symlink target: $linkName")
+                            }
+                            android.system.Os.symlink(hostLinkTarget, file.absolutePath)
+                            Log.d(TAG, "Created symlink: ${file.absolutePath} -> $hostLinkTarget")
                         } catch (e: Exception) {
                             Log.w(
                                 TAG,
@@ -2496,20 +2604,11 @@ fi
     }
 
     private fun resolveDeferredSymlinkTarget(targetDir: File, linkFile: File, linkTarget: String): File? {
-        val targetRoot = targetDir.toPath().toAbsolutePath().normalize()
-        val resolved = if (linkTarget.startsWith("/")) {
-            targetRoot.resolve(linkTarget.removePrefix("/")).normalize()
-        } else {
-            val parent = linkFile.parentFile ?: return null
-            parent.toPath().toAbsolutePath().normalize().resolve(linkTarget).normalize()
-        }
-
-        if (!resolved.startsWith(targetRoot)) {
-            Log.w(TAG, "Deferred symlink target escapes rootfs: $linkTarget")
-            return null
-        }
-
-        return resolved.toFile()
+        return resolveContainerSymlinkTarget(
+            rootDir = targetDir.toPath(),
+            linkPath = linkFile.toPath(),
+            linkTarget = linkTarget,
+        )?.toFile()
     }
 
     private fun getDeviceArchitecture(): String {
