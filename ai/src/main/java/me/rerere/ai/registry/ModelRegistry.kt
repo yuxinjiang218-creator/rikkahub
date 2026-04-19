@@ -197,8 +197,20 @@ object ModelRegistry {
         toolReasoningAbility()
     }
 
+    private val CLAUDE_OPUS_4_6 = defineModel {
+        tokens("claude", "opus", "4", "6")
+        visionInput()
+        toolReasoningAbility()
+    }
+
+    private val CLAUDE_OPUS_4_7 = defineModel {
+        tokens("claude", "opus", "4", "7")
+        visionInput()
+        toolReasoningAbility()
+    }
+
     val CLAUDE_SERIES = defineGroup {
-        add(CLAUDE_SONNET_3_5, CLAUDE_SONNET_3_7, CLAUDE_4, CLAUDE_4_5, CLAUDE_SONNET_4_6)
+        add(CLAUDE_SONNET_3_5, CLAUDE_SONNET_3_7, CLAUDE_4, CLAUDE_4_5, CLAUDE_SONNET_4_6, CLAUDE_OPUS_4_6, CLAUDE_OPUS_4_7)
     }
 
     private val DEEPSEEK_V3_MODEL = defineModel {
@@ -250,6 +262,12 @@ object ModelRegistry {
         toolReasoningAbility()
     }
 
+    private val QWEN_3_6 = defineModel {
+        tokens("qwen", "3", "6")
+        visionInput()
+        toolReasoningAbility()
+    }
+
     private val DOUBAO_1_6 = defineModel {
         tokens("doubao", "1", "6")
         visionInput()
@@ -275,6 +293,12 @@ object ModelRegistry {
 
     private val KIMI_K2_5 = defineModel {
         tokens("kimi", "k", "2", "5")
+        visionInput()
+        toolReasoningAbility()
+    }
+
+    private val KIMI_K2_6 = defineModel {
+        tokens("kimi", "k", "2", "6")
         visionInput()
         toolReasoningAbility()
     }
@@ -375,6 +399,8 @@ object ModelRegistry {
         CLAUDE_4,
         CLAUDE_4_5,
         CLAUDE_SONNET_4_6,
+        CLAUDE_OPUS_4_6,
+        CLAUDE_OPUS_4_7,
         DEEPSEEK_V3_MODEL,
         DEEPSEEK_CHAT,
         DEEPSEEK_R1_MODEL,
@@ -383,11 +409,13 @@ object ModelRegistry {
         DEEPSEEK_V3_2,
         QWEN_3,
         QWEN_3_5,
+        QWEN_3_6,
         DOUBAO_1_6,
         DOUBAO_1_8,
         GROK_4,
         KIMI_K2,
         KIMI_K2_5,
+        KIMI_K2_6,
         STEP_3,
         INTERN_S1,
         GLM_4_5,

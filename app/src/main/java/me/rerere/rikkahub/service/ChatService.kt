@@ -27,6 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.jsonObject
 import me.rerere.ai.core.MessageRole
+import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.EmbeddingGenerationParams
 import me.rerere.ai.provider.ModelAbility
@@ -1406,7 +1407,7 @@ class ChatService(
         var messagesNodes = conversation.messageNodes
 
         // 移除无效 tool (未执行的 Tool)
-        messagesNodes = messagesNodes.mapIndexed { index, node ->
+        messagesNodes = messagesNodes.mapIndexed { _, node ->
             // Check for Tool type with non-executed tools
             val hasPendingTools = node.currentMessage.getTools().any { !it.isExecuted }
 

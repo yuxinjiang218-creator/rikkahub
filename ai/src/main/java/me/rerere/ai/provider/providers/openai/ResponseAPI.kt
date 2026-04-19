@@ -207,7 +207,7 @@ class ResponseAPI(
 
             // reasoning
             if (params.model.abilities.contains(ModelAbility.REASONING)) {
-                val level = ReasoningLevel.fromBudgetTokens(params.thinkingBudget ?: 0)
+                val level = params.reasoningLevel
                 put("reasoning", buildJsonObject {
                     if (capabilities.supportsReasoningSummary) {
                         put("summary", "auto")

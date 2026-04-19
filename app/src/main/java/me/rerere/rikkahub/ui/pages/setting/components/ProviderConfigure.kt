@@ -228,6 +228,8 @@ private fun String.normalizePath(): String {
     return path.trimEnd('/')
 }
 
+private fun String.isValidBaseUrl(): Boolean = this.toHttpUrlOrNull() != null
+
 private const val OPENAI_OFFICIAL_HOST = "api.openai.com"
 private const val GOOGLE_OFFICIAL_HOST = "generativelanguage.googleapis.com"
 private const val CLAUDE_OFFICIAL_HOST = "api.anthropic.com"
@@ -370,9 +372,14 @@ private fun ColumnScope.ProviderConfigureOpenAI(
 
     OutlinedTextField(
         value = provider.baseUrl,
-        onValueChange = { onEdit(provider.copy(baseUrl = it.trim())) },
-        label = { Text(stringResource(id = R.string.setting_provider_page_api_base_url)) },
-        modifier = Modifier.fillMaxWidth()
+        onValueChange = {
+            onEdit(provider.copy(baseUrl = it.trim()))
+        },
+        label = {
+            Text(stringResource(id = R.string.setting_provider_page_api_base_url))
+        },
+        modifier = Modifier.fillMaxWidth(),
+        isError = provider.baseUrl.isNotBlank() && !provider.baseUrl.isValidBaseUrl()
     )
 
     if (!provider.useResponseApi) {
@@ -437,9 +444,14 @@ private fun ColumnScope.ProviderConfigureClaude(
 
     OutlinedTextField(
         value = provider.baseUrl,
-        onValueChange = { onEdit(provider.copy(baseUrl = it.trim())) },
-        label = { Text(stringResource(id = R.string.setting_provider_page_api_base_url)) },
-        modifier = Modifier.fillMaxWidth()
+        onValueChange = {
+            onEdit(provider.copy(baseUrl = it.trim()))
+        },
+        label = {
+            Text(stringResource(id = R.string.setting_provider_page_api_base_url))
+        },
+        modifier = Modifier.fillMaxWidth(),
+        isError = provider.baseUrl.isNotBlank() && !provider.baseUrl.isValidBaseUrl()
     )
 
     Row(
@@ -538,7 +550,9 @@ private fun ColumnScope.ProviderConfigureGoogle(
             onValueChange = { onEdit(provider.copy(baseUrl = it.trim())) },
             label = { Text(stringResource(id = R.string.setting_provider_page_api_base_url)) },
             modifier = Modifier.fillMaxWidth(),
-            isError = !provider.baseUrl.endsWith("/v1beta"),
+            isError = provider.baseUrl.isNotBlank() && (
+                !provider.baseUrl.isValidBaseUrl() || !provider.baseUrl.endsWith("/v1beta")
+            ),
             supportingText = if (!provider.baseUrl.endsWith("/v1beta")) {
                 { Text("The base URL usually ends with `/v1beta`") }
             } else {
