@@ -120,10 +120,7 @@ internal fun shouldPreservePendingToolNode(tools: List<UIMessagePart.Tool>): Boo
     if (tools.isEmpty()) return false
     if (tools.all { it.isExecuted }) return true
 
-    return tools.any { tool ->
-        tool.approvalState is ToolApprovalState.Approved ||
-            tool.approvalState is ToolApprovalState.Answered
-    }
+    return tools.any { tool -> tool.canResumeExecution }
 }
 
 enum class ChatNoticeKind {

@@ -21,8 +21,8 @@ android {
         applicationId = "me.rerere.rikkahub.dev"
         minSdk = 26
         targetSdk = 28
-        versionCode = 158
-        versionName = "2.74"
+        versionCode = 159
+        versionName = "2.75"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -250,6 +250,7 @@ dependencies {
 
     // coil
     implementation(libs.coil.compose)
+    implementation(libs.coil.gif)
     implementation(libs.coil.okhttp)
     implementation(libs.coil.svg)
 
