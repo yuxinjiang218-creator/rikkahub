@@ -364,13 +364,11 @@ class SettingsStore(
                         quickMessageIds = assistant.quickMessageIds.filter { id ->
                             id in validQuickMessageIds
                         }.toSet(),
-                        enabledSkills = assistant.enabledSkills.mapNotNull { skillKey ->
-                            when {
-                                skillKey in validSkillDirectoryNames -> skillKey
-                                skillDirectoryAliases.containsKey(skillKey) -> skillDirectoryAliases.getValue(skillKey)
-                                else -> null
-                            }
-                        }.toSet(),
+                        enabledSkills = normalizeEnabledSkillKeys(
+                            enabledSkills = assistant.enabledSkills,
+                            skillDirectoryAliases = skillDirectoryAliases,
+                            validSkillDirectoryNames = validSkillDirectoryNames,
+                        ),
                         localTools = sanitizedLocalTools,
                     )
                 },
@@ -789,6 +787,20 @@ private fun loadSkillDirectoryAliases(context: Context): Map<String, String> {
             }
         }
     return aliases
+}
+
+internal fun normalizeEnabledSkillKeys(
+    enabledSkills: Set<String>,
+    skillDirectoryAliases: Map<String, String>,
+    validSkillDirectoryNames: Set<String> = skillDirectoryAliases.values.toSet(),
+): Set<String> {
+    return enabledSkills.mapNotNull { skillKey ->
+        when {
+            skillKey in validSkillDirectoryNames -> skillKey
+            skillDirectoryAliases.containsKey(skillKey) -> skillDirectoryAliases.getValue(skillKey)
+            else -> null
+        }
+    }.toSet()
 }
 
 internal val DEFAULT_ASSISTANT_ID = Uuid.parse("0950e2dc-9bd5-4801-afa3-aa887aa36b4e")

@@ -104,7 +104,7 @@ fun SkillsContent(
         modifier = modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        items(skills, key = { it.name }) { skill ->
+        items(skills, key = ::skillToggleKey) { skill ->
             ListItem(
                 headlineContent = { Text(skill.name) },
                 supportingContent = if (skill.description.isNotBlank()) {
@@ -118,8 +118,8 @@ fun SkillsContent(
                 } else null,
                 trailingContent = {
                     Switch(
-                        checked = enabledSkills.contains(skill.name),
-                        onCheckedChange = { checked -> onToggle(skill.name, checked) }
+                        checked = isSkillEnabled(enabledSkills, skill),
+                        onCheckedChange = { checked -> onToggle(skillToggleKey(skill), checked) }
                     )
                 },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
@@ -165,6 +165,13 @@ fun QuickMessagesContent(
         }
     }
 }
+
+internal fun skillToggleKey(skill: SkillMetadata): String = skill.directoryName
+
+internal fun isSkillEnabled(
+    enabledSkills: Set<String>,
+    skill: SkillMetadata,
+): Boolean = skillToggleKey(skill) in enabledSkills
 
 @Composable
 fun ExtensionEmptyState(
