@@ -362,6 +362,15 @@ class ChatCompletionsAPI(
                         })
                     }
 
+                    "api.deepseek.com" -> {
+                        put("thinking", buildJsonObject {
+                            put("type", if (!level.isEnabled) "disabled" else "enabled")
+                        })
+                        if (level.isEnabled && level != ReasoningLevel.AUTO) {
+                            put("reasoning_effort", level.effort)
+                        }
+                    }
+
                     else -> {
                         // OpenAI 官方
                         // 文档中，completions API 只支持 "low", "medium", "high"
@@ -400,11 +409,10 @@ class ChatCompletionsAPI(
 
     private fun buildMessages(messages: List<UIMessage>) = buildJsonArray {
         val filteredMessages = messages.filter { it.isValidToUpload() }
-        val lastUserMessageIndex = filteredMessages.indexOfLast { it.role == MessageRole.USER }
 
-        filteredMessages.forEachIndexed { index, message ->
+        filteredMessages.forEach { message ->
             if (message.role == MessageRole.ASSISTANT) {
-                addAssistantMessages(message, index > lastUserMessageIndex)
+                addAssistantMessages(message, includeReasoning = true)
             } else {
                 addNonAssistantMessage(message)
             }

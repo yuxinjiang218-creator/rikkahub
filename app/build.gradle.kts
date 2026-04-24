@@ -15,14 +15,14 @@ plugins {
 
 android {
     namespace = "me.rerere.rikkahub"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "me.rerere.rikkahub.dev"
         minSdk = 26
         targetSdk = 28
-        versionCode = 159
-        versionName = "2.75"
+        versionCode = 160
+        versionName = "2.76"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
