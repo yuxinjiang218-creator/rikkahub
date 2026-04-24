@@ -223,6 +223,15 @@ class ChatVM(
         chatService.getLedgerGenerationUiStateFlow(_conversationId)
             .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val compressionScrollEvents: SharedFlow<Pair<Uuid, Long>> = chatService.compressionScrollEvents
+    private val stableAssistantId: StateFlow<Uuid> = stableConversation.map { it.assistantId }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, stableConversation.value.assistantId)
+    private val stableCompressionState = stableConversation.map { it.compressionState }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, stableConversation.value.compressionState)
+    private val stableCompressionEvents = stableConversation.map { it.compressionEvents }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, stableConversation.value.compressionEvents)
     private val workflowEnabledState: StateFlow<Boolean> = combine(stableConversation, settings) { conversation, settings ->
         val assistant = settings.getAssistantById(conversation.assistantId) ?: settings.getCurrentAssistant()
         assistant.localTools.contains(LocalToolOption.WorkflowControl)
@@ -293,12 +302,17 @@ class ChatVM(
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatInputUiState())
     val chatTimelineUiState: StateFlow<ChatTimelineUiState> = combine(
-        stableConversation,
+        stableAssistantId,
+        stableCompressionState,
+        stableCompressionEvents,
         settings,
         stableMessageNodes,
-    ) { conversation, settings, stableMessageNodes ->
+    ) { assistantId, compressionState, compressionEvents, settings, stableMessageNodes ->
         buildChatTimelineUiState(
-            conversation = conversation,
+            conversationId = _conversationId,
+            assistantId = assistantId,
+            compressionState = compressionState,
+            compressionEvents = compressionEvents,
             settings = settings,
             stableNodes = stableMessageNodes,
         )
@@ -313,13 +327,13 @@ class ChatVM(
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatPreviewUiState())
     val chatStreamingTailUiState: StateFlow<ChatStreamingTailUiState> = combine(
-        stableConversation,
+        stableAssistantId,
         settings,
         stableMessageNodes,
         streamingTail,
-    ) { conversation, settings, stableMessageNodes, streamingTail ->
+    ) { assistantId, settings, stableMessageNodes, streamingTail ->
         buildChatStreamingTailUiState(
-            conversation = conversation,
+            assistantId = assistantId,
             settings = settings,
             stableNodeCount = stableMessageNodes.size,
             streamingTail = streamingTail,

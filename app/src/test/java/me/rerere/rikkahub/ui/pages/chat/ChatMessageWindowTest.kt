@@ -118,6 +118,40 @@ class ChatTimelineHelpersTest {
         assertNull(timelineState.listIndexForCompressionEvent(99L))
     }
 
+    @Test
+    fun `chat timeline listIndexForNode keeps node mapping stable with compression cards`() {
+        val first = messageItem(0)
+        val second = messageItem(1)
+        val third = messageItem(2)
+        val timelineState = ChatTimelineUiState(
+            messageItems = listOf(first, second, third),
+            compressionItems = listOf(
+                ChatCompressionBoundaryItem(
+                    boundaryIndex = 0,
+                    model = ChatCompressionBoundaryModel(
+                        event = CompressionEvent(id = 10L, boundaryIndex = 0, createdAt = Instant.EPOCH),
+                        isLatest = false,
+                        ledgerStatus = null,
+                        ledgerError = null,
+                    )
+                ),
+                ChatCompressionBoundaryItem(
+                    boundaryIndex = 2,
+                    model = ChatCompressionBoundaryModel(
+                        event = CompressionEvent(id = 20L, boundaryIndex = 2, createdAt = Instant.EPOCH),
+                        isLatest = true,
+                        ledgerStatus = null,
+                        ledgerError = null,
+                    )
+                ),
+            )
+        )
+
+        assertEquals(1, timelineState.listIndexForNode(first.node.id))
+        assertEquals(2, timelineState.listIndexForNode(second.node.id))
+        assertEquals(4, timelineState.listIndexForNode(third.node.id))
+    }
+
     private fun messageItem(index: Int): ChatMessageItemModel {
         val message = if (index % 2 == 0) UIMessage.user("u$index") else UIMessage.assistant("a$index")
         val node = MessageNode(messages = listOf(message))
